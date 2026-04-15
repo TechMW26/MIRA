@@ -19,16 +19,17 @@ A ChatGPT-like AI platform powered by multiple AI agents (Gemini, OpenAI). Featu
    npm install
    ```
 
-2. Copy `.env.example` to `.env` and fill in your Firebase config:
-   ```bash
-   cp .env.example .env
-   ```
+2. The app is pre-configured to use the Firebase RTB directly. No Firebase console setup needed.
 
-3. In [Firebase Console](https://console.firebase.google.com/):
-   - Go to **Project Settings → General → Your apps → Web app**
-   - Copy the config values into `.env`
-   - Enable **Email/Password** auth under **Authentication → Sign-in method**
-   - Set RTDB rules to allow authenticated reads/writes
+3. Set your RTDB rules to allow open read/write:
+   ```json
+   {
+     "rules": {
+       ".read": true,
+       ".write": true
+     }
+   }
+   ```
 
 4. Run the dev server:
    ```bash
@@ -47,5 +48,5 @@ A ChatGPT-like AI platform powered by multiple AI agents (Gemini, OpenAI). Featu
 - **Frontend:** React 19, Vite, Tailwind CSS
 - **Backend:** Vercel Serverless Functions (Edge Runtime)
 - **Database:** Firebase Realtime Database
-- **Auth:** Firebase Authentication
+- **Auth:** Custom auth via Firebase RTB (SHA-256 hashed passwords)
 - **AI:** Google Gemini API, OpenAI API
