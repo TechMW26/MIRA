@@ -1,27 +1,41 @@
 import { useState, useRef, useEffect } from 'react';
-import { ArrowUp, Square, Mic, MicOff, Paperclip } from 'lucide-react';
-import { useChatContext } from '../../contexts/ChatContext';
+import { Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File } from 'lucide-react';
 
-export default function ChatInput({ onSend, isGenerating, onStop, isListening, onToggleVoice, voiceSupported }) {
+const ACCEPT_TYPES = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg';
+
+function getFileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  if (['png','jpg','jpeg','gif','webp','svg'].includes(ext)) return ImageIcon;
+  if (['js','jsx','ts','tsx','py','java','c','cpp','html','css'].includes(ext)) return FileCode;
+  if (['txt','md','csv','log','json','xml','yaml','yml'].includes(ext)) return FileText;
+  return File;
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+export default function ChatInput({ onSend, onStop, isGenerating }) {
   const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState([]);
   const textareaRef = useRef(null);
-  const { model, setModel } = useChatContext();
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
+      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 180) + 'px';
     }
   }, [input]);
 
   function handleSubmit(e) {
     e?.preventDefault();
-    if (!input.trim() || isGenerating) return;
-    onSend(input.trim());
+    if ((!input.trim() && attachments.length === 0) || isGenerating) return;
+    onSend(input.trim(), attachments);
     setInput('');
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
+    setAttachments([]);
   }
 
   function handleKeyDown(e) {
@@ -31,88 +45,171 @@ export default function ChatInput({ onSend, isGenerating, onStop, isListening, o
     }
   }
 
+  async function handleFiles(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    const processed = await Promise.all(
+      files.map(async (file) => {
+        const isImage = file.type.startsWith('image/');
+        const base64 = await readFileAsBase64(file);
+
+        if (isImage) {
+          return { name: file.name, size: file.size, type: file.type, isImage: true, base64, mimeType: file.type };
+        }
+
+        // For text-based files, read text content for AI processing
+        const textTypes = ['text/', 'application/json', 'application/xml', 'application/javascript'];
+        const textExts = ['txt','md','csv','log','json','xml','yaml','yml','js','jsx','ts','tsx','py','java','c','cpp','html','css','svg'];
+        const ext = file.name.split('.').pop().toLowerCase();
+        const isText = textTypes.some((t) => file.type.startsWith(t)) || textExts.includes(ext);
+
+        let text = '';
+        if (isText) {
+          text = await readFileAsText(file);
+        }
+
+        return {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          isImage: false,
+          text,
+          base64,
+          mimeType: file.type,
+        };
+      })
+    );
+
+    setAttachments((prev) => [...prev, ...processed]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  function removeAttachment(index) {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }
+
   return (
-    <div className="border-t border-gray-700/50 bg-gray-900 px-4 py-3">
+    <div className="px-3 lg:px-0 pb-4 pt-2">
       <div className="max-w-3xl mx-auto">
-        <div className="bg-gray-800 border border-gray-700 rounded-2xl overflow-hidden focus-within:border-violet-500/50 transition">
-          <div className="flex items-end gap-2 p-3">
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Message MIRA..."
-              rows={1}
-              className="flex-1 bg-transparent text-white placeholder-gray-500 resize-none outline-none text-sm leading-6 max-h-[200px]"
-            />
-          </div>
+          <div className="glass rounded-2xl overflow-hidden transition-all duration-300 focus-within:ring-1 focus-within:ring-[var(--border)]">
+          {/* Attachments preview */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 px-4 pt-3">
+              {attachments.map((att, i) => {
+                if (att.isImage) {
+                  return (
+                    <div key={i} className="relative rounded-xl overflow-hidden animate-fade-in group" style={{ width: '80px', height: '80px' }}>
+                      <img src={att.base64} alt="" className="w-full h-full object-cover" />
+                      <button
+                        onClick={() => removeAttachment(i)}
+                        className="absolute top-1 right-1 p-0.5 rounded-full transition-all opacity-0 group-hover:opacity-100"
+                        style={{ background: 'rgba(0,0,0,0.6)', color: '#fff' }}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  );
+                }
+                const Icon = getFileIcon(att.name);
+                return (
+                  <div
+                    key={i}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-xl glass-subtle text-xs animate-fade-in"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    <Icon size={14} style={{ color: 'var(--accent)' }} />
+                    <span className="max-w-[120px] truncate">{att.name}</span>
+                    <span className="opacity-50">{formatFileSize(att.size)}</span>
+                    <button onClick={() => removeAttachment(i)} className="p-0.5 rounded hover:scale-110 transition-all" style={{ color: 'var(--text-tertiary)' }}>
+                      <X size={12} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
+          {/* Textarea */}
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Message MIRA..."
+            rows={1}
+            className="w-full resize-none px-5 pt-4 pb-2 text-sm leading-relaxed bg-transparent outline-none placeholder:text-[var(--text-tertiary)]"
+            style={{ color: 'var(--text-primary)' }}
+          />
+
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={ACCEPT_TYPES}
+            onChange={handleFiles}
+            className="hidden"
+          />
+
+          {/* Bottom controls */}
           <div className="flex items-center justify-between px-3 pb-3">
-            <div className="flex items-center gap-2">
-              {/* Model selector */}
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="bg-gray-700 text-gray-300 text-xs rounded-lg px-2.5 py-1.5 border border-gray-600 outline-none focus:border-violet-500 cursor-pointer"
+            <div className="flex items-center gap-1">
+              {/* Attach file */}
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
+                style={{ color: 'var(--text-tertiary)' }}
+                title="Attach files"
               >
-                <optgroup label="Gemini">
-                  <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                  <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-                  <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                </optgroup>
-                <optgroup label="OpenAI">
-                  <option value="gpt-4o">GPT-4o</option>
-                  <option value="gpt-4o-mini">GPT-4o Mini</option>
-                </optgroup>
-              </select>
-
-              {/* Voice button */}
-              {voiceSupported && (
-                <button
-                  onClick={onToggleVoice}
-                  className={`p-1.5 rounded-lg transition ${
-                    isListening
-                      ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-                      : 'text-gray-400 hover:text-gray-300 hover:bg-gray-700'
-                  }`}
-                  title={isListening ? 'Stop listening' : 'Voice input'}
-                >
-                  {isListening ? <MicOff size={16} /> : <Mic size={16} />}
-                </button>
-              )}
+                <Paperclip size={16} />
+              </button>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               {isGenerating ? (
                 <button
                   onClick={onStop}
-                  className="p-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg transition"
-                  title="Stop generating"
+                  className="p-2.5 rounded-xl bg-red-500/20 text-red-400 transition-all duration-200 hover:scale-105 hover:bg-red-500/30"
                 >
-                  <Square size={14} />
+                  <Square size={16} />
                 </button>
               ) : (
                 <button
                   onClick={handleSubmit}
-                  disabled={!input.trim()}
-                  className="p-2 bg-violet-600 hover:bg-violet-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg transition disabled:cursor-not-allowed"
-                  title="Send message"
+                  disabled={!input.trim() && attachments.length === 0}
+                  className="p-2.5 rounded-xl transition-all duration-200 hover:opacity-90 disabled:opacity-30 disabled:hover:scale-100"
+                  style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
                 >
-                  <ArrowUp size={16} />
+                  <Send size={16} />
                 </button>
               )}
             </div>
           </div>
         </div>
 
-        <p className="text-center text-xs text-gray-600 mt-2">
-          MIRA can make mistakes. Consider checking important information.
+        <p className="text-center text-[10px] mt-2.5 leading-tight" style={{ color: 'var(--text-tertiary)' }}>
+          MIRA can make mistakes. Consider checking important info.
         </p>
       </div>
     </div>
   );
 }
 
-export function setInputValue(value) {
-  // This is a helper for external callers — handled via ref in ChatWindow
+function readFileAsText(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => resolve(`[Error reading ${file.name}]`);
+    reader.readAsText(file);
+  });
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
 }

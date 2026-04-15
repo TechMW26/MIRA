@@ -1,15 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { sendChatMessage, generateImage } from '../services/api';
+import { sendChatMessage, generateImage, SYSTEM_PROMPT } from '../services/api';
+import { processQuery } from '../services/engine';
 import {
   createConversation,
   addMessage,
   updateMessage,
   updateConversation,
+  addConversationToProject,
   subscribeMessages,
 } from '../services/database';
 import { useAuth } from '../contexts/AuthContext';
 import { useChatContext } from '../contexts/ChatContext';
-import { generateTitle, detectIntent } from '../utils/helpers';
+import { generateTitle } from '../utils/helpers';
 
 export default function useChat() {
   const { user } = useAuth();
@@ -18,11 +20,12 @@ export default function useChat() {
     setCurrentConversationId,
     isGenerating,
     setIsGenerating,
-    model,
+    activeProjectId,
   } = useChatContext();
 
   const [messages, setMessages] = useState([]);
   const [streamingContent, setStreamingContent] = useState('');
+  const [thinkingContent, setThinkingContent] = useState('');
   const abortRef = useRef(false);
 
   // Subscribe to messages when conversation changes
@@ -45,47 +48,92 @@ export default function useChat() {
   }, [setIsGenerating]);
 
   const sendMessage = useCallback(
-    async (content) => {
-      if (!content.trim() || isGenerating || !user) return;
+    async (content, attachments = []) => {
+      if ((!content.trim() && attachments.length === 0) || isGenerating || !user) return;
 
       abortRef.current = false;
       setIsGenerating(true);
       setStreamingContent('');
+      setThinkingContent('');
 
       let convId = currentConversationId;
 
+      // Separate attachment types
+      const textAttachments = attachments.filter((a) => !a.isImage);
+      const imageAttachments = attachments.filter((a) => a.isImage);
+
+      // Build display content with inline images for user message
+      let displayContent = content;
+      const attachmentData = [];
+
+      if (imageAttachments.length > 0) {
+        for (const img of imageAttachments) {
+          attachmentData.push({ name: img.name, type: img.type, isImage: true, base64: img.base64 });
+        }
+      }
+
+      if (textAttachments.length > 0) {
+        const fileList = textAttachments.map((a) => a.name).join(', ');
+        displayContent = displayContent
+          ? `${displayContent}\n\n[Attached: ${fileList}]`
+          : `[Attached: ${fileList}]`;
+        for (const att of textAttachments) {
+          attachmentData.push({ name: att.name, type: att.type, isImage: false });
+        }
+      }
+
+      // Run MIRA Engine — classify, pick model, enhance prompt
+      const hasImages = imageAttachments.length > 0;
+      const engineResult = processQuery(content, hasImages);
+      const chosenModel = engineResult.model;
+      const enhancedSystemPrompt = engineResult.enhanceSystemPrompt(SYSTEM_PROMPT);
+
       try {
-        // Create conversation if needed
         if (!convId) {
           const conv = await createConversation(user.uid, 'New Chat');
           convId = conv.id;
           setCurrentConversationId(convId);
+          // If user is inside a project workspace, assign new chat to that project
+          if (activeProjectId) {
+            await addConversationToProject(user.uid, activeProjectId, convId);
+          }
         }
 
-        // Add user message
-        await addMessage(convId, { role: 'user', content, type: 'text' });
+        await addMessage(convId, {
+          role: 'user',
+          content: displayContent,
+          type: 'text',
+          ...(attachmentData.length > 0 ? { attachments: attachmentData } : {}),
+        });
 
-        const intent = detectIntent(content);
-
-        if (intent === 'image') {
-          // Image generation
+        if (chosenModel === '__image__') {
+          // Image generation with animated placeholder
           const assistantMsgId = await addMessage(convId, {
             role: 'assistant',
-            content: 'Generating image...',
-            type: 'text',
+            content: '',
+            type: 'image_loading',
           });
 
           try {
             const result = await generateImage(content);
-            let imageContent;
+            let imageContent = '';
+
             if (result.url) {
-              imageContent = `![Generated Image](${result.url})\n\n${result.revised_prompt ? `*${result.revised_prompt}*` : ''}`;
+              // Vercel Blob permanent URL
+              imageContent = `![Generated Image](${result.url})${result.revised_prompt ? `\n\n*${result.revised_prompt}*` : ''}`;
             } else if (result.base64) {
-              imageContent = `![Generated Image](data:${result.mimeType};base64,${result.base64})`;
+              // Direct base64 from Gemini (local dev)
+              imageContent = `![Generated Image](data:${result.mimeType || 'image/png'};base64,${result.base64})`;
             }
+
+            if (!imageContent) {
+              throw new Error('No image was returned');
+            }
+
             await updateMessage(convId, assistantMsgId, {
               content: imageContent,
               type: 'image',
+              imageUrl: result.url || null,
             });
           } catch (err) {
             await updateMessage(convId, assistantMsgId, {
@@ -94,12 +142,28 @@ export default function useChat() {
             });
           }
         } else {
-          // Chat completion with streaming
+          // Chat with streaming — engine-selected model & enhanced prompt
           const history = messages.map((m) => ({
             role: m.role,
             content: m.content,
           }));
-          history.push({ role: 'user', content });
+
+          let userContent = content;
+          if (textAttachments.length > 0) {
+            const fileContents = textAttachments
+              .map((a) => `--- File: ${a.name} ---\n${a.text}\n--- End of ${a.name} ---`)
+              .join('\n\n');
+            userContent = userContent
+              ? `${userContent}\n\nAttached files:\n${fileContents}`
+              : `Please analyze these files:\n${fileContents}`;
+          }
+
+          history.push({ role: 'user', content: userContent });
+
+          const images = imageAttachments.map((a) => ({
+            base64: a.base64.split(',')[1],
+            mimeType: a.mimeType,
+          }));
 
           const assistantMsgId = await addMessage(convId, {
             role: 'assistant',
@@ -109,11 +173,23 @@ export default function useChat() {
 
           let fullText = '';
           try {
-            await sendChatMessage(history, model, (accumulated) => {
-              if (abortRef.current) return;
-              fullText = accumulated;
-              setStreamingContent(accumulated);
-            });
+            await sendChatMessage(
+              history,
+              chosenModel,
+              (accumulated) => {
+                if (abortRef.current) return;
+                fullText = accumulated;
+                setStreamingContent(accumulated);
+              },
+              images,
+              enhancedSystemPrompt,
+              {
+                onThinking: (accumulated) => {
+                  if (abortRef.current) return;
+                  setThinkingContent(accumulated);
+                },
+              },
+            );
           } catch (err) {
             fullText = fullText || `Sorry, something went wrong: ${err.message}`;
           }
@@ -123,7 +199,6 @@ export default function useChat() {
           }
         }
 
-        // Auto-title on first message
         if (messages.length === 0) {
           const title = generateTitle(content);
           await updateConversation(user.uid, convId, { title });
@@ -133,14 +208,16 @@ export default function useChat() {
       } finally {
         setIsGenerating(false);
         setStreamingContent('');
+        setThinkingContent('');
       }
     },
-    [currentConversationId, isGenerating, messages, model, user, setCurrentConversationId, setIsGenerating]
+    [currentConversationId, isGenerating, messages, user, setCurrentConversationId, setIsGenerating, activeProjectId]
   );
 
   return {
     messages,
     streamingContent,
+    thinkingContent,
     sendMessage,
     stopGenerating,
     isGenerating,

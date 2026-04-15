@@ -8,10 +8,10 @@ function ProtectedRoute({ children }) {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-900">
+      <div className="flex items-center justify-center h-screen" style={{ background: 'var(--bg-primary)' }}>
         <div className="flex flex-col items-center gap-4">
           <div className="w-10 h-10 border-4 border-violet-500 border-t-transparent rounded-full animate-spin" />
-          <span className="text-gray-400 text-sm">Loading MIRA...</span>
+          <span className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Loading MIRA...</span>
         </div>
       </div>
     );

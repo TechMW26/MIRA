@@ -1,149 +1,130 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Navigate } from 'react-router-dom';
+import { Eye, EyeOff, ArrowRight, Loader2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { Eye, EyeOff } from 'lucide-react';
-import MiraLogo from '../common/MiraLogo';
 
 export default function AuthPage() {
+  const { user, login, register, error, authLoading } = useAuth();
   const [isLogin, setIsLogin] = useState(true);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const { login, register } = useAuth();
-  const navigate = useNavigate();
+  const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [showPw, setShowPw] = useState(false);
+
+  // Already authenticated — redirect to home
+  if (user) return <Navigate to="/" replace />;
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setError('');
-    setLoading(true);
-
-    try {
-      if (isLogin) {
-        await login(email, password);
-      } else {
-        if (!name.trim()) {
-          setError('Name is required');
-          setLoading(false);
-          return;
-        }
-        await register(email, password, name.trim());
-      }
-      navigate('/');
-    } catch (err) {
-      const code = err.code;
-      if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
-        setError('Invalid email or password');
-      } else if (code === 'auth/email-already-in-use') {
-        setError('Email already in use');
-      } else if (code === 'auth/weak-password') {
-        setError('Password must be at least 6 characters');
-      } else if (code === 'auth/invalid-email') {
-        setError('Invalid email address');
-      } else {
-        setError(err.message);
-      }
-    } finally {
-      setLoading(false);
+    if (isLogin) {
+      await login(form.email, form.password);
+    } else {
+      await register(form.email, form.password, form.name);
     }
   }
 
   return (
-    <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
+    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+      <div className="relative z-10 w-full max-w-md animate-fade-in">
         {/* Logo */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center mb-4 shadow-lg shadow-violet-500/25 rounded-2xl overflow-hidden">
-            <MiraLogo size={64} className="rounded-2xl" />
+        <div className="flex flex-col items-center mb-8">
+          <div className="relative mb-4">
+            <img src="/mira-logo.png" alt="MIRA" className="relative w-16 h-16 rounded-2xl object-cover" />
           </div>
-          <h1 className="text-3xl font-bold text-white">MIRA</h1>
-          <p className="text-gray-400 text-sm mt-1">Multi-Intelligent Responsive Assistant</p>
+          <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
+            Welcome to MIRA
+          </h1>
+          <p className="text-sm mt-1" style={{ color: 'var(--text-tertiary)' }}>
+            {isLogin ? 'Sign in to continue' : 'Create your account'}
+          </p>
         </div>
 
-        {/* Form Card */}
-        <div className="bg-gray-800 border border-gray-700 rounded-2xl p-8 shadow-xl">
-          <h2 className="text-xl font-semibold text-white mb-6">
-            {isLogin ? 'Welcome back' : 'Create your account'}
-          </h2>
-
-          {error && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm rounded-lg px-4 py-3 mb-4">
-              {error}
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Card */}
+        <div className="glass-strong rounded-3xl p-8 shadow-2xl">
+          <form onSubmit={handleSubmit} className="space-y-5">
             {!isLogin && (
               <div>
-                <label className="block text-sm text-gray-300 mb-1.5">Name</label>
+                <label className="block text-xs font-medium mb-2 tracking-wide uppercase" style={{ color: 'var(--text-tertiary)' }}>Name</label>
                 <input
                   type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2.5 text-white placeholder-gray-400 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  className="w-full glass-input rounded-xl px-4 py-3 text-sm outline-none transition-all duration-200 focus:ring-1 focus:ring-[var(--border)]"
+                  style={{ color: 'var(--text-primary)' }}
                   placeholder="Your name"
+                  required={!isLogin}
                 />
               </div>
             )}
 
             <div>
-              <label className="block text-sm text-gray-300 mb-1.5">Email</label>
+              <label className="block text-xs font-medium mb-2 tracking-wide uppercase" style={{ color: 'var(--text-tertiary)' }}>Email</label>
               <input
                 type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2.5 text-white placeholder-gray-400 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition"
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+                className="w-full glass-input rounded-xl px-4 py-3 text-sm outline-none transition-all duration-200 focus:ring-1 focus:ring-[var(--border)]"
+                style={{ color: 'var(--text-primary)' }}
                 placeholder="you@example.com"
+                required
               />
             </div>
 
             <div>
-              <label className="block text-sm text-gray-300 mb-1.5">Password</label>
+              <label className="block text-xs font-medium mb-2 tracking-wide uppercase" style={{ color: 'var(--text-tertiary)' }}>Password</label>
               <div className="relative">
                 <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  type={showPw ? 'text' : 'password'}
+                  value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                  className="w-full glass-input rounded-xl px-4 py-3 pr-12 text-sm outline-none transition-all duration-200 focus:ring-1 focus:ring-[var(--border)]"
+                  style={{ color: 'var(--text-primary)' }}
+                  placeholder="••••••••"
                   required
                   minLength={6}
-                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2.5 pr-10 text-white placeholder-gray-400 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition"
-                  placeholder="••••••••"
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-300"
+                  onClick={() => setShowPw(!showPw)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition"
+                  style={{ color: 'var(--text-tertiary)' }}
                 >
-                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
             </div>
 
+            {error && (
+              <div className="px-4 py-3 rounded-xl bg-red-500/10 text-red-400 text-sm animate-fade-in" style={{ border: '1px solid rgba(239,68,68,0.2)' }}>
+                {error}
+              </div>
+            )}
+
             <button
               type="submit"
-              disabled={loading}
-              className="w-full bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-medium rounded-lg px-4 py-2.5 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={authLoading}
+              className="w-full py-3 rounded-xl font-medium text-sm transition-all duration-200 hover:opacity-90 disabled:opacity-50 disabled:hover:scale-100 flex items-center justify-center gap-2"
+              style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
             >
-              {loading ? (
-                <span className="flex items-center justify-center gap-2">
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  {isLogin ? 'Signing in...' : 'Creating account...'}
-                </span>
+              {authLoading ? (
+                <Loader2 size={18} className="animate-spin" />
               ) : (
-                isLogin ? 'Sign In' : 'Create Account'
+                <>
+                  {isLogin ? 'Sign in' : 'Create account'}
+                  <ArrowRight size={16} />
+                </>
               )}
             </button>
           </form>
 
           <div className="mt-6 text-center">
             <button
-              onClick={() => { setIsLogin(!isLogin); setError(''); }}
-              className="text-sm text-violet-400 hover:text-violet-300 transition"
+              onClick={() => setIsLogin(!isLogin)}
+              className="text-sm transition-colors"
+              style={{ color: 'var(--text-tertiary)' }}
             >
-              {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
+              {isLogin ? "Don't have an account? " : 'Already have an account? '}
+              <span style={{ color: 'var(--accent)' }} className="font-medium">
+                {isLogin ? 'Sign up' : 'Sign in'}
+              </span>
             </button>
           </div>
         </div>

@@ -119,9 +119,67 @@ export function subscribeProjects(uid, callback) {
 }
 
 export async function deleteProject(uid, projectId) {
+  // Also remove projectId from all conversations in this project
+  const projSnap = await get(ref(db, `projects/${uid}/${projectId}/conversations`));
+  if (projSnap.exists()) {
+    const updates = {};
+    projSnap.forEach((child) => {
+      updates[`conversations/${uid}/${child.key}/projectId`] = null;
+    });
+    if (Object.keys(updates).length > 0) await update(ref(db), updates);
+  }
   await remove(ref(db, `projects/${uid}/${projectId}`));
 }
 
 export async function addConversationToProject(uid, projectId, convId) {
-  await set(ref(db, `projects/${uid}/${projectId}/conversations/${convId}`), true);
+  await Promise.all([
+    set(ref(db, `projects/${uid}/${projectId}/conversations/${convId}`), true),
+    update(ref(db, `conversations/${uid}/${convId}`), { projectId, updatedAt: Date.now() }),
+  ]);
+}
+
+export async function removeConversationFromProject(uid, projectId, convId) {
+  await Promise.all([
+    remove(ref(db, `projects/${uid}/${projectId}/conversations/${convId}`)),
+    update(ref(db, `conversations/${uid}/${convId}`), { projectId: null, updatedAt: Date.now() }),
+  ]);
+}
+
+export async function updateProject(uid, projectId, data) {
+  await update(ref(db, `projects/${uid}/${projectId}`), {
+    ...data,
+    updatedAt: Date.now(),
+  });
+}
+
+// ── User Profile ───────────────────────────────────────
+export async function updateUserProfile(uid, data) {
+  await update(ref(db, `users/${uid}`), {
+    ...data,
+    updatedAt: Date.now(),
+  });
+}
+
+// ── User Memories ──────────────────────────────────────
+export async function getUserMemories(uid) {
+  const snap = await get(ref(db, `memories/${uid}`));
+  if (!snap.exists()) return [];
+  const mems = [];
+  snap.forEach((child) => {
+    mems.push({ id: child.key, ...child.val() });
+  });
+  return mems;
+}
+
+export async function addUserMemory(uid, content) {
+  const memRef = push(ref(db, `memories/${uid}`));
+  await set(memRef, {
+    content,
+    createdAt: Date.now(),
+  });
+  return memRef.key;
+}
+
+export async function deleteUserMemory(uid, memId) {
+  await remove(ref(db, `memories/${uid}/${memId}`));
 }

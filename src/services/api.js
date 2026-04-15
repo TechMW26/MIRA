@@ -10,60 +10,123 @@ const GEMINI_KEYS = [
 
 const OPENAI_KEY = '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';
 
-const MODEL_MAP = {
-  'gemini-2.5-pro': 'gemini-2.5-pro-preview-05-06',
-  'gemini-2.5-flash': 'gemini-2.5-flash-preview-04-17',
-  'gemini-2.0-flash': 'gemini-2.0-flash',
-  'gpt-4o': 'gpt-4o',
-  'gpt-4o-mini': 'gpt-4o-mini',
-};
+// Models to try in order of preference (plain names, no preview suffixes)
+const GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
+];
+
+const SAFETY_SETTINGS = [
+  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
+  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
+  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
+];
 
 const SYSTEM_PROMPT =
   'You are MIRA (Multi-Intelligent Responsive Assistant), a helpful, creative, and knowledgeable AI assistant. You can help with coding, writing, analysis, math, and general questions. Format responses using Markdown when appropriate. For code, always use fenced code blocks with the language specified.';
 
-function buildGeminiPayload(messages) {
+export { SYSTEM_PROMPT };
+
+function buildGeminiPayload(messages, images = [], systemPrompt) {
+  const sysText = systemPrompt || SYSTEM_PROMPT;
   const contents = [];
-  for (const msg of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     if (msg.role === 'system') continue;
+
+    const parts = [{ text: msg.content }];
+
+    // Attach images to the last user message
+    if (msg.role === 'user' && i === messages.length - 1 && images.length > 0) {
+      for (const img of images) {
+        parts.push({
+          inline_data: {
+            mime_type: img.mimeType,
+            data: img.base64,
+          },
+        });
+      }
+    }
+
     contents.push({
       role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }],
+      parts,
     });
   }
   return {
     contents,
-    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    systemInstruction: { parts: [{ text: sysText }] },
     generationConfig: { temperature: 0.8, topP: 0.95, maxOutputTokens: 8192 },
+    safetySettings: SAFETY_SETTINGS,
   };
 }
 
-async function tryGeminiStream(model, messages, keyIndex = 0) {
-  if (keyIndex >= GEMINI_KEYS.length) return null;
+async function tryGeminiStream(preferredModel, messages, images = [], systemPrompt) {
+  const payload = buildGeminiPayload(messages, images, systemPrompt);
 
-  const apiKey = GEMINI_KEYS[keyIndex];
-  const geminiModel = MODEL_MAP[model] || model;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:streamGenerateContent?key=${apiKey}&alt=sse`;
+  // Always provide Google Search for real-time internet access
+  payload.tools = [{ google_search: {} }];
 
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildGeminiPayload(messages)),
-    });
+  // Build model list: preferred model first, then remaining models
+  const models = [preferredModel, ...GEMINI_MODELS.filter(m => m !== preferredModel)];
 
-    if (!res.ok) {
-      console.warn(`Gemini key ${keyIndex} failed (${res.status}), trying next...`);
-      return tryGeminiStream(model, messages, keyIndex + 1);
+  // Double loop: for each key -> for each model (Talio pattern)
+  for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
+    const apiKey = GEMINI_KEYS[keyIdx];
+
+    for (const model of models) {
+      // Enable thinking for Gemini 2.5+ models
+      const body = model.startsWith('gemini-2.5')
+        ? { ...payload, generationConfig: { ...payload.generationConfig, thinkingConfig: { thinkingBudget: 1024 } } }
+        : payload;
+
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${apiKey}&alt=sse`;
+
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        if (res.ok) {
+          console.log(`Gemini key ${keyIdx} succeeded with model: ${model}`);
+          return res;
+        }
+
+        if (res.status === 404) {
+          console.warn(`Gemini key ${keyIdx} model ${model} not found, trying next model...`);
+          continue; // next model
+        }
+
+        if (res.status === 429) {
+          console.warn(`Gemini key ${keyIdx} rate limited on ${model}, trying next key...`);
+          break; // next key
+        }
+
+        if (res.status === 503) {
+          console.warn(`Gemini key ${keyIdx} model ${model} overloaded, trying next...`);
+          continue;
+        }
+
+        console.warn(`Gemini key ${keyIdx} model ${model} failed (${res.status}), trying next...`);
+        continue;
+      } catch (err) {
+        console.warn(`Gemini key ${keyIdx} model ${model} error:`, err.message);
+        continue;
+      }
     }
-    return res;
-  } catch (err) {
-    console.warn(`Gemini key ${keyIndex} error:`, err.message);
-    return tryGeminiStream(model, messages, keyIndex + 1);
   }
+
+  return null; // all keys and models exhausted
 }
 
-async function streamOpenAI(model, messages) {
-  const openaiModel = MODEL_MAP[model] || 'gpt-4o';
+async function streamOpenAI(model, messages, systemPrompt) {
+  const openaiModel = model.startsWith('gpt') ? model : 'gpt-4o';
+  const sysText = systemPrompt || SYSTEM_PROMPT;
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -72,7 +135,7 @@ async function streamOpenAI(model, messages) {
     },
     body: JSON.stringify({
       model: openaiModel,
-      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+      messages: [{ role: 'system', content: sysText }, ...messages],
       stream: true,
       max_tokens: 4096,
     }),
@@ -81,24 +144,25 @@ async function streamOpenAI(model, messages) {
   return res;
 }
 
-export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onChunk) {
+export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onChunk, images = [], systemPrompt, { onThinking } = {}) {
   const isOpenAI = model.startsWith('gpt');
   let response;
 
   if (isOpenAI) {
-    response = await streamOpenAI(model, messages);
+    response = await streamOpenAI(model, messages, systemPrompt);
   } else {
-    response = await tryGeminiStream(model, messages);
+    response = await tryGeminiStream(model, messages, images, systemPrompt);
     if (!response) {
       // Fallback to OpenAI if all Gemini keys exhausted
       console.log('All Gemini keys failed, falling back to OpenAI');
-      response = await streamOpenAI('gpt-4o', messages);
+      response = await streamOpenAI('gpt-4o', messages, systemPrompt);
     }
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let fullText = '';
+  let thinkingText = '';
   let buffer = '';
 
   while (true) {
@@ -117,11 +181,16 @@ export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onCh
       try {
         const json = JSON.parse(data);
 
-        // Gemini format
-        const geminiText = json.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (geminiText) {
-          fullText += geminiText;
-          onChunk?.(fullText, geminiText);
+        // Gemini format — detect thinking vs response parts
+        const part = json.candidates?.[0]?.content?.parts?.[0];
+        if (part?.text) {
+          if (part.thought) {
+            thinkingText += part.text;
+            onThinking?.(thinkingText, part.text);
+          } else {
+            fullText += part.text;
+            onChunk?.(fullText, part.text);
+          }
           continue;
         }
 
@@ -139,27 +208,78 @@ export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onCh
 }
 
 export async function generateImage(prompt) {
-  // Try DALL-E 3
+  // Try server-side API first (Vercel deployment — handles key rotation + blob upload)
   try {
-    const res = await fetch('https://api.openai.com/v1/images/generations', {
+    const res = await fetch('/api/image', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPENAI_KEY}`,
-      },
-      body: JSON.stringify({
-        model: 'dall-e-3',
-        prompt,
-        n: 1,
-        size: '1024x1024',
-        quality: 'hd',
-      }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
     });
 
-    if (!res.ok) throw new Error(`DALL-E error: ${res.status}`);
-    const data = await res.json();
-    return { url: data.data[0].url, revised_prompt: data.data[0].revised_prompt };
-  } catch (err) {
-    throw new Error(`Image generation failed: ${err.message}`);
+    if (res.ok) {
+      return await res.json();
+    }
+    // Non-404 errors: log but still fall through to client-side Gemini
+    if (res.status !== 404) {
+      console.warn('Server image API failed:', res.status);
+    }
+  } catch (e) {
+    // Network error = not on Vercel or server down, fall through
+    console.warn('Server image API unavailable:', e.message);
   }
+
+  // Direct Gemini fallback (local dev)
+  const IMAGE_MODELS = [
+    'gemini-2.5-flash-image',
+    'gemini-3.1-flash-image-preview',
+  ];
+
+  for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
+    const apiKey = GEMINI_KEYS[keyIdx];
+
+    for (const model of IMAGE_MODELS) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: `Generate an image: ${prompt}` }] }],
+            generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+            safetySettings: SAFETY_SETTINGS,
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const parts = data.candidates?.[0]?.content?.parts || [];
+          for (const part of parts) {
+            if (part.inlineData) {
+              return {
+                base64: part.inlineData.data,
+                mimeType: part.inlineData.mimeType || 'image/png',
+              };
+            }
+          }
+          console.warn(`Image gen: key ${keyIdx} model ${model}: no image in response`);
+          continue;
+        }
+        if (res.status === 429) {
+          console.warn(`Image gen: key ${keyIdx} rate limited on ${model}, trying next key...`);
+          break;
+        }
+        if (res.status === 404) {
+          console.warn(`Image gen: model ${model} not found, trying next...`);
+          continue;
+        }
+        continue;
+      } catch (err) {
+        console.warn(`Image gen error:`, err.message);
+        continue;
+      }
+    }
+  }
+
+  throw new Error('Image generation is currently unavailable. Please try again later.');
 }

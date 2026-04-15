@@ -1,59 +1,89 @@
-import { Mic, MicOff, X, Phone } from 'lucide-react';
+import { useCallback, useEffect, useRef } from 'react';
+import { Mic, MicOff, X } from 'lucide-react';
+import useVoice from '../../hooks/useVoice';
 
-export default function VoiceMode({ isListening, onStart, onStop, onClose }) {
+export default function VoiceMode({ onSend, onClose }) {
+  const { isListening, transcript, startListening, stopListening } = useVoice();
+  const sent = useRef(false);
+
+  useEffect(() => {
+    startListening();
+    return () => stopListening();
+  }, []);
+
+  const handleSend = useCallback(() => {
+    if (transcript.trim() && !sent.current) {
+      sent.current = true;
+      stopListening();
+      onSend(transcript.trim());
+    }
+  }, [transcript, onSend, stopListening]);
+
   return (
-    <div className="fixed inset-0 z-50 bg-gray-900/95 flex flex-col items-center justify-center backdrop-blur-sm">
-      <button
-        onClick={onClose}
-        className="absolute top-6 right-6 p-2 text-gray-400 hover:text-white transition"
-      >
-        <X size={24} />
-      </button>
+    <div className="absolute inset-0 z-50 flex items-center justify-center animate-fade-in" style={{ background: 'var(--bg-primary)' }}>
 
-      <div className="text-center">
-        <div className="relative mb-8">
-          {/* Pulse rings */}
+      {/* Content */}
+      <div className="relative flex flex-col items-center gap-8 z-10">
+        {/* Close */}
+        <button
+          onClick={onClose}
+          className="absolute -top-16 right-0 p-3 rounded-xl glass-subtle transition-all hover:scale-110"
+          style={{ color: 'var(--text-secondary)' }}
+        >
+          <X size={20} />
+        </button>
+
+        {/* Mic Button */}
+        <div className="relative">
           {isListening && (
             <>
-              <div className="absolute inset-0 w-32 h-32 mx-auto rounded-full bg-violet-500/20 voice-pulse" />
-              <div className="absolute inset-0 w-32 h-32 mx-auto rounded-full bg-violet-500/10 voice-pulse" style={{ animationDelay: '0.5s' }} />
+              <div className="absolute inset-0 rounded-full animate-ping opacity-15 scale-150" style={{ background: 'var(--btn-primary-bg)' }} />
+              <div className="absolute inset-0 rounded-full animate-pulse opacity-10 scale-[2]" style={{ background: 'var(--btn-primary-bg)' }} />
             </>
           )}
-
-          {/* Main button */}
           <button
-            onClick={isListening ? onStop : onStart}
-            className={`relative w-32 h-32 rounded-full flex items-center justify-center transition-all ${
+            onClick={() => isListening ? stopListening() : startListening()}
+            className={`relative w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 shadow-2xl ${
               isListening
-                ? 'bg-red-500 hover:bg-red-400 shadow-lg shadow-red-500/30'
-                : 'bg-violet-600 hover:bg-violet-500 shadow-lg shadow-violet-500/30'
+                ? 'scale-110'
+                : 'glass-strong'
             }`}
+            style={isListening ? { background: 'var(--btn-primary-bg)' } : undefined}
           >
             {isListening ? (
-              <MicOff size={40} className="text-white" />
+              <Mic size={32} style={{ color: 'var(--btn-primary-text)' }} />
             ) : (
-              <Mic size={40} className="text-white" />
+              <MicOff size={32} style={{ color: 'var(--text-secondary)' }} />
             )}
           </button>
         </div>
 
-        <h2 className="text-xl font-semibold text-white mb-2">
-          {isListening ? 'Listening...' : 'Tap to speak'}
-        </h2>
-        <p className="text-gray-400 text-sm max-w-xs">
-          {isListening
-            ? 'Speak now. Your message will be sent when you pause.'
-            : 'Press the microphone to start a voice conversation with MIRA.'}
-        </p>
-      </div>
+        {/* Status */}
+        <div className="text-center">
+          <p className="text-lg font-medium mb-1" style={{ color: 'var(--text-primary)' }}>
+            {isListening ? 'Listening...' : 'Paused'}
+          </p>
+          <p className="text-sm max-w-xs" style={{ color: 'var(--text-tertiary)' }}>
+            {isListening ? 'Speak now — I\'m listening' : 'Tap the mic to start'}
+          </p>
+        </div>
 
-      <button
-        onClick={onClose}
-        className="mt-12 flex items-center gap-2 px-6 py-3 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-full text-gray-300 transition"
-      >
-        <Phone size={16} />
-        End Call
-      </button>
+        {/* Transcript */}
+        {transcript && (
+          <div className="glass rounded-2xl px-6 py-4 max-w-sm text-center animate-fade-in">
+            <p className="text-sm mb-3 leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+              "{transcript}"
+            </p>
+            <button
+              onClick={handleSend}
+              className="px-6 py-2 rounded-xl text-sm font-medium transition-all hover:opacity-90"
+              style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
+            >
+              Send
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

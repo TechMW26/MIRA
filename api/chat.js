@@ -1,4 +1,4 @@
-export const config = { runtime: 'edge' };
+export const config = { supportsResponseStreaming: true, maxDuration: 60 };
 
 const GEMINI_KEYS = [
   process.env.GEMINI_API_KEY,
@@ -179,14 +179,7 @@ function transformOpenAIStream(response) {
   });
 }
 
-export default async function handler(req) {
-  if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      status: 405,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
+export async function POST(req) {
   try {
     const { messages, model = 'gemini-2.5-flash' } = await req.json();
 
