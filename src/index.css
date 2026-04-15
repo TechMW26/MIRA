@@ -35,9 +35,9 @@
     --bg-primary: #050507;
     --bg-secondary: #0a0a0f;
     --bg-tertiary: #0f0f16;
-    --text-primary: #e8e8f0;
-    --text-secondary: #8888a0;
-    --text-tertiary: #4a4a5e;
+    --text-primary: #f5f5fa;
+    --text-secondary: #b0b0c4;
+    --text-tertiary: #6e6e88;
     --border: rgba(255, 255, 255, 0.06);
     --glass-bg: rgba(10, 10, 15, 0.7);
     --glass-border: rgba(255, 255, 255, 0.06);
@@ -50,7 +50,7 @@
     --btn-primary-bg: #ffffff;
     --btn-primary-text: #111118;
     --btn-secondary-bg: rgba(255, 255, 255, 0.08);
-    --btn-secondary-text: #e8e8f0;
+    --btn-secondary-text: #f5f5fa;
     --user-bubble-bg: #ffffff;
     --user-bubble-text: #111118;
     --avatar-bg: #ffffff;
@@ -199,33 +199,161 @@ body {
 /* ── AI Thinking / Smoky Text ────────────────── */
 .thinking-section {
   position: relative;
+  padding: 8px 0;
 }
 
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.thinking-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  opacity: 0.8;
+}
+
+.thinking-pulse-bar {
+  flex: 1;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--glass-bg);
+  overflow: hidden;
+  margin-left: 4px;
+  max-width: 100px;
+}
+
+.thinking-pulse-bar-inner {
+  width: 40%;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: pulseSlide 1.4s ease-in-out infinite;
+}
+
+@keyframes pulseSlide {
+  0% { transform: translateX(-100%); opacity: 0; }
+  50% { opacity: 1; }
+  100% { transform: translateX(300%); opacity: 0; }
+}
+
+/* ── Scrollable thinking container ───────────── */
 .thinking-scroll {
-  max-height: 120px;
+  max-height: 140px;
   overflow-y: auto;
-  mask-image: linear-gradient(to bottom, black 0%, black 55%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, black 0%, black 55%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 0%, black 50%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, black 50%, transparent 100%);
   padding-right: 4px;
 }
 
-.thinking-smoke-text {
-  font-size: 0.75rem;
-  line-height: 1.8;
+/* ── Cascading thinking lines (real content) ─── */
+.thinking-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.thinking-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  animation: lineAppear 0.4s ease-out both;
+}
+
+.thinking-line-marker {
+  color: var(--accent);
+  font-size: 0.65rem;
+  font-weight: bold;
+  opacity: 0.5;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.thinking-line-text {
+  font-size: 0.7rem;
+  line-height: 1.65;
   font-style: italic;
   color: var(--text-tertiary);
-  opacity: 0.55;
-  text-shadow: 0 0 12px var(--accent-glow), 0 0 30px rgba(139, 92, 246, 0.06);
-  animation: smokyBreathe 3s ease-in-out infinite;
+  opacity: 0.5;
+  text-shadow: 0 0 16px var(--accent-glow), 0 0 40px rgba(139, 92, 246, 0.08);
+  animation: smokeFade 3.5s ease-in-out infinite;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-@keyframes smokyBreathe {
-  0%, 100% { opacity: 0.3; filter: blur(0.5px); }
+@keyframes lineAppear {
+  from {
+    opacity: 0;
+    transform: translateY(6px) translateX(-4px);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) translateX(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes smokeFade {
+  0%, 100% { opacity: 0.3; filter: blur(0.4px); }
   50% { opacity: 0.6; filter: blur(0px); }
 }
 
+/* ── Placeholder thinking animation (before content arrives) ── */
+.thinking-placeholder-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  mask-image: linear-gradient(to bottom, black 0%, black 40%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, black 40%, transparent 100%);
+  max-height: 120px;
+  overflow: hidden;
+}
+
+.thinking-placeholder-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.65rem;
+  font-style: italic;
+  font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+  color: var(--text-tertiary);
+  text-shadow: 0 0 18px var(--accent-glow), 0 0 50px rgba(139, 92, 246, 0.1);
+  animation: placeholderSlideIn 0.5s ease-out both, smokePulse 4s ease-in-out infinite;
+  white-space: nowrap;
+}
+
+.thinking-placeholder-line .thinking-line-marker {
+  color: var(--accent);
+  opacity: 0.4;
+  font-size: 0.6rem;
+}
+
+@keyframes placeholderSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+    filter: blur(4px);
+  }
+  to {
+    opacity: var(--line-opacity, 0.5);
+    transform: translateX(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes smokePulse {
+  0%, 100% { opacity: var(--line-opacity, 0.3); filter: blur(0.5px); text-shadow: 0 0 12px var(--accent-glow); }
+  30% { opacity: calc(var(--line-opacity, 0.3) + 0.15); filter: blur(0px); text-shadow: 0 0 20px var(--accent-glow), 0 0 40px rgba(139, 92, 246, 0.15); }
+  60% { opacity: var(--line-opacity, 0.3); filter: blur(0.3px); }
+}
+
+/* ── Sparkle icons ───────────────────────────── */
 .thinking-sparkle {
   color: var(--accent);
   font-size: 0.7rem;
@@ -253,8 +381,8 @@ body {
 }
 
 /* ── Prose overrides (dark) ──────────────────── */
-.dark .prose { color: #f0f0f8; }
-.dark .prose p, .dark .prose li, .dark .prose td, .dark .prose span { color: #f0f0f8; }
+.dark .prose { color: #f5f5fa; }
+.dark .prose p, .dark .prose li, .dark .prose td, .dark .prose span { color: #f5f5fa; }
 .dark .prose h1, .dark .prose h2, .dark .prose h3, .dark .prose h4 { color: #ffffff; }
 .dark .prose strong { color: #ffffff; }
 .dark .prose pre {

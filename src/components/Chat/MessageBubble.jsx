@@ -73,31 +73,47 @@ function AttachmentPreview({ attachment }) {
 function ThinkingSection({ content, isActive }) {
   const [expanded, setExpanded] = useState(false);
   const scrollRef = useRef(null);
+  const [lines, setLines] = useState([]);
+
+  // Split streaming thinking content into lines that appear one by one
+  useEffect(() => {
+    if (!content) return;
+    // Split on sentences / line breaks for a cascading effect
+    const raw = content.replace(/\n{2,}/g, '\n').split(/(?<=[.!?])\s+|\n/);
+    setLines(raw.filter(Boolean));
+  }, [content]);
 
   useEffect(() => {
     if (isActive && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [content, isActive]);
+  }, [lines, isActive]);
 
   if (!content) return null;
 
   if (isActive) {
     return (
       <div className="thinking-section mb-4">
-        <div className="flex items-center gap-1.5 mb-2">
+        <div className="thinking-header">
           <span className="thinking-sparkle">✦</span>
-          <span className="text-xs font-medium tracking-wide" style={{ color: 'var(--text-tertiary)' }}>
-            Thinking
-          </span>
-          <span className="flex gap-0.5 ml-1">
-            <span className="w-1 h-1 rounded-full animate-pulse" style={{ background: 'var(--accent)', animationDelay: '0s' }} />
-            <span className="w-1 h-1 rounded-full animate-pulse" style={{ background: 'var(--accent)', animationDelay: '0.2s' }} />
-            <span className="w-1 h-1 rounded-full animate-pulse" style={{ background: 'var(--accent)', animationDelay: '0.4s' }} />
-          </span>
+          <span className="thinking-label">Thinking</span>
+          <div className="thinking-pulse-bar">
+            <div className="thinking-pulse-bar-inner" />
+          </div>
         </div>
         <div ref={scrollRef} className="thinking-scroll">
-          <p className="thinking-smoke-text">{content}</p>
+          <div className="thinking-lines">
+            {lines.map((line, i) => (
+              <div
+                key={i}
+                className="thinking-line"
+                style={{ animationDelay: `${Math.min(i * 0.05, 2)}s` }}
+              >
+                <span className="thinking-line-marker">›</span>
+                <span className="thinking-line-text">{line}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -122,6 +138,65 @@ function ThinkingSection({ content, isActive }) {
           {content}
         </div>
       )}
+    </div>
+  );
+}
+
+const THINKING_PHRASES = [
+  'Analyzing query structure…',
+  'Searching knowledge base…',
+  'Cross-referencing sources…',
+  'Evaluating context signals…',
+  'Building response graph…',
+  'Synthesizing information…',
+  'Checking web for updates…',
+  'Processing data streams…',
+  'Mapping relevant concepts…',
+  'Running inference chains…',
+  'Validating conclusions…',
+  'Assembling final output…',
+];
+
+function ThinkingPlaceholder() {
+  const [activeLines, setActiveLines] = useState([0]);
+  const intervalRef = useRef(null);
+
+  useEffect(() => {
+    let idx = 0;
+    intervalRef.current = setInterval(() => {
+      idx = (idx + 1) % THINKING_PHRASES.length;
+      setActiveLines((prev) => {
+        const next = [...prev, idx];
+        return next.length > 6 ? next.slice(-6) : next;
+      });
+    }, 700);
+    return () => clearInterval(intervalRef.current);
+  }, []);
+
+  return (
+    <div className="thinking-section">
+      <div className="thinking-header">
+        <span className="thinking-sparkle">✦</span>
+        <span className="thinking-label">Processing</span>
+        <div className="thinking-pulse-bar">
+          <div className="thinking-pulse-bar-inner" />
+        </div>
+      </div>
+      <div className="thinking-placeholder-lines">
+        {activeLines.map((phraseIdx, i) => (
+          <div
+            key={`${phraseIdx}-${i}`}
+            className="thinking-placeholder-line"
+            style={{
+              opacity: Math.min(0.15 + (i / activeLines.length) * 0.55, 0.7),
+              animationDelay: `${i * 0.08}s`,
+            }}
+          >
+            <span className="thinking-line-marker">›</span>
+            <span>{THINKING_PHRASES[phraseIdx]}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -243,13 +318,7 @@ function MessageBubble({ message, isLast }) {
                 {message.content}
               </ReactMarkdown>
               {isLast && message.content === '' && !message.thinkingContent && (
-                <div className="flex items-center gap-2 py-1">
-                  <div className="flex gap-1">
-                    <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: 'var(--text-tertiary)' }} />
-                    <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: 'var(--text-tertiary)', animationDelay: '0.15s' }} />
-                    <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: 'var(--text-tertiary)', animationDelay: '0.3s' }} />
-                  </div>
-                </div>
+                <ThinkingPlaceholder />
               )}
             </div>
           ) : null}

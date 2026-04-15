@@ -11,7 +11,7 @@ import {
 } from '../services/database';
 import { useAuth } from '../contexts/AuthContext';
 import { useChatContext } from '../contexts/ChatContext';
-import { generateTitle } from '../utils/helpers';
+import { generateSmartTitle } from '../utils/helpers';
 
 export default function useChat() {
   const { user } = useAuth();
@@ -89,7 +89,9 @@ export default function useChat() {
       const enhancedSystemPrompt = engineResult.enhanceSystemPrompt(SYSTEM_PROMPT);
 
       try {
+        let isNewChat = false;
         if (!convId) {
+          isNewChat = true;
           const conv = await createConversation(user.uid, 'New Chat');
           convId = conv.id;
           setCurrentConversationId(convId);
@@ -135,6 +137,13 @@ export default function useChat() {
               type: 'image',
               imageUrl: result.url || null,
             });
+
+            // Generate smart title for image chats
+            if (isNewChat) {
+              generateSmartTitle(content, 'Generated an image').then((title) => {
+                updateConversation(user.uid, convId, { title });
+              });
+            }
           } catch (err) {
             await updateMessage(convId, assistantMsgId, {
               content: `Sorry, I couldn't generate that image: ${err.message}`,
@@ -196,12 +205,14 @@ export default function useChat() {
 
           if (fullText) {
             await updateMessage(convId, assistantMsgId, { content: fullText });
-          }
-        }
 
-        if (messages.length === 0) {
-          const title = generateTitle(content);
-          await updateConversation(user.uid, convId, { title });
+            // Generate smart AI title after first exchange
+            if (isNewChat) {
+              generateSmartTitle(content, fullText).then((title) => {
+                updateConversation(user.uid, convId, { title });
+              });
+            }
+          }
         }
       } catch (err) {
         console.error('Send message error:', err);
