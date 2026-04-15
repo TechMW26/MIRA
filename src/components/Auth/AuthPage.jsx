@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { Eye, EyeOff, Sparkles } from 'lucide-react';
+import { Eye, EyeOff } from 'lucide-react';
+import MiraLogo from '../common/MiraLogo';
 
 export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true);
@@ -54,8 +55,8 @@ export default function AuthPage() {
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-violet-500 to-purple-700 rounded-2xl mb-4 shadow-lg shadow-violet-500/25">
-            <Sparkles className="w-8 h-8 text-white" />
+          <div className="inline-flex items-center justify-center mb-4 shadow-lg shadow-violet-500/25 rounded-2xl overflow-hidden">
+            <MiraLogo size={64} className="rounded-2xl" />
           </div>
           <h1 className="text-3xl font-bold text-white">MIRA</h1>
           <p className="text-gray-400 text-sm mt-1">Multi-Intelligent Responsive Assistant</p>

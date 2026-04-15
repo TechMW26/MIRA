@@ -48,7 +48,8 @@ export default function ChatWindow() {
         {!hasMessages && !isGenerating ? (
           <WelcomeScreen onSuggestionClick={sendMessage} />
         ) : (
-          <div className="pb-4">
+          <div className="flex flex-col justify-end min-h-full">
+            <div className="pb-4">
             {messages.map((msg, idx) => {
               const isLastAssistant =
                 msg.role === 'assistant' &&
@@ -69,6 +70,7 @@ export default function ChatWindow() {
               );
             })}
             <div ref={bottomRef} />
+            </div>
           </div>
         )}
       </div>

@@ -1,7 +1,7 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import { Copy, Check, Volume2, VolumeX, User, Sparkles } from 'lucide-react';
+import { Copy, Check, Volume2, VolumeX, User } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 import { useState } from 'react';
 
@@ -39,9 +39,7 @@ export default function MessageBubble({ message, isStreaming, streamingContent, 
               <User size={16} className="text-gray-300" />
             </div>
           ) : (
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-700 flex items-center justify-center">
-              <Sparkles size={16} className="text-white" />
-            </div>
+            <img src="/mira-logo.png" alt="MIRA" className="w-8 h-8 rounded-full object-cover" />
           )}
         </div>
 

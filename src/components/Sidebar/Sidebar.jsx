@@ -9,7 +9,7 @@ import {
   Folder,
   LogOut,
   Settings,
-  Sparkles,
+
   ChevronDown,
   ChevronRight,
   X,
@@ -76,9 +76,7 @@ export default function Sidebar() {
       {/* Header */}
       <div className="p-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-gradient-to-br from-violet-500 to-purple-700 rounded-lg flex items-center justify-center">
-            <Sparkles size={16} className="text-white" />
-          </div>
+          <img src="/mira-logo.png" alt="MIRA" className="w-8 h-8 rounded-lg object-cover" />
           <span className="font-semibold text-white text-sm">MIRA</span>
         </div>
         <div className="flex items-center gap-1">
