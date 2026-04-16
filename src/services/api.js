@@ -224,13 +224,13 @@ export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onCh
   return fullText;
 }
 
-export async function generateImage(prompt) {
+export async function generateImage(prompt, images = []) {
   // Try server-side API first (Vercel deployment — handles key rotation + blob upload)
   try {
     const res = await fetch('/api/image', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, images }),
     });
 
     if (res.ok) {
@@ -257,12 +257,18 @@ export async function generateImage(prompt) {
     for (const model of IMAGE_MODELS) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+      // Build parts: text prompt + any reference images
+      const parts = [{ text: `Generate an image: ${prompt}` }];
+      for (const img of images) {
+        parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
+      }
+
       try {
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [{ parts: [{ text: `Generate an image: ${prompt}` }] }],
+            contents: [{ parts }],
             generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
             safetySettings: SAFETY_SETTINGS,
           }),

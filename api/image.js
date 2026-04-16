@@ -65,19 +65,27 @@ async function generateWithDalle(prompt) {
   };
 }
 
-async function generateWithGemini(prompt) {
+async function generateWithGemini(prompt, images = []) {
   for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
     const apiKey = GEMINI_KEYS[keyIdx];
 
     for (const model of IMAGE_MODELS) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+      // Build parts: text prompt + any reference images
+      const parts = [{ text: `Generate an image: ${prompt}` }];
+      for (const img of images) {
+        if (img.base64 && img.mimeType) {
+          parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
+        }
+      }
+
       try {
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [{ parts: [{ text: `Generate an image: ${prompt}` }] }],
+            contents: [{ parts }],
             generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
           }),
         });
@@ -125,7 +133,7 @@ async function generateWithGemini(prompt) {
 
 export async function POST(req) {
   try {
-    const { prompt } = await req.json();
+    const { prompt, images } = await req.json();
 
     if (!prompt) {
       return new Response(JSON.stringify({ error: 'prompt is required' }), {
@@ -134,8 +142,8 @@ export async function POST(req) {
       });
     }
 
-    // Try Gemini image generation first (free)
-    const geminiResult = await generateWithGemini(prompt);
+    // Try Gemini image generation first (free) — pass reference images if any
+    const geminiResult = await generateWithGemini(prompt, images || []);
     if (geminiResult) {
       return new Response(JSON.stringify(geminiResult), {
         headers: { 'Content-Type': 'application/json' },

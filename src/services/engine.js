@@ -60,10 +60,34 @@ function detectSearchNeed(text) {
   return SEARCH_SIGNALS.some(rx => rx.test(text));
 }
 
+// Signals that the user wants code output, not actual image generation.
+// When these appear alongside image-sounding phrases (e.g. "create an image
+// section for a website using HTML"), the request is about CODE, not pictures.
+const IMAGE_NEGATIVE_SIGNALS = [
+  /\b(html|css|javascript|js|typescript|ts|jsx|tsx|php|ruby|swift|kotlin)\b/i,
+  /\b(code|coding|program|script|snippet|codebase|source\s*code)\b/i,
+  /\b(component|section|page|website|webpage|web\s*site|web\s*app|layout|template)\b/i,
+  /\b(gallery|slider|carousel|grid|container|wrapper|div|element|tag|dom)\b/i,
+  /\b(react|vue|angular|svelte|next\.?js|tailwind|bootstrap|sass|scss)\b/i,
+  /\b(hover|click|animation|transition|responsive|flex|flexbox|margin|padding)\b/i,
+  /\b(function|class|module|import|export|const|let|var|return)\b/i,
+];
+
 function classifyQuery(text) {
-  // Check image first — it short-circuits to DALL-E
+  // Check image patterns first
+  let isImageMatch = false;
   for (const rx of COMPLEXITY_SIGNALS.image) {
-    if (rx.test(text)) return { intent: 'image', complexity: 'low' };
+    if (rx.test(text)) { isImageMatch = true; break; }
+  }
+
+  // If image patterns matched, verify it's truly an image-generation request
+  // and not a code request that mentions images (e.g. "image gallery in HTML")
+  if (isImageMatch) {
+    const hasCodeContext = IMAGE_NEGATIVE_SIGNALS.some(rx => rx.test(text));
+    if (!hasCodeContext) {
+      return { intent: 'image', complexity: 'low' };
+    }
+    // Code context detected — fall through to normal classification
   }
 
   let dominated = 'general';
