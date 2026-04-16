@@ -117,7 +117,12 @@ export default function useChat() {
           });
 
           try {
-            const result = await generateImage(content);
+            // Pass attached images so Gemini can use them as reference
+            const refImages = imageAttachments.map((a) => ({
+              base64: a.base64.includes(',') ? a.base64.split(',')[1] : a.base64,
+              mimeType: a.mimeType || a.type || 'image/png',
+            }));
+            const result = await generateImage(content, refImages);
             let imageContent = '';
 
             if (result.url) {
