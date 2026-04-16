@@ -20,9 +20,16 @@ const COMPLEXITY_SIGNALS = {
     /\b(essay|report|article|paper)\b/i,
   ],
   code: [
-    /\b(code|function|class|component|api|endpoint|bug|error|exception|stack[- ]trace|typescript|javascript|python|react|node|css|html|sql|rust|go|java|swift|kotlin)\b/i,
+    /\b(code|coding|function|class|component|module|api|endpoint|microservice|webhook)\b/i,
+    /\b(bug|error|exception|stack[- ]trace|debug|debugging|crash|segfault|memory[- ]leak)\b/i,
+    /\b(typescript|javascript|python|react|node|css|html|sql|rust|go|java|swift|kotlin|c\+\+|ruby|php|scala|elixir)\b/i,
+    /\b(implement|build|develop|program|scaffold|boilerplate|refactor|optimize)\b/i,
     /```/,
-    /\b(fix|patch|PR|pull[- ]request|commit|lint|test|unit[- ]test)\b/i,
+    /\b(fix|patch|PR|pull[- ]request|commit|lint|test|unit[- ]test|e2e|integration[- ]test)\b/i,
+    /\b(database|schema|migration|query|ORM|REST|GraphQL|websocket|gRPC)\b/i,
+    /\b(docker|kubernetes|CI\/CD|pipeline|terraform|webpack|vite|nginx)\b/i,
+    /\b(auth|authentication|authorization|OAuth|JWT|middleware|interceptor)\b/i,
+    /\b(frontend|backend|fullstack|full[- ]stack|server[- ]side|client[- ]side)\b/i,
   ],
   creative: [
     /\b(write|draft|compose|poem|story|lyrics|song|script|creative|brainstorm|imagine)\b/i,
@@ -121,7 +128,10 @@ function pickModel({ intent, complexity }, hasImages) {
   // Images require a multimodal Gemini model
   if (hasImages) return 'gemini-2.5-flash';
 
-  // Complex reasoning → Gemini 2.5 Flash (strong reasoning, fast)
+  // Code tasks → Claude Sonnet 4 for superior code generation & reasoning
+  if (intent === 'code') return 'claude-sonnet-4-20250514';
+
+  // Complex reasoning → Gemini 2.5 Flash (thinking + search)
   if (complexity === 'high') return 'gemini-2.5-flash';
 
   // Medium → Gemini 2.5 Flash
@@ -133,11 +143,21 @@ function pickModel({ intent, complexity }, hasImages) {
 
 // ── Prompt enhancement ─────────────────────────────────────────
 const TASK_DIRECTIVES = {
-  code: `\n\nCODE GUIDELINES — Follow these strictly:
-- Write clean, production-ready code with proper error handling.
-- Use modern best practices for the relevant language/framework.
-- Add brief inline comments only where logic is non-obvious.
-- If fixing a bug, explain the root cause first, then provide the fix.`,
+  code: `\n\nCODE MASTERY MODE — You are operating as a senior staff engineer. Follow this methodology:
+
+1. UNDERSTAND: Analyze the requirements thoroughly before writing any code. Identify constraints, edge cases, and architecture implications.
+2. PLAN: Outline the approach — data structures, algorithms, component design, and how pieces connect end-to-end.
+3. IMPLEMENT: Write complete, production-ready code. Not snippets — full working implementations.
+   - Use modern best practices for the relevant language/framework.
+   - Proper error handling, input validation, and type safety.
+   - Clean separation of concerns and modular structure.
+   - Security-conscious: sanitize inputs, avoid injection vectors, handle auth properly.
+4. VERIFY: Review your code for bugs, edge cases, performance issues, and potential improvements.
+
+- If fixing a bug: explain the root cause first, then provide the corrected code with context.
+- If refactoring: analyze layer by layer — architecture → logic → performance → style.
+- When multiple files need changes, provide ALL of them.
+- Add brief inline comments only where logic is non-obvious.`,
 
   math: `\n\nMATH GUIDELINES:
 - Show your work step-by-step.

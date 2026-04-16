@@ -161,11 +161,39 @@ async function streamOpenAI(model, messages, systemPrompt) {
   return res;
 }
 
+// Claude models route through server (Anthropic blocks direct browser CORS)
+async function streamClaudeViaServer(model, messages, systemPrompt) {
+  const sysText = systemPrompt || SYSTEM_PROMPT;
+  const allMessages = [{ role: 'system', content: sysText }, ...messages];
+
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages: allMessages, model }),
+  });
+
+  if (!res.ok) throw new Error(`Server chat error: ${res.status}`);
+  return res;
+}
+
 export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onChunk, images = [], systemPrompt, { onThinking } = {}) {
+  const isClaude = model.startsWith('claude');
   const isOpenAI = model.startsWith('gpt');
   let response;
 
-  if (isOpenAI) {
+  if (isClaude) {
+    // Claude routes through server (Anthropic blocks direct browser requests)
+    try {
+      response = await streamClaudeViaServer(model, messages, systemPrompt);
+    } catch (e) {
+      console.warn('Claude failed, falling back to Gemini:', e.message);
+      response = await tryGeminiStream('gemini-2.5-flash', messages, images, systemPrompt);
+      if (!response) {
+        console.log('Gemini also failed, falling back to OpenAI');
+        response = await streamOpenAI('gpt-4o', messages, systemPrompt);
+      }
+    }
+  } else if (isOpenAI) {
     response = await streamOpenAI(model, messages, systemPrompt);
   } else {
     response = await tryGeminiStream(model, messages, images, systemPrompt);
@@ -208,6 +236,18 @@ export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onCh
             fullText += part.text;
             onChunk?.(fullText, part.text);
           }
+          continue;
+        }
+
+        // Server format (Claude via /api/chat): { text, thinking }
+        if (json.thinking) {
+          thinkingText += json.thinking;
+          onThinking?.(thinkingText, json.thinking);
+          continue;
+        }
+        if (json.text && !json.candidates) {
+          fullText += json.text;
+          onChunk?.(fullText, json.text);
           continue;
         }
 

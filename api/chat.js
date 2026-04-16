@@ -11,6 +11,7 @@ const GEMINI_KEYS = [
 ].filter(Boolean);
 
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 
 const MODEL_MAP = {
   'gemini-2.5-pro': 'gemini-2.5-pro-preview-05-06',
@@ -18,6 +19,8 @@ const MODEL_MAP = {
   'gemini-2.0-flash': 'gemini-2.0-flash',
   'gpt-4o': 'gpt-4o',
   'gpt-4o-mini': 'gpt-4o-mini',
+  'claude-sonnet-4-20250514': 'claude-sonnet-4-20250514',
+  'claude-opus-4-20250514': 'claude-opus-4-20250514',
 };
 
 function getGeminiModel(model) {
@@ -179,6 +182,91 @@ function transformOpenAIStream(response) {
   });
 }
 
+// ── Claude (Anthropic) streaming ─────────────────────────────
+async function streamClaude(model, messages) {
+  if (!ANTHROPIC_KEY) throw new Error('ANTHROPIC_API_KEY not configured');
+
+  // Separate system message from chat messages
+  let systemText = '';
+  const chatMessages = [];
+  for (const msg of messages) {
+    if (msg.role === 'system') {
+      systemText += (systemText ? '\n' : '') + msg.content;
+    } else {
+      chatMessages.push({ role: msg.role, content: msg.content });
+    }
+  }
+
+  const body = {
+    model: MODEL_MAP[model] || model,
+    max_tokens: 16384,
+    messages: chatMessages,
+    stream: true,
+    thinking: { type: 'enabled', budget_tokens: 10000 },
+  };
+
+  if (systemText) body.system = systemText;
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': ANTHROPIC_KEY,
+      'anthropic-version': '2025-04-14',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    console.error(`Claude error ${res.status}:`, errText);
+    throw new Error(`Claude error: ${res.status}`);
+  }
+
+  return res;
+}
+
+function transformClaudeStream(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  return new ReadableStream({
+    async pull(controller) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+          controller.close();
+          return;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const json = JSON.parse(line.slice(6));
+            if (json.type === 'content_block_delta') {
+              if (json.delta?.type === 'thinking_delta') {
+                controller.enqueue(
+                  new TextEncoder().encode(`data: ${JSON.stringify({ thinking: json.delta.thinking })}\n\n`)
+                );
+              } else if (json.delta?.type === 'text_delta') {
+                controller.enqueue(
+                  new TextEncoder().encode(`data: ${JSON.stringify({ text: json.delta.text })}\n\n`)
+                );
+              }
+            }
+          } catch {}
+        }
+      }
+    },
+  });
+}
+
 export async function POST(req) {
   try {
     const { messages, model = 'gemini-2.5-flash' } = await req.json();
@@ -211,9 +299,29 @@ CAPABILITIES:
     const allMessages = [systemMessage, ...messages];
 
     const isOpenAI = model.startsWith('gpt');
+    const isClaude = model.startsWith('claude');
     let stream;
 
-    if (isOpenAI) {
+    if (isClaude) {
+      try {
+        const res = await streamClaude(model, allMessages);
+        stream = transformClaudeStream(res);
+      } catch (e) {
+        console.warn('Claude failed, falling back to Gemini:', e.message);
+        const geminiRes = await streamGemini('gemini-2.5-flash', allMessages);
+        if (geminiRes) {
+          stream = transformGeminiStream(geminiRes);
+        } else if (OPENAI_KEY) {
+          const res = await streamOpenAI('gpt-4o', allMessages);
+          stream = transformOpenAIStream(res);
+        } else {
+          return new Response(
+            JSON.stringify({ error: 'All AI providers are unavailable' }),
+            { status: 503, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+      }
+    } else if (isOpenAI) {
       const res = await streamOpenAI(model, allMessages);
       stream = transformOpenAIStream(res);
     } else {
