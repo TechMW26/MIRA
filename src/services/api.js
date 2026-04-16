@@ -89,16 +89,17 @@ async function tryGeminiStream(preferredModel, messages, images = [], systemProm
   // Build model list: preferred model first, then remaining models
   const models = [preferredModel, ...GEMINI_MODELS.filter(m => m !== preferredModel)];
 
-  // Double loop: for each key -> for each model (Talio pattern)
-  for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
-    const apiKey = GEMINI_KEYS[keyIdx];
+  // Outer loop: models first, inner loop: keys
+  // This way if a model is rate-limited on one key, we try other keys for that model,
+  // then move to the next model — rather than cycling models per key
+  for (const model of models) {
+    // Enable thinking for Gemini 2.5+ models
+    const body = model.startsWith('gemini-2.5')
+      ? { ...payload, generationConfig: { ...payload.generationConfig, thinkingConfig: { thinkingBudget: 1024 } } }
+      : payload;
 
-    for (const model of models) {
-      // Enable thinking for Gemini 2.5+ models
-      const body = model.startsWith('gemini-2.5')
-        ? { ...payload, generationConfig: { ...payload.generationConfig, thinkingConfig: { thinkingBudget: 1024 } } }
-        : payload;
-
+    for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
+      const apiKey = GEMINI_KEYS[keyIdx];
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${apiKey}&alt=sse`;
 
       try {
@@ -114,27 +115,29 @@ async function tryGeminiStream(preferredModel, messages, images = [], systemProm
         }
 
         if (res.status === 404) {
-          console.warn(`Gemini key ${keyIdx} model ${model} not found, trying next model...`);
-          continue; // next model
+          console.warn(`Gemini key ${keyIdx} model ${model} not found, skipping model...`);
+          break; // no point trying other keys for a non-existent model
         }
 
         if (res.status === 429) {
           console.warn(`Gemini key ${keyIdx} rate limited on ${model}, trying next key...`);
-          break; // next key
+          continue; // try next key for same model
         }
 
         if (res.status === 503) {
-          console.warn(`Gemini key ${keyIdx} model ${model} overloaded, trying next...`);
+          console.warn(`Gemini key ${keyIdx} model ${model} overloaded, trying next key...`);
           continue;
         }
 
-        console.warn(`Gemini key ${keyIdx} model ${model} failed (${res.status}), trying next...`);
+        console.warn(`Gemini key ${keyIdx} model ${model} failed (${res.status}), trying next key...`);
         continue;
       } catch (err) {
         console.warn(`Gemini key ${keyIdx} model ${model} error:`, err.message);
         continue;
       }
     }
+    // All keys exhausted for this model, try next model
+    console.warn(`All keys exhausted for ${model}, trying next model...`);
   }
 
   return null; // all keys and models exhausted

@@ -64,13 +64,21 @@ const GEMINI_FALLBACK_MODELS = [
 async function streamGemini(model, messages, keyIndex = 0) {
   // Build the model list: requested model first, then fallbacks
   const models = [model, ...GEMINI_FALLBACK_MODELS.filter(m => m !== model)];
-  const payload = buildGeminiPayload(messages);
+  const basePayload = buildGeminiPayload(messages);
+  // Add Google Search grounding
+  basePayload.tools = [{ google_search: {} }];
 
-  for (let ki = keyIndex; ki < GEMINI_KEYS.length; ki++) {
-    const apiKey = GEMINI_KEYS[ki];
+  // Try every model × every key combination
+  for (const m of models) {
+    const geminiModel = getGeminiModel(m);
 
-    for (const m of models) {
-      const geminiModel = getGeminiModel(m);
+    // Add thinking config for 2.5+ models
+    const payload = m.startsWith('gemini-2.5')
+      ? { ...basePayload, generationConfig: { ...basePayload.generationConfig, thinkingConfig: { thinkingBudget: 1024 } } }
+      : basePayload;
+
+    for (let ki = keyIndex; ki < GEMINI_KEYS.length; ki++) {
+      const apiKey = GEMINI_KEYS[ki];
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:streamGenerateContent?key=${apiKey}&alt=sse`;
 
       try {
@@ -87,16 +95,18 @@ async function streamGemini(model, messages, keyIndex = 0) {
 
         if (res.status === 429) {
           console.warn(`Gemini key ${ki} rate limited on ${geminiModel}, trying next key...`);
-          break; // next key
+          continue; // try next key for same model
         }
 
         console.warn(`Gemini key ${ki} model ${geminiModel} failed (${res.status}), trying next...`);
-        continue; // next model
+        continue;
       } catch (err) {
         console.warn(`Gemini key ${ki} model ${geminiModel} error:`, err.message);
         continue;
       }
     }
+    // All keys exhausted for this model, try next model
+    console.warn(`All keys exhausted for ${geminiModel}, trying next model...`);
   }
 
   return null;
@@ -147,11 +157,17 @@ function transformGeminiStream(response) {
           if (line.startsWith('data: ')) {
             try {
               const json = JSON.parse(line.slice(6));
-              const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-              if (text) {
-                controller.enqueue(
-                  new TextEncoder().encode(`data: ${JSON.stringify({ text })}\n\n`)
-                );
+              const part = json.candidates?.[0]?.content?.parts?.[0];
+              if (part?.text) {
+                if (part.thought) {
+                  controller.enqueue(
+                    new TextEncoder().encode(`data: ${JSON.stringify({ thinking: part.text })}\n\n`)
+                  );
+                } else {
+                  controller.enqueue(
+                    new TextEncoder().encode(`data: ${JSON.stringify({ text: part.text })}\n\n`)
+                  );
+                }
               }
             } catch {}
           }
