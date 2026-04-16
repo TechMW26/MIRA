@@ -54,30 +54,53 @@ function buildGeminiPayload(messages) {
   return payload;
 }
 
+// Gemini models to try in fallback order
+const GEMINI_FALLBACK_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-2.5-pro',
+  'gemini-2.0-flash-lite',
+];
+
 async function streamGemini(model, messages, keyIndex = 0) {
-  if (keyIndex >= GEMINI_KEYS.length) return null;
+  // Build the model list: requested model first, then fallbacks
+  const models = [model, ...GEMINI_FALLBACK_MODELS.filter(m => m !== model)];
+  const payload = buildGeminiPayload(messages);
 
-  const apiKey = GEMINI_KEYS[keyIndex];
-  const geminiModel = getGeminiModel(model);
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:streamGenerateContent?key=${apiKey}&alt=sse`;
+  for (let ki = keyIndex; ki < GEMINI_KEYS.length; ki++) {
+    const apiKey = GEMINI_KEYS[ki];
 
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildGeminiPayload(messages)),
-    });
+    for (const m of models) {
+      const geminiModel = getGeminiModel(m);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:streamGenerateContent?key=${apiKey}&alt=sse`;
 
-    if (!res.ok) {
-      console.error(`Gemini key ${keyIndex} failed: ${res.status}`);
-      return streamGemini(model, messages, keyIndex + 1);
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        if (res.ok) {
+          console.log(`Gemini key ${ki} succeeded with model: ${geminiModel}`);
+          return res;
+        }
+
+        if (res.status === 429) {
+          console.warn(`Gemini key ${ki} rate limited on ${geminiModel}, trying next key...`);
+          break; // next key
+        }
+
+        console.warn(`Gemini key ${ki} model ${geminiModel} failed (${res.status}), trying next...`);
+        continue; // next model
+      } catch (err) {
+        console.warn(`Gemini key ${ki} model ${geminiModel} error:`, err.message);
+        continue;
+      }
     }
-
-    return res;
-  } catch (err) {
-    console.error(`Gemini key ${keyIndex} error:`, err.message);
-    return streamGemini(model, messages, keyIndex + 1);
   }
+
+  return null;
 }
 
 async function streamOpenAI(model, messages) {
@@ -197,33 +220,55 @@ async function streamClaude(model, messages) {
     }
   }
 
-  const body = {
-    model: MODEL_MAP[model] || model,
-    max_tokens: 16384,
-    messages: chatMessages,
-    stream: true,
-    thinking: { type: 'enabled', budget_tokens: 10000 },
-  };
+  // Try with extended thinking first, then without if it fails
+  const configs = [
+    { thinking: { type: 'enabled', budget_tokens: 10000 }, max_tokens: 16384 },
+    { max_tokens: 8192 },
+  ];
 
-  if (systemText) body.system = systemText;
+  for (const cfg of configs) {
+    const body = {
+      model: MODEL_MAP[model] || model,
+      messages: chatMessages,
+      stream: true,
+      ...cfg,
+    };
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': ANTHROPIC_KEY,
-      'anthropic-version': '2025-04-14',
-    },
-    body: JSON.stringify(body),
-  });
+    if (systemText) body.system = systemText;
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    console.error(`Claude error ${res.status}:`, errText);
-    throw new Error(`Claude error: ${res.status}`);
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (res.ok) {
+        console.log(`Claude succeeded ${cfg.thinking ? 'with' : 'without'} thinking`);
+        return res;
+      }
+
+      const errText = await res.text().catch(() => '');
+      console.warn(`Claude ${cfg.thinking ? '(thinking)' : '(no thinking)'} failed ${res.status}:`, errText);
+
+      // If thinking config caused the error, try without
+      if (cfg.thinking) continue;
+
+      throw new Error(`Claude error: ${res.status}`);
+    } catch (e) {
+      if (cfg.thinking) {
+        console.warn('Claude thinking attempt failed, retrying without:', e.message);
+        continue;
+      }
+      throw e;
+    }
   }
 
-  return res;
+  throw new Error('Claude: all attempts failed');
 }
 
 function transformClaudeStream(response) {
@@ -302,43 +347,51 @@ CAPABILITIES:
     const isClaude = model.startsWith('claude');
     let stream;
 
+    // Unified fallback: try requested provider, then cascade to others
+    const providers = [];
+
     if (isClaude) {
-      try {
-        const res = await streamClaude(model, allMessages);
-        stream = transformClaudeStream(res);
-      } catch (e) {
-        console.warn('Claude failed, falling back to Gemini:', e.message);
-        const geminiRes = await streamGemini('gemini-2.5-flash', allMessages);
-        if (geminiRes) {
-          stream = transformGeminiStream(geminiRes);
-        } else if (OPENAI_KEY) {
-          const res = await streamOpenAI('gpt-4o', allMessages);
-          stream = transformOpenAIStream(res);
-        } else {
-          return new Response(
-            JSON.stringify({ error: 'All AI providers are unavailable' }),
-            { status: 503, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-      }
+      providers.push({ type: 'claude', model });
+      providers.push({ type: 'gemini', model: 'gemini-2.5-flash' });
+      if (OPENAI_KEY) providers.push({ type: 'openai', model: 'gpt-4o' });
     } else if (isOpenAI) {
-      const res = await streamOpenAI(model, allMessages);
-      stream = transformOpenAIStream(res);
+      if (OPENAI_KEY) providers.push({ type: 'openai', model });
+      providers.push({ type: 'gemini', model: 'gemini-2.5-flash' });
     } else {
-      const geminiRes = await streamGemini(model, allMessages);
-      if (geminiRes) {
-        stream = transformGeminiStream(geminiRes);
-      } else if (OPENAI_KEY) {
-        // Fallback to OpenAI if all Gemini keys fail
-        console.log('All Gemini keys exhausted, falling back to OpenAI');
-        const res = await streamOpenAI('gpt-4o', allMessages);
-        stream = transformOpenAIStream(res);
-      } else {
-        return new Response(
-          JSON.stringify({ error: 'All AI providers are unavailable' }),
-          { status: 503, headers: { 'Content-Type': 'application/json' } }
-        );
+      providers.push({ type: 'gemini', model });
+      if (OPENAI_KEY) providers.push({ type: 'openai', model: 'gpt-4o' });
+    }
+
+    for (const provider of providers) {
+      try {
+        if (provider.type === 'claude') {
+          const res = await streamClaude(provider.model, allMessages);
+          stream = transformClaudeStream(res);
+          break;
+        } else if (provider.type === 'gemini') {
+          const res = await streamGemini(provider.model, allMessages);
+          if (res) {
+            stream = transformGeminiStream(res);
+            break;
+          }
+          console.warn('All Gemini keys/models exhausted, trying next provider...');
+          continue;
+        } else if (provider.type === 'openai') {
+          const res = await streamOpenAI(provider.model, allMessages);
+          stream = transformOpenAIStream(res);
+          break;
+        }
+      } catch (e) {
+        console.warn(`${provider.type} (${provider.model}) failed:`, e.message);
+        continue;
       }
+    }
+
+    if (!stream) {
+      return new Response(
+        JSON.stringify({ error: 'All AI providers are unavailable' }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } }
+      );
     }
 
     return new Response(stream, {

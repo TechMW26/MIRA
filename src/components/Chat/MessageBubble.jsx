@@ -225,6 +225,26 @@ function MessageBubble({ message, isLast }) {
   }, [message.content, speaking]);
 
   const markdownComponents = useMemo(() => ({
+    img({ src, alt }) {
+      return (
+        <img
+          src={src}
+          alt={alt || 'Generated Image'}
+          className="rounded-xl my-3 max-w-full shadow-lg"
+          style={{ maxHeight: '512px', objectFit: 'contain' }}
+          loading="lazy"
+          onError={(e) => {
+            // If Vercel Blob URL fails, hide the broken icon and show a message
+            e.target.style.display = 'none';
+            const msg = document.createElement('div');
+            msg.className = 'text-sm py-3 px-4 rounded-xl my-2';
+            msg.style.cssText = 'background: var(--glass-bg); color: var(--text-tertiary);';
+            msg.textContent = 'Image failed to load — it may have expired.';
+            e.target.parentNode.insertBefore(msg, e.target.nextSibling);
+          }}
+        />
+      );
+    },
     code({ node, inline, className, children, ...props }) {
       const match = /language-(\w+)/.exec(className || '');
       if (!inline && match) {

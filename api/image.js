@@ -15,8 +15,8 @@ const GEMINI_KEYS = [
 ].filter(Boolean);
 
 const IMAGE_MODELS = [
-  'gemini-2.5-flash-image',
-  'gemini-3.1-flash-image-preview',
+  'gemini-2.0-flash-preview-image-generation',
+  'imagen-3.0-generate-002',
 ];
 
 async function uploadToBlob(base64Data, mimeType) {
@@ -70,24 +70,37 @@ async function generateWithGemini(prompt, images = []) {
     const apiKey = GEMINI_KEYS[keyIdx];
 
     for (const model of IMAGE_MODELS) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      // Imagen 3 uses a different API format (predict endpoint)
+      const isImagen = model.startsWith('imagen');
 
-      // Build parts: text prompt + any reference images
-      const parts = [{ text: `Generate an image: ${prompt}` }];
-      for (const img of images) {
-        if (img.base64 && img.mimeType) {
-          parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
+      let url, body;
+
+      if (isImagen) {
+        url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${apiKey}`;
+        body = {
+          instances: [{ prompt }],
+          parameters: { sampleCount: 1 },
+        };
+      } else {
+        url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        // Build parts: text prompt + any reference images
+        const parts = [{ text: `Generate an image: ${prompt}` }];
+        for (const img of images) {
+          if (img.base64 && img.mimeType) {
+            parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
+          }
         }
+        body = {
+          contents: [{ parts }],
+          generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+        };
       }
 
       try {
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-          }),
+          body: JSON.stringify(body),
         });
 
         if (res.status === 429) {
@@ -106,9 +119,22 @@ async function generateWithGemini(prompt, images = []) {
         }
 
         const data = await res.json();
-        const parts = data.candidates?.[0]?.content?.parts || [];
 
-        for (const part of parts) {
+        // Imagen 3 response format
+        if (isImagen) {
+          const b64 = data.predictions?.[0]?.bytesBase64Encoded;
+          if (b64) {
+            const blobUrl = await uploadToBlob(b64, 'image/png');
+            return { url: blobUrl, mimeType: 'image/png', provider: 'imagen-3' };
+          }
+          console.warn(`Image gen: key ${keyIdx} model ${model}: no image in response`);
+          continue;
+        }
+
+        // Gemini response format
+        const resParts = data.candidates?.[0]?.content?.parts || [];
+
+        for (const part of resParts) {
           if (part.inlineData) {
             const blobUrl = await uploadToBlob(part.inlineData.data, part.inlineData.mimeType || 'image/png');
             return {

@@ -161,8 +161,8 @@ async function streamOpenAI(model, messages, systemPrompt) {
   return res;
 }
 
-// Claude models route through server (Anthropic blocks direct browser CORS)
-async function streamClaudeViaServer(model, messages, systemPrompt) {
+// Route any model through the server /api/chat endpoint (avoids CORS for OpenAI/Claude)
+async function streamViaServer(model, messages, systemPrompt) {
   const sysText = systemPrompt || SYSTEM_PROMPT;
   const allMessages = [{ role: 'system', content: sysText }, ...messages];
 
@@ -181,26 +181,33 @@ export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onCh
   const isOpenAI = model.startsWith('gpt');
   let response;
 
-  if (isClaude) {
-    // Claude routes through server (Anthropic blocks direct browser requests)
+  if (isClaude || isOpenAI) {
+    // Claude and OpenAI MUST go through server (CORS blocks direct browser calls)
     try {
-      response = await streamClaudeViaServer(model, messages, systemPrompt);
+      response = await streamViaServer(model, messages, systemPrompt);
     } catch (e) {
-      console.warn('Claude failed, falling back to Gemini:', e.message);
+      console.warn(`Server route for ${model} failed:`, e.message);
+      // Fallback: try Gemini direct (works from browser, no CORS issues)
       response = await tryGeminiStream('gemini-2.5-flash', messages, images, systemPrompt);
       if (!response) {
-        console.log('Gemini also failed, falling back to OpenAI');
-        response = await streamOpenAI('gpt-4o', messages, systemPrompt);
+        // Last resort: try server with Gemini model (server has multi-model fallback)
+        try {
+          response = await streamViaServer('gemini-2.5-flash', messages, systemPrompt);
+        } catch {
+          throw new Error('All AI providers are currently unavailable. Please try again.');
+        }
       }
     }
-  } else if (isOpenAI) {
-    response = await streamOpenAI(model, messages, systemPrompt);
   } else {
+    // Gemini models: try direct first (fastest), then server fallback
     response = await tryGeminiStream(model, messages, images, systemPrompt);
     if (!response) {
-      // Fallback to OpenAI if all Gemini keys exhausted
-      console.log('All Gemini keys failed, falling back to OpenAI');
-      response = await streamOpenAI('gpt-4o', messages, systemPrompt);
+      console.log('All direct Gemini keys failed, trying server...');
+      try {
+        response = await streamViaServer(model, messages, systemPrompt);
+      } catch {
+        throw new Error('All AI providers are currently unavailable. Please try again.');
+      }
     }
   }
 
@@ -287,37 +294,55 @@ export async function generateImage(prompt, images = []) {
 
   // Direct Gemini fallback (local dev)
   const IMAGE_MODELS = [
-    'gemini-2.5-flash-image',
-    'gemini-3.1-flash-image-preview',
+    'gemini-2.0-flash-preview-image-generation',
+    'imagen-3.0-generate-002',
   ];
 
   for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
     const apiKey = GEMINI_KEYS[keyIdx];
 
     for (const model of IMAGE_MODELS) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const isImagen = model.startsWith('imagen');
 
-      // Build parts: text prompt + any reference images
-      const parts = [{ text: `Generate an image: ${prompt}` }];
-      for (const img of images) {
-        parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
+      let url, body;
+
+      if (isImagen) {
+        url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${apiKey}`;
+        body = { instances: [{ prompt }], parameters: { sampleCount: 1 } };
+      } else {
+        url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        const parts = [{ text: `Generate an image: ${prompt}` }];
+        for (const img of images) {
+          parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
+        }
+        body = {
+          contents: [{ parts }],
+          generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+          safetySettings: SAFETY_SETTINGS,
+        };
       }
 
       try {
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-            safetySettings: SAFETY_SETTINGS,
-          }),
+          body: JSON.stringify(body),
         });
 
         if (res.ok) {
           const data = await res.json();
-          const parts = data.candidates?.[0]?.content?.parts || [];
-          for (const part of parts) {
+
+          // Imagen 3 response format
+          if (isImagen) {
+            const b64 = data.predictions?.[0]?.bytesBase64Encoded;
+            if (b64) return { base64: b64, mimeType: 'image/png' };
+            console.warn(`Image gen: key ${keyIdx} model ${model}: no image in response`);
+            continue;
+          }
+
+          // Gemini response format
+          const resParts = data.candidates?.[0]?.content?.parts || [];
+          for (const part of resParts) {
             if (part.inlineData) {
               return {
                 base64: part.inlineData.data,
