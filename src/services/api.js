@@ -15,7 +15,6 @@ const GEMINI_MODELS = [
   'gemini-2.5-flash',
   'gemini-2.5-pro',
   'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
 ];
 
 const SAFETY_SETTINGS = [
@@ -294,33 +293,25 @@ export async function generateImage(prompt, images = []) {
 
   // Direct Gemini fallback (local dev)
   const IMAGE_MODELS = [
-    'gemini-2.0-flash-preview-image-generation',
-    'imagen-3.0-generate-002',
+    'gemini-2.5-flash-image',
+    'gemini-3.1-flash-image-preview',
+    'gemini-3-pro-image-preview',
   ];
 
   for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
     const apiKey = GEMINI_KEYS[keyIdx];
 
     for (const model of IMAGE_MODELS) {
-      const isImagen = model.startsWith('imagen');
-
-      let url, body;
-
-      if (isImagen) {
-        url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${apiKey}`;
-        body = { instances: [{ prompt }], parameters: { sampleCount: 1 } };
-      } else {
-        url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-        const parts = [{ text: `Generate an image: ${prompt}` }];
-        for (const img of images) {
-          parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
-        }
-        body = {
-          contents: [{ parts }],
-          generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-          safetySettings: SAFETY_SETTINGS,
-        };
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const parts = [{ text: `Generate an image: ${prompt}` }];
+      for (const img of images) {
+        parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
       }
+      const body = {
+        contents: [{ parts }],
+        generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+        safetySettings: SAFETY_SETTINGS,
+      };
 
       try {
         const res = await fetch(url, {
@@ -331,16 +322,6 @@ export async function generateImage(prompt, images = []) {
 
         if (res.ok) {
           const data = await res.json();
-
-          // Imagen 3 response format
-          if (isImagen) {
-            const b64 = data.predictions?.[0]?.bytesBase64Encoded;
-            if (b64) return { base64: b64, mimeType: 'image/png' };
-            console.warn(`Image gen: key ${keyIdx} model ${model}: no image in response`);
-            continue;
-          }
-
-          // Gemini response format
           const resParts = data.candidates?.[0]?.content?.parts || [];
           for (const part of resParts) {
             if (part.inlineData) {

@@ -14,13 +14,13 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 
 const MODEL_MAP = {
-  'gemini-2.5-pro': 'gemini-2.5-pro-preview-05-06',
-  'gemini-2.5-flash': 'gemini-2.5-flash-preview-04-17',
+  'gemini-2.5-pro': 'gemini-2.5-pro',
+  'gemini-2.5-flash': 'gemini-2.5-flash',
   'gemini-2.0-flash': 'gemini-2.0-flash',
   'gpt-4o': 'gpt-4o',
   'gpt-4o-mini': 'gpt-4o-mini',
-  'claude-sonnet-4-20250514': 'claude-sonnet-4-20250514',
-  'claude-opus-4-20250514': 'claude-opus-4-20250514',
+  'claude-sonnet-4-6': 'claude-sonnet-4-6',
+  'claude-opus-4-6': 'claude-opus-4-6',
 };
 
 function getGeminiModel(model) {
@@ -57,9 +57,8 @@ function buildGeminiPayload(messages) {
 // Gemini models to try in fallback order
 const GEMINI_FALLBACK_MODELS = [
   'gemini-2.5-flash',
-  'gemini-2.0-flash',
   'gemini-2.5-pro',
-  'gemini-2.0-flash-lite',
+  'gemini-2.0-flash',
 ];
 
 async function streamGemini(model, messages, keyIndex = 0) {
@@ -242,7 +241,7 @@ async function streamClaude(model, messages) {
         headers: {
           'Content-Type': 'application/json',
           'x-api-key': ANTHROPIC_KEY,
-          'anthropic-version': '2023-06-01',
+          'anthropic-version': '2025-04-14',
         },
         body: JSON.stringify(body),
       });

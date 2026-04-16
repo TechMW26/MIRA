@@ -128,8 +128,8 @@ function pickModel({ intent, complexity }, hasImages) {
   // Images require a multimodal Gemini model
   if (hasImages) return 'gemini-2.5-flash';
 
-  // Code tasks → Claude Sonnet 4 for superior code generation & reasoning
-  if (intent === 'code') return 'claude-sonnet-4-20250514';
+  // Code tasks → Claude Sonnet 4.6 for superior code generation & reasoning
+  if (intent === 'code') return 'claude-sonnet-4-6';
 
   // Complex reasoning → Gemini 2.5 Flash (thinking + search)
   if (complexity === 'high') return 'gemini-2.5-flash';
