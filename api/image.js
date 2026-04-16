@@ -67,19 +67,19 @@ async function generateWithDalle(prompt) {
 }
 
 async function generateWithGemini(prompt, images = []) {
-  for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
-    const apiKey = GEMINI_KEYS[keyIdx];
+  // Build parts: text prompt + any reference images
+  const parts = [{ text: `Generate an image: ${prompt}` }];
+  for (const img of (images || [])) {
+    if (img.base64 && img.mimeType) {
+      parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
+    }
+  }
 
-    for (const model of IMAGE_MODELS) {
+  // Model-first loop: try all keys for each model before moving to next model
+  for (const model of IMAGE_MODELS) {
+    for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
+      const apiKey = GEMINI_KEYS[keyIdx];
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-      // Build parts: text prompt + any reference images
-      const parts = [{ text: `Generate an image: ${prompt}` }];
-      for (const img of images) {
-        if (img.base64 && img.mimeType) {
-          parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
-        }
-      }
 
       try {
         const res = await fetch(url, {
@@ -93,12 +93,12 @@ async function generateWithGemini(prompt, images = []) {
 
         if (res.status === 429) {
           console.warn(`Image gen: key ${keyIdx} rate limited on ${model}, trying next key...`);
-          break; // next key
+          continue; // try next key for same model
         }
 
         if (res.status === 404) {
-          console.warn(`Image gen: model ${model} not found, trying next model...`);
-          continue; // next model
+          console.warn(`Image gen: model ${model} not found, skipping model...`);
+          break; // no point trying other keys for non-existent model
         }
 
         if (!res.ok) {
@@ -127,6 +127,7 @@ async function generateWithGemini(prompt, images = []) {
         continue;
       }
     }
+    console.warn(`All keys exhausted for image model ${model}, trying next model...`);
   }
 
   return null;

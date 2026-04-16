@@ -8,7 +8,7 @@ const GEMINI_KEYS = [
   'AIzaSyBgH2ZeX9jultw9bjaqEKJ_J9VzYSfMaMY',
 ];
 
-const OPENAI_KEY = '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';
+const OPENAI_KEY = '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';
 
 // Models to try in order of preference (plain names, no preview suffixes)
 const GEMINI_MODELS = [
@@ -305,27 +305,28 @@ export async function generateImage(prompt, images = []) {
     console.warn('Server image API unavailable:', e.message);
   }
 
-  // Direct Gemini fallback (local dev)
+  // Direct Gemini fallback (local dev) — model-first loop
   const IMAGE_MODELS = [
     'gemini-2.5-flash-image',
     'gemini-3.1-flash-image-preview',
     'gemini-3-pro-image-preview',
   ];
 
-  for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
-    const apiKey = GEMINI_KEYS[keyIdx];
+  const parts = [{ text: `Generate an image: ${prompt}` }];
+  for (const img of images) {
+    parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
+  }
 
-    for (const model of IMAGE_MODELS) {
+  for (const model of IMAGE_MODELS) {
+    const body = {
+      contents: [{ parts }],
+      generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+      safetySettings: SAFETY_SETTINGS,
+    };
+
+    for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
+      const apiKey = GEMINI_KEYS[keyIdx];
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-      const parts = [{ text: `Generate an image: ${prompt}` }];
-      for (const img of images) {
-        parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
-      }
-      const body = {
-        contents: [{ parts }],
-        generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-        safetySettings: SAFETY_SETTINGS,
-      };
 
       try {
         const res = await fetch(url, {
@@ -350,17 +351,49 @@ export async function generateImage(prompt, images = []) {
         }
         if (res.status === 429) {
           console.warn(`Image gen: key ${keyIdx} rate limited on ${model}, trying next key...`);
-          break;
+          continue; // next key for same model
         }
         if (res.status === 404) {
-          console.warn(`Image gen: model ${model} not found, trying next...`);
-          continue;
+          console.warn(`Image gen: model ${model} not found, skipping model...`);
+          break; // skip to next model
         }
         continue;
       } catch (err) {
         console.warn(`Image gen error:`, err.message);
         continue;
       }
+    }
+  }
+
+  // DALL-E 3 fallback (via OpenAI — no CORS issues from browser for images API)
+  if (OPENAI_KEY) {
+    try {
+      console.log('All Gemini image models failed, trying DALL-E 3...');
+      const res = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${OPENAI_KEY}`,
+        },
+        body: JSON.stringify({
+          model: 'dall-e-3',
+          prompt,
+          n: 1,
+          size: '1024x1024',
+          quality: 'standard',
+          response_format: 'b64_json',
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const b64 = data.data?.[0]?.b64_json;
+        if (b64) return { base64: b64, mimeType: 'image/png' };
+      } else {
+        console.warn(`DALL-E 3 failed: ${res.status}`);
+      }
+    } catch (err) {
+      console.warn('DALL-E 3 error:', err.message);
     }
   }
 
