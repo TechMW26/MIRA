@@ -186,26 +186,37 @@ export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onCh
       response = await streamViaServer(model, messages, systemPrompt);
     } catch (e) {
       console.warn(`Server route for ${model} failed:`, e.message);
-      // Fallback: try Gemini direct (works from browser, no CORS issues)
-      response = await tryGeminiStream('gemini-2.5-flash', messages, images, systemPrompt);
-      if (!response) {
-        // Last resort: try server with Gemini model (server has multi-model fallback)
+      // Fallback: try OpenAI via server first (reliable, no rate limits)
+      if (!isOpenAI) {
         try {
-          response = await streamViaServer('gemini-2.5-flash', messages, systemPrompt);
-        } catch {
-          throw new Error('All AI providers are currently unavailable. Please try again.');
+          console.log('Falling back to OpenAI via server...');
+          response = await streamViaServer('gpt-4o', messages, systemPrompt);
+        } catch (e2) {
+          console.warn('OpenAI fallback also failed:', e2.message);
         }
+      }
+      // Then try Gemini direct
+      if (!response) {
+        response = await tryGeminiStream('gemini-2.5-flash', messages, images, systemPrompt);
+      }
+      if (!response) {
+        throw new Error('All AI providers are currently unavailable. Please try again.');
       }
     }
   } else {
-    // Gemini models: try direct first (fastest), then server fallback
+    // Gemini models: try direct first (fastest), then OpenAI via server, then server Gemini fallback
     response = await tryGeminiStream(model, messages, images, systemPrompt);
     if (!response) {
-      console.log('All direct Gemini keys failed, trying server...');
+      console.log('All direct Gemini keys failed, trying OpenAI via server...');
       try {
-        response = await streamViaServer(model, messages, systemPrompt);
+        response = await streamViaServer('gpt-4o', messages, systemPrompt);
       } catch {
-        throw new Error('All AI providers are currently unavailable. Please try again.');
+        // Last resort: try server Gemini (has multi-key fallback too)
+        try {
+          response = await streamViaServer(model, messages, systemPrompt);
+        } catch {
+          throw new Error('All AI providers are currently unavailable. Please try again.');
+        }
       }
     }
   }

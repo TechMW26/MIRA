@@ -351,12 +351,13 @@ CAPABILITIES:
 
     if (isClaude) {
       providers.push({ type: 'claude', model });
-      providers.push({ type: 'gemini', model: 'gemini-2.5-flash' });
       if (OPENAI_KEY) providers.push({ type: 'openai', model: 'gpt-4o' });
+      providers.push({ type: 'gemini', model: 'gemini-2.5-flash' });
     } else if (isOpenAI) {
       if (OPENAI_KEY) providers.push({ type: 'openai', model });
       providers.push({ type: 'gemini', model: 'gemini-2.5-flash' });
     } else {
+      // Gemini requested: try Gemini first, then OpenAI, then other Gemini models
       providers.push({ type: 'gemini', model });
       if (OPENAI_KEY) providers.push({ type: 'openai', model: 'gpt-4o' });
     }
