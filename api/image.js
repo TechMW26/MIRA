@@ -7,6 +7,9 @@ const INFERENCE_APP_TOKEN = process.env.INFERENCE_APP_TOKEN;
 const INFERENCE_API_KEY = process.env.INFERENCE_API_KEY;
 const INFERENCE_TIMEOUT_MS = Number(process.env.INFERENCE_TIMEOUT_MS || 35000);
 
+const PLACEHOLDER_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
 function buildFileFromImage(image) {
   const mimeType = image?.mimeType || 'image/jpeg';
   const base64 = image?.base64 || '';
@@ -20,15 +23,20 @@ function buildFileFromImage(image) {
   return { blob, filename: `upload.${ext}` };
 }
 
+function buildPlaceholderFile() {
+  const bytes = Buffer.from(PLACEHOLDER_PNG_BASE64, 'base64');
+  return {
+    blob: new Blob([bytes], { type: 'image/png' }),
+    filename: 'placeholder.png',
+  };
+}
+
 async function callInference(prompt, image) {
   if (!prompt) {
     return { ok: false, status: 400, error: 'prompt is required' };
   }
 
-  const file = buildFileFromImage(image);
-  if (!file) {
-    return { ok: false, status: 400, error: 'An image attachment is required for analysis.' };
-  }
+  const file = buildFileFromImage(image) || buildPlaceholderFile();
 
   const formData = new FormData();
   formData.append('prompt', prompt);

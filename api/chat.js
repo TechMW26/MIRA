@@ -16,6 +16,11 @@ function getLastUserPrompt(messages = []) {
   return '';
 }
 
+// 1x1 transparent PNG used as a placeholder when the user has no image attached,
+// since the upstream multimodal endpoint expects a `file` field to be present.
+const PLACEHOLDER_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
 function buildFileFromImage(image) {
   const mimeType = image?.mimeType || 'image/jpeg';
   const base64 = image?.base64 || '';
@@ -29,15 +34,20 @@ function buildFileFromImage(image) {
   return { blob, filename: `upload.${ext}` };
 }
 
+function buildPlaceholderFile() {
+  const bytes = Buffer.from(PLACEHOLDER_PNG_BASE64, 'base64');
+  return {
+    blob: new Blob([bytes], { type: 'image/png' }),
+    filename: 'placeholder.png',
+  };
+}
+
 async function callInference(prompt, image) {
   if (!prompt) {
     return { ok: false, status: 400, error: 'Prompt is required.' };
   }
 
-  const file = buildFileFromImage(image);
-  if (!file) {
-    return { ok: false, status: 400, error: 'This model requires an image attachment.' };
-  }
+  const file = buildFileFromImage(image) || buildPlaceholderFile();
 
   const formData = new FormData();
   formData.append('prompt', prompt);
