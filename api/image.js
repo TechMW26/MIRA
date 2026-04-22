@@ -1,173 +1,105 @@
-import { put } from '@vercel/blob';
-
 export const config = { maxDuration: 60 };
 
-const OPENAI_KEY = process.env.OPENAI_API_KEY;
+const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://1.193.139.71:34906';
+const INFERENCE_PUBLIC_PATH = process.env.INFERENCE_PUBLIC_PATH || '/public/analyze';
+const INFERENCE_PROTECTED_PATH = process.env.INFERENCE_PROTECTED_PATH || '/v1/analyze';
+const INFERENCE_APP_TOKEN = process.env.INFERENCE_APP_TOKEN;
+const INFERENCE_API_KEY = process.env.INFERENCE_API_KEY;
+const INFERENCE_TIMEOUT_MS = Number(process.env.INFERENCE_TIMEOUT_MS || 35000);
 
-const GEMINI_KEYS = [
-  process.env.GEMINI_API_KEY,
-  process.env.GEMINI_API_KEY_2,
-  process.env.GEMINI_API_KEY_3,
-  process.env.GEMINI_API_KEY_4,
-  process.env.GEMINI_API_KEY_5,
-  process.env.GEMINI_API_KEY_6,
-  process.env.GEMINI_API_KEY_7,
-].filter(Boolean);
+function buildFileFromImage(image) {
+  const mimeType = image?.mimeType || 'image/jpeg';
+  const base64 = image?.base64 || '';
+  if (!base64) return null;
 
-const IMAGE_MODELS = [
-  'gemini-2.5-flash-image',
-  'gemini-3.1-flash-image-preview',
-  'gemini-3-pro-image-preview',
-];
-
-async function uploadToBlob(base64Data, mimeType) {
+  const sanitized = base64.includes(',') ? base64.split(',')[1] : base64;
+  const bytes = Buffer.from(sanitized, 'base64');
   const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
-  const filename = `mira-images/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-  const buffer = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: mimeType });
 
-  const blob = await put(filename, buffer, {
-    access: 'public',
-    contentType: mimeType,
-  });
-
-  return blob.url;
+  return { blob, filename: `upload.${ext}` };
 }
 
-async function generateWithDalle(prompt) {
-  const res = await fetch('https://api.openai.com/v1/images/generations', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${OPENAI_KEY}`,
-    },
-    body: JSON.stringify({
-      model: 'dall-e-3',
-      prompt,
-      n: 1,
-      size: '1024x1024',
-      quality: 'hd',
-      response_format: 'b64_json',
-    }),
+async function callInference(prompt, image) {
+  if (!prompt) {
+    return { ok: false, status: 400, error: 'prompt is required' };
+  }
+
+  const file = buildFileFromImage(image);
+  if (!file) {
+    return { ok: false, status: 400, error: 'An image attachment is required for analysis.' };
+  }
+
+  const formData = new FormData();
+  formData.append('prompt', prompt);
+  formData.append('file', file.blob, file.filename);
+
+  const attempts = [];
+  if (INFERENCE_API_KEY) {
+    attempts.push({
+      url: `${INFERENCE_BASE_URL}${INFERENCE_PROTECTED_PATH}`,
+      headers: { 'X-API-KEY': INFERENCE_API_KEY },
+    });
+  }
+  attempts.push({
+    url: `${INFERENCE_BASE_URL}${INFERENCE_PUBLIC_PATH}`,
+    headers: { 'X-App-Token': INFERENCE_APP_TOKEN || '' },
   });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `DALL-E error: ${res.status}`);
-  }
+  let lastError = 'Inference provider unavailable.';
 
-  const data = await res.json();
-  const b64 = data.data[0].b64_json;
-  const url = await uploadToBlob(b64, 'image/png');
+  for (const attempt of attempts) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), INFERENCE_TIMEOUT_MS);
+      const res = await fetch(attempt.url, {
+        method: 'POST',
+        headers: attempt.headers,
+        body: formData,
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-  return {
-    url,
-    revised_prompt: data.data[0].revised_prompt,
-    provider: 'dall-e-3',
-  };
-}
-
-async function generateWithGemini(prompt, images = []) {
-  // Build parts: text prompt + any reference images
-  const parts = [{ text: `Generate an image: ${prompt}` }];
-  for (const img of (images || [])) {
-    if (img.base64 && img.mimeType) {
-      parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
-    }
-  }
-
-  // Model-first loop: try all keys for each model before moving to next model
-  for (const model of IMAGE_MODELS) {
-    for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
-      const apiKey = GEMINI_KEYS[keyIdx];
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-          }),
-        });
-
-        if (res.status === 429) {
-          console.warn(`Image gen: key ${keyIdx} rate limited on ${model}, trying next key...`);
-          continue; // try next key for same model
-        }
-
-        if (res.status === 404) {
-          console.warn(`Image gen: model ${model} not found, skipping model...`);
-          break; // no point trying other keys for non-existent model
-        }
-
-        if (!res.ok) {
-          console.warn(`Image gen: key ${keyIdx} model ${model} failed (${res.status})`);
-          continue;
-        }
-
-        const data = await res.json();
-        const resParts = data.candidates?.[0]?.content?.parts || [];
-
-        for (const part of resParts) {
-          if (part.inlineData) {
-            const blobUrl = await uploadToBlob(part.inlineData.data, part.inlineData.mimeType || 'image/png');
-            return {
-              url: blobUrl,
-              mimeType: part.inlineData.mimeType,
-              provider: 'gemini-imagen',
-            };
-          }
-        }
-
-        console.warn(`Image gen: key ${keyIdx} model ${model}: no image in response`);
-        continue;
-      } catch (err) {
-        console.warn(`Image gen: key ${keyIdx} model ${model} error:`, err.message);
-        continue;
+      const payload = await res.json().catch(() => ({}));
+      if (res.ok && payload?.result) {
+        return { ok: true, status: 200, payload };
       }
+
+      const error = payload?.error || payload?.message || `Inference error: ${res.status}`;
+      lastError = error;
+      console.warn(`Inference image call failed ${res.status}: ${error}`);
+    } catch (err) {
+      lastError = err.name === 'AbortError' ? `Inference timeout after ${INFERENCE_TIMEOUT_MS}ms` : err.message;
+      console.warn('Inference image request failed:', err.message);
     }
-    console.warn(`All keys exhausted for image model ${model}, trying next model...`);
   }
 
-  return null;
+  return { ok: false, status: 503, error: lastError };
 }
 
 export async function POST(req) {
   try {
-    const { prompt, images } = await req.json();
+    const { prompt, images = [] } = await req.json();
+    const image = Array.isArray(images) && images.length > 0 ? images[0] : null;
 
-    if (!prompt) {
-      return new Response(JSON.stringify({ error: 'prompt is required' }), {
-        status: 400,
+    const inference = await callInference(prompt, image);
+    if (!inference.ok) {
+      return new Response(JSON.stringify({ error: inference.error }), {
+        status: inference.status,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    // Try Gemini image generation first (free) — pass reference images if any
-    const geminiResult = await generateWithGemini(prompt, images || []);
-    if (geminiResult) {
-      return new Response(JSON.stringify(geminiResult), {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    // Fallback to DALL-E
-    if (OPENAI_KEY) {
-      try {
-        const result = await generateWithDalle(prompt);
-        return new Response(JSON.stringify(result), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      } catch (err) {
-        console.error('DALL-E failed:', err.message);
-      }
-    }
-
-    return new Response(
-      JSON.stringify({ error: 'All image generation providers failed. Please try again later.' }),
-      { status: 503, headers: { 'Content-Type': 'application/json' } }
-    );
+    return new Response(JSON.stringify({
+      success: true,
+      inference_type: inference.payload.inference_type,
+      model: inference.payload.model,
+      result: inference.payload.result,
+      execution_time_ms: inference.payload.execution_time_ms,
+      provider: 'custom-vision-endpoint',
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
   } catch (err) {
     console.error('Image API error:', err);
     return new Response(JSON.stringify({ error: err.message }), {

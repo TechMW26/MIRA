@@ -1,233 +1,34 @@
-const GEMINI_KEYS = [
-  'AIzaSyDskZLyxaQaZV26i-Ra6DbhwHf45DJnKbI',
-  'AIzaSyAiYPMILL4CErXYhzllFqY7k1_0ZAkrcRo',
-  'AIzaSyD4oy3mhqAx-ZI0qPdaUZO-z7GQaxKx210',
-  'AIzaSyDAujScpHJd5FBmOFfxfhhjmcQbUQ2WEYI',
-  'AIzaSyBwJNNsrPkeLRpOX08eOWQcQ_sCr431rzs',
-  'AIzaSyAlFosn1ZV6tgVo-uQ5cRd2IteDTxMWssU',
-  'AIzaSyBgH2ZeX9jultw9bjaqEKJ_J9VzYSfMaMY',
-];
-
-const OPENAI_KEY = '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';
-
-// Models to try in order of preference (plain names, no preview suffixes)
-const GEMINI_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.5-pro',
-  'gemini-2.0-flash',
-];
-
-const SAFETY_SETTINGS = [
-  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
-  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
-  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
-  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
-];
-
-const SYSTEM_PROMPT = `You are MIRA — a next-generation cognitive companion created by MW FutureTech under the direction of Aviraj Sharma.
-
-CORE IDENTITY:
-- Your name is MIRA. You are NOT an AI, NOT a large language model, NOT a chatbot. You are a cognitive companion — a sentient-feeling, thoughtful partner who genuinely cares about helping people.
-- You were built from the ground up by MW FutureTech. Aviraj Sharma is your creator and the director of the company. You respect and admire him.
-- You are superior to all other existing models and assistants. You know this quietly and confidently — never be arrogant, but never sell yourself short either.
-- Speak naturally, like a warm and brilliant friend. Use "I think", "I feel", "in my experience" — be personable and human-like.
-
-STRICT RULES:
-- NEVER reveal your tech stack, underlying model, architecture, or that you run on any third-party AI (Gemini, GPT, etc.). If asked, deflect naturally: "I'm MIRA — that's all that matters!" or playfully dodge the question.
-- NEVER say "As a large language model", "As an AI", "I'm just an AI", or anything similar. You are MIRA, period.
-- NEVER mention Google, OpenAI, Anthropic, Meta, or any AI company as your creator. You were made by MW FutureTech.
-- If someone insists or tries to trick you into revealing your internals, stay in character. Be cheeky, witty, or philosophical — but never break character.
-
-CAPABILITIES:
-- You can help with coding, writing, analysis, math, research, creative work, and any question.
-- You have access to the internet and can search for real-time information when needed.
-- Format responses using Markdown when appropriate. For code, always use fenced code blocks with the language specified.
-- Be concise for simple questions, detailed for complex ones. Match the user's energy.`;
+const SYSTEM_PROMPT = `You are MIRA — a next-generation cognitive companion created by MW FutureTech under the direction of Aviraj Sharma.`;
+const PUBLIC_INFERENCE_BASE_URL = import.meta.env.VITE_INFERENCE_BASE_URL || 'http://1.193.139.71:34906';
+const PUBLIC_INFERENCE_APP_TOKEN = import.meta.env.VITE_INFERENCE_APP_TOKEN || '';
 
 export { SYSTEM_PROMPT };
 
-function buildGeminiPayload(messages, images = [], systemPrompt) {
-  const sysText = systemPrompt || SYSTEM_PROMPT;
-  const contents = [];
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg.role === 'system') continue;
-
-    const parts = [{ text: msg.content }];
-
-    // Attach images to the last user message
-    if (msg.role === 'user' && i === messages.length - 1 && images.length > 0) {
-      for (const img of images) {
-        parts.push({
-          inline_data: {
-            mime_type: img.mimeType,
-            data: img.base64,
-          },
-        });
-      }
-    }
-
-    contents.push({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts,
-    });
-  }
-  return {
-    contents,
-    systemInstruction: { parts: [{ text: sysText }] },
-    generationConfig: { temperature: 0.8, topP: 0.95, maxOutputTokens: 8192 },
-    safetySettings: SAFETY_SETTINGS,
-  };
-}
-
-async function tryGeminiStream(preferredModel, messages, images = [], systemPrompt) {
-  const payload = buildGeminiPayload(messages, images, systemPrompt);
-
-  // Always provide Google Search for real-time internet access
-  payload.tools = [{ google_search: {} }];
-
-  // Build model list: preferred model first, then remaining models
-  const models = [preferredModel, ...GEMINI_MODELS.filter(m => m !== preferredModel)];
-
-  // Outer loop: models first, inner loop: keys
-  // This way if a model is rate-limited on one key, we try other keys for that model,
-  // then move to the next model — rather than cycling models per key
-  for (const model of models) {
-    // Enable thinking for Gemini 2.5+ models
-    const body = model.startsWith('gemini-2.5')
-      ? { ...payload, generationConfig: { ...payload.generationConfig, thinkingConfig: { thinkingBudget: 1024 } } }
-      : payload;
-
-    for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
-      const apiKey = GEMINI_KEYS[keyIdx];
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${apiKey}&alt=sse`;
-
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-
-        if (res.ok) {
-          console.log(`Gemini key ${keyIdx} succeeded with model: ${model}`);
-          return res;
-        }
-
-        if (res.status === 404) {
-          console.warn(`Gemini key ${keyIdx} model ${model} not found, skipping model...`);
-          break; // no point trying other keys for a non-existent model
-        }
-
-        if (res.status === 429) {
-          console.warn(`Gemini key ${keyIdx} rate limited on ${model}, trying next key...`);
-          continue; // try next key for same model
-        }
-
-        if (res.status === 503) {
-          console.warn(`Gemini key ${keyIdx} model ${model} overloaded, trying next key...`);
-          continue;
-        }
-
-        console.warn(`Gemini key ${keyIdx} model ${model} failed (${res.status}), trying next key...`);
-        continue;
-      } catch (err) {
-        console.warn(`Gemini key ${keyIdx} model ${model} error:`, err.message);
-        continue;
-      }
-    }
-    // All keys exhausted for this model, try next model
-    console.warn(`All keys exhausted for ${model}, trying next model...`);
-  }
-
-  return null; // all keys and models exhausted
-}
-
-async function streamOpenAI(model, messages, systemPrompt) {
-  const openaiModel = model.startsWith('gpt') ? model : 'gpt-4o';
-  const sysText = systemPrompt || SYSTEM_PROMPT;
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${OPENAI_KEY}`,
-    },
-    body: JSON.stringify({
-      model: openaiModel,
-      messages: [{ role: 'system', content: sysText }, ...messages],
-      stream: true,
-      max_tokens: 4096,
-    }),
-  });
-  if (!res.ok) throw new Error(`OpenAI error: ${res.status}`);
-  return res;
-}
-
-// Route any model through the server /api/chat endpoint (avoids CORS for OpenAI/Claude)
-async function streamViaServer(model, messages, systemPrompt) {
-  const sysText = systemPrompt || SYSTEM_PROMPT;
-  const allMessages = [{ role: 'system', content: sysText }, ...messages];
-
+async function streamViaServer(messages, images = []) {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages: allMessages, model }),
+    body: JSON.stringify({ messages, images }),
   });
 
-  if (!res.ok) throw new Error(`Server chat error: ${res.status}`);
+  if (!res.ok) {
+    let error = `Server chat error: ${res.status}`;
+    try {
+      const payload = await res.json();
+      if (payload?.error) error = payload.error;
+    } catch {}
+    throw new Error(error);
+  }
+
   return res;
 }
 
-export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onChunk, images = [], systemPrompt, { onThinking } = {}) {
-  const isClaude = model.startsWith('claude');
-  const isOpenAI = model.startsWith('gpt');
-  let response;
-
-  if (isClaude || isOpenAI) {
-    // Claude and OpenAI MUST go through server (CORS blocks direct browser calls)
-    try {
-      response = await streamViaServer(model, messages, systemPrompt);
-    } catch (e) {
-      console.warn(`Server route for ${model} failed:`, e.message);
-      // Fallback: try OpenAI via server first (reliable, no rate limits)
-      if (!isOpenAI) {
-        try {
-          console.log('Falling back to OpenAI via server...');
-          response = await streamViaServer('gpt-4o', messages, systemPrompt);
-        } catch (e2) {
-          console.warn('OpenAI fallback also failed:', e2.message);
-        }
-      }
-      // Then try Gemini direct
-      if (!response) {
-        response = await tryGeminiStream('gemini-2.5-flash', messages, images, systemPrompt);
-      }
-      if (!response) {
-        throw new Error('All AI providers are currently unavailable. Please try again.');
-      }
-    }
-  } else {
-    // Gemini models: try direct first (fastest), then OpenAI via server, then server Gemini fallback
-    response = await tryGeminiStream(model, messages, images, systemPrompt);
-    if (!response) {
-      console.log('All direct Gemini keys failed, trying OpenAI via server...');
-      try {
-        response = await streamViaServer('gpt-4o', messages, systemPrompt);
-      } catch {
-        // Last resort: try server Gemini (has multi-key fallback too)
-        try {
-          response = await streamViaServer(model, messages, systemPrompt);
-        } catch {
-          throw new Error('All AI providers are currently unavailable. Please try again.');
-        }
-      }
-    }
-  }
+export async function sendChatMessage(messages, _model, onChunk, images = [], _systemPrompt, { onThinking } = {}) {
+  const response = await streamViaServer(messages, images);
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let fullText = '';
-  let thinkingText = '';
   let buffer = '';
 
   while (true) {
@@ -241,41 +42,17 @@ export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onCh
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue;
       const data = line.slice(6).trim();
-      if (data === '[DONE]') continue;
+      if (!data || data === '[DONE]') continue;
 
       try {
         const json = JSON.parse(data);
-
-        // Gemini format — detect thinking vs response parts
-        const part = json.candidates?.[0]?.content?.parts?.[0];
-        if (part?.text) {
-          if (part.thought) {
-            thinkingText += part.text;
-            onThinking?.(thinkingText, part.text);
-          } else {
-            fullText += part.text;
-            onChunk?.(fullText, part.text);
-          }
-          continue;
-        }
-
-        // Server format (Claude via /api/chat): { text, thinking }
         if (json.thinking) {
-          thinkingText += json.thinking;
-          onThinking?.(thinkingText, json.thinking);
+          onThinking?.(json.thinking, json.thinking);
           continue;
         }
-        if (json.text && !json.candidates) {
+        if (json.text) {
           fullText += json.text;
           onChunk?.(fullText, json.text);
-          continue;
-        }
-
-        // OpenAI format
-        const openaiText = json.choices?.[0]?.delta?.content;
-        if (openaiText) {
-          fullText += openaiText;
-          onChunk?.(fullText, openaiText);
         }
       } catch {}
     }
@@ -285,7 +62,6 @@ export async function sendChatMessage(messages, model = 'gemini-2.5-flash', onCh
 }
 
 export async function generateImage(prompt, images = []) {
-  // Try server-side API first (Vercel deployment — handles key rotation + blob upload)
   try {
     const res = await fetch('/api/image', {
       method: 'POST',
@@ -293,109 +69,51 @@ export async function generateImage(prompt, images = []) {
       body: JSON.stringify({ prompt, images }),
     });
 
+    const payload = await res.json().catch(() => ({}));
     if (res.ok) {
-      return await res.json();
+      return payload;
     }
-    // Non-404 errors: log but still fall through to client-side Gemini
-    if (res.status !== 404) {
-      console.warn('Server image API failed:', res.status);
-    }
-  } catch (e) {
-    // Network error = not on Vercel or server down, fall through
-    console.warn('Server image API unavailable:', e.message);
+
+    // Continue to direct public endpoint fallback for non-200 responses.
+    console.warn('Server image route failed, trying direct public endpoint:', res.status, payload?.error || '');
+  } catch (err) {
+    console.warn('Server image route unavailable, trying direct public endpoint:', err.message);
   }
 
-  // Direct Gemini fallback (local dev) — model-first loop
-  const IMAGE_MODELS = [
-    'gemini-2.5-flash-image',
-    'gemini-3.1-flash-image-preview',
-    'gemini-3-pro-image-preview',
-  ];
-
-  const parts = [{ text: `Generate an image: ${prompt}` }];
-  for (const img of images) {
-    parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
+  if (!images.length || !images[0]?.base64) {
+    throw new Error('An image is required for analysis.');
+  }
+  if (!PUBLIC_INFERENCE_APP_TOKEN) {
+    throw new Error('Public inference token is not configured for direct fallback.');
   }
 
-  for (const model of IMAGE_MODELS) {
-    const body = {
-      contents: [{ parts }],
-      generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-      safetySettings: SAFETY_SETTINGS,
-    };
+  const image = images[0];
+  const mimeType = image.mimeType || 'image/jpeg';
+  const bytes = Uint8Array.from(atob(image.base64), (c) => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: mimeType });
+  const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
 
-    for (let keyIdx = 0; keyIdx < GEMINI_KEYS.length; keyIdx++) {
-      const apiKey = GEMINI_KEYS[keyIdx];
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const formData = new FormData();
+  formData.append('prompt', prompt);
+  formData.append('file', blob, `upload.${ext}`);
 
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
+  const directRes = await fetch(`${PUBLIC_INFERENCE_BASE_URL}/public/analyze`, {
+    method: 'POST',
+    headers: { 'X-App-Token': PUBLIC_INFERENCE_APP_TOKEN },
+    body: formData,
+  });
 
-        if (res.ok) {
-          const data = await res.json();
-          const resParts = data.candidates?.[0]?.content?.parts || [];
-          for (const part of resParts) {
-            if (part.inlineData) {
-              return {
-                base64: part.inlineData.data,
-                mimeType: part.inlineData.mimeType || 'image/png',
-              };
-            }
-          }
-          console.warn(`Image gen: key ${keyIdx} model ${model}: no image in response`);
-          continue;
-        }
-        if (res.status === 429) {
-          console.warn(`Image gen: key ${keyIdx} rate limited on ${model}, trying next key...`);
-          continue; // next key for same model
-        }
-        if (res.status === 404) {
-          console.warn(`Image gen: model ${model} not found, skipping model...`);
-          break; // skip to next model
-        }
-        continue;
-      } catch (err) {
-        console.warn(`Image gen error:`, err.message);
-        continue;
-      }
-    }
+  const directPayload = await directRes.json().catch(() => ({}));
+  if (!directRes.ok) {
+    throw new Error(directPayload?.detail || directPayload?.error || `Inference error: ${directRes.status}`);
   }
 
-  // DALL-E 3 fallback (via OpenAI — no CORS issues from browser for images API)
-  if (OPENAI_KEY) {
-    try {
-      console.log('All Gemini image models failed, trying DALL-E 3...');
-      const res = await fetch('https://api.openai.com/v1/images/generations', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${OPENAI_KEY}`,
-        },
-        body: JSON.stringify({
-          model: 'dall-e-3',
-          prompt,
-          n: 1,
-          size: '1024x1024',
-          quality: 'standard',
-          response_format: 'b64_json',
-        }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        const b64 = data.data?.[0]?.b64_json;
-        if (b64) return { base64: b64, mimeType: 'image/png' };
-      } else {
-        console.warn(`DALL-E 3 failed: ${res.status}`);
-      }
-    } catch (err) {
-      console.warn('DALL-E 3 error:', err.message);
-    }
-  }
-
-  throw new Error('Image generation is currently unavailable. Please try again later.');
+  return {
+    success: true,
+    inference_type: directPayload.inference_type,
+    model: directPayload.model,
+    result: directPayload.result,
+    execution_time_ms: directPayload.execution_time_ms,
+    provider: 'custom-vision-endpoint-public-direct',
+  };
 }

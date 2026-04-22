@@ -35,7 +35,7 @@ export async function createConversation(uid, title = 'New Chat') {
     title,
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    model: 'gemini-2.5-flash',
+    model: 'vision-multimodal',
   };
   await set(convRef, conv);
   return { id: convRef.key, ...conv };

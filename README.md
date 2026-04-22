@@ -1,13 +1,13 @@
 # MIRA — Multi-Intelligent Responsive Assistant
 
-A ChatGPT-like AI platform powered by multiple AI agents (Gemini, OpenAI). Features include real-time chat, voice mode, code generation, document creation, and image generation.
+A conversational and vision analysis platform powered by a single custom inference endpoint.
 
 ## Features
 
-- **Multi-Model AI** — Gemini 2.5 Pro, Gemini 2.0 Flash, GPT-4o with automatic fallback
+- **Single Custom Model** — Uses only your self-hosted inference endpoint
 - **Chat Interface** — Streaming responses, markdown rendering, syntax-highlighted code
 - **Voice Mode** — Hands-free conversation with speech-to-text and text-to-speech
-- **Image Generation** — Create images via DALL-E 3
+- **Image Analysis** — Analyze uploaded images with prompt-based reasoning
 - **Project Management** — Organize conversations into projects
 - **Authentication** — Email/password registration and login via Firebase
 - **Chat History** — Full conversation persistence with Firebase Realtime Database
@@ -49,4 +49,4 @@ A ChatGPT-like AI platform powered by multiple AI agents (Gemini, OpenAI). Featu
 - **Backend:** Vercel Serverless Functions (Edge Runtime)
 - **Database:** Firebase Realtime Database
 - **Auth:** Custom auth via Firebase RTB (SHA-256 hashed passwords)
-- **AI:** Google Gemini API, OpenAI API
+- **AI:** Custom inference endpoint (`/public/analyze` and `/v1/analyze`)

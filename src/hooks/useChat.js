@@ -28,6 +28,53 @@ export default function useChat() {
   const [thinkingContent, setThinkingContent] = useState('');
   const abortRef = useRef(false);
 
+  const normalizeImageForUpload = useCallback(async (image) => {
+    const raw = image.base64 || '';
+    const sourceDataUrl = raw.startsWith('data:')
+      ? raw
+      : `data:${image.mimeType || image.type || 'image/jpeg'};base64,${raw}`;
+
+    // If image is already small, keep original bytes.
+    const initialBase64 = sourceDataUrl.split(',')[1] || '';
+    if (initialBase64.length < 550_000) {
+      return {
+        base64: initialBase64,
+        mimeType: image.mimeType || image.type || 'image/jpeg',
+      };
+    }
+
+    const loaded = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = sourceDataUrl;
+    });
+
+    const maxSide = 1280;
+    const scale = Math.min(1, maxSide / Math.max(loaded.width, loaded.height));
+    const targetW = Math.max(1, Math.round(loaded.width * scale));
+    const targetH = Math.max(1, Math.round(loaded.height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = targetW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      return {
+        base64: initialBase64,
+        mimeType: image.mimeType || image.type || 'image/jpeg',
+      };
+    }
+
+    ctx.drawImage(loaded, 0, 0, targetW, targetH);
+    const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.75);
+
+    return {
+      base64: compressedDataUrl.split(',')[1] || initialBase64,
+      mimeType: 'image/jpeg',
+    };
+  }, []);
+
   // Subscribe to messages when conversation changes
   useEffect(() => {
     if (!currentConversationId) {
@@ -109,7 +156,7 @@ export default function useChat() {
         });
 
         if (chosenModel === '__image__') {
-          // Image generation with animated placeholder
+          // Image analysis with animated placeholder
           const assistantMsgId = await addMessage(convId, {
             role: 'assistant',
             content: '',
@@ -118,34 +165,21 @@ export default function useChat() {
 
           try {
             // Pass attached images so Gemini can use them as reference
-            const refImages = imageAttachments.map((a) => ({
-              base64: a.base64.includes(',') ? a.base64.split(',')[1] : a.base64,
-              mimeType: a.mimeType || a.type || 'image/png',
-            }));
+            const refImages = [];
+            for (const img of imageAttachments) {
+              refImages.push(await normalizeImageForUpload(img));
+            }
             const result = await generateImage(content, refImages);
-            let imageContent = '';
-
-            if (result.url) {
-              // Vercel Blob permanent URL
-              imageContent = `![Generated Image](${result.url})${result.revised_prompt ? `\n\n*${result.revised_prompt}*` : ''}`;
-            } else if (result.base64) {
-              // Direct base64 from Gemini (local dev)
-              imageContent = `![Generated Image](data:${result.mimeType || 'image/png'};base64,${result.base64})`;
-            }
-
-            if (!imageContent) {
-              throw new Error('No image was returned');
-            }
+            const analysisText = result?.result || 'No analysis result was returned.';
 
             await updateMessage(convId, assistantMsgId, {
-              content: imageContent,
-              type: 'image',
-              imageUrl: result.url || null,
+              content: analysisText,
+              type: 'text',
             });
 
-            // Generate smart title for image chats
+            // Generate smart title for image analysis chats
             if (isNewChat) {
-              generateSmartTitle(content, 'Generated an image').then((title) => {
+              generateSmartTitle(content, analysisText).then((title) => {
                 updateConversation(user.uid, convId, { title });
               });
             }
@@ -174,10 +208,10 @@ export default function useChat() {
 
           history.push({ role: 'user', content: userContent });
 
-          const images = imageAttachments.map((a) => ({
-            base64: a.base64.split(',')[1],
-            mimeType: a.mimeType,
-          }));
+          const images = [];
+          for (const img of imageAttachments) {
+            images.push(await normalizeImageForUpload(img));
+          }
 
           const assistantMsgId = await addMessage(convId, {
             role: 'assistant',
@@ -227,7 +261,16 @@ export default function useChat() {
         setThinkingContent('');
       }
     },
-    [currentConversationId, isGenerating, messages, user, setCurrentConversationId, setIsGenerating, activeProjectId]
+    [
+      currentConversationId,
+      isGenerating,
+      messages,
+      user,
+      setCurrentConversationId,
+      setIsGenerating,
+      activeProjectId,
+      normalizeImageForUpload,
+    ]
   );
 
   return {

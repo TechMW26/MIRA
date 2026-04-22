@@ -125,20 +125,9 @@ function classifyQuery(text) {
 function pickModel({ intent, complexity }, hasImages) {
   if (intent === 'image') return '__image__';
 
-  // Images require a multimodal Gemini model
-  if (hasImages) return 'gemini-2.5-flash';
-
-  // Code tasks → Claude Sonnet 4.6 for superior code generation & reasoning
-  if (intent === 'code') return 'claude-sonnet-4-6';
-
-  // Complex reasoning → Gemini 2.5 Flash (thinking + search)
-  if (complexity === 'high') return 'gemini-2.5-flash';
-
-  // Medium → Gemini 2.5 Flash
-  if (complexity === 'medium') return 'gemini-2.5-flash';
-
-  // Simple / conversational → Gemini 2.0 Flash (fastest)
-  return 'gemini-2.0-flash';
+  // This deployment now uses a single custom multimodal model endpoint.
+  if (hasImages || complexity || intent) return 'vision-multimodal';
+  return 'vision-multimodal';
 }
 
 // ── Prompt enhancement ─────────────────────────────────────────
