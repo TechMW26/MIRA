@@ -19,6 +19,70 @@ function getStoredFontSize() {
   catch { return '14px'; }
 }
 
+/**
+ * Floating, resizable right-side panel container.
+ * Resize handle is on the LEFT edge — dragging left grows the panel,
+ * dragging right shrinks it. Width state is per-panel-id (persisted).
+ */
+function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children }) {
+  const storageKey = `mira_panel_w_${id}`;
+  const [width, setWidth] = useState(() => {
+    const stored = Number(localStorage.getItem(storageKey));
+    return stored && stored >= minWidth && stored <= maxWidth ? stored : defaultWidth;
+  });
+  const [resizing, setResizing] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem(storageKey, String(width));
+  }, [storageKey, width]);
+
+  function onHandleMouseDown(e) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = width;
+    setResizing(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMove = (ev) => {
+      const dx = startX - ev.clientX; // drag left -> positive -> grow
+      const next = Math.max(minWidth, Math.min(maxWidth, startW + dx));
+      setWidth(next);
+    };
+    const onUp = () => {
+      setResizing(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  return (
+    <div
+      className="flex-shrink-0 flex h-full py-3 pr-3 pl-0 animate-fade-in"
+      style={{ width: width + 14 /* +handle gap */ }}
+    >
+      {/* Resize handle (left edge of the floating panel) */}
+      <div
+        onMouseDown={onHandleMouseDown}
+        className="w-1 mr-2 my-2 rounded-full cursor-col-resize flex-shrink-0 transition-all"
+        style={{
+          background: resizing ? 'var(--accent)' : 'var(--border)',
+          opacity: resizing ? 1 : 0.5,
+        }}
+        title="Drag to resize"
+      />
+      {/* Floating glass container (matches sidebar) */}
+      <div className="flex-1 min-w-0 rounded-2xl overflow-hidden glass-strong">
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export default function ChatWindow() {
   const { currentConversationId, isGenerating } = useChatContext();
   const { messages, streamingContent, thinkingContent, sendMessage, stopGenerating } = useChat();
@@ -76,8 +140,8 @@ export default function ChatWindow() {
 
       {/* Chat column */}
       <div className="flex flex-col flex-1 min-w-0 min-h-0">
-        <div className="flex-1 overflow-y-auto" style={{ fontSize: chatFontSize }}>
-          <div className="max-w-3xl mx-auto flex flex-col justify-end min-h-full py-4 gap-5">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden" style={{ fontSize: chatFontSize }}>
+          <div className="max-w-3xl mx-auto flex flex-col justify-end min-h-full py-4 gap-5 px-3 w-full min-w-0">
             {displayMessages.length === 0 ? (
               <WelcomeScreen onSend={(p) => sendWithMemory(p, [], webSearch)} />
             ) : (
@@ -103,31 +167,31 @@ export default function ChatWindow() {
         />
       </div>
 
-      {/* Side panels */}
+      {/* Floating, resizable side panels (match sidebar style) */}
       {panel === 'browser' && (
-        <div className="flex-shrink-0 animate-fade-in" style={{ width: 500 }}>
+        <RightPanel id="browser" defaultWidth={500} minWidth={340} maxWidth={900}>
           <BrowserPanel onSendToChat={(c) => sendWithMemory(c, [], false)} onClose={() => setPanel(null)} />
-        </div>
+        </RightPanel>
       )}
       {panel === 'canvas' && (
-        <div className="flex-shrink-0 animate-fade-in" style={{ width: 480 }}>
+        <RightPanel id="canvas" defaultWidth={480} minWidth={320} maxWidth={1000}>
           <CanvasPanel messages={messages} onClose={() => setPanel(null)} />
-        </div>
+        </RightPanel>
       )}
       {panel === 'tasks' && (
-        <div className="flex-shrink-0 animate-fade-in" style={{ width: 360 }}>
+        <RightPanel id="tasks" defaultWidth={360} minWidth={280} maxWidth={720}>
           <TaskRunner onSendMessage={(c) => sendWithMemory(c, [], false)} onClose={() => setPanel(null)} />
-        </div>
+        </RightPanel>
       )}
       {panel === 'tools' && (
-        <div className="flex-shrink-0 animate-fade-in" style={{ width: 320 }}>
+        <RightPanel id="tools" defaultWidth={320} minWidth={260} maxWidth={620}>
           <ToolsPanel onClose={() => setPanel(null)} />
-        </div>
+        </RightPanel>
       )}
       {panel === 'prompts' && (
-        <div className="flex-shrink-0 animate-fade-in" style={{ width: 320 }}>
+        <RightPanel id="prompts" defaultWidth={340} minWidth={280} maxWidth={680}>
           <PromptLibrary onUsePrompt={(p) => { sendWithMemory(p, [], webSearch); setPanel(null); }} onClose={() => setPanel(null)} />
-        </div>
+        </RightPanel>
       )}
     </div>
   );

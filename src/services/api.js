@@ -41,24 +41,16 @@ import {
   PUBLIC_INFERENCE_APP_TOKEN,
 } from '../config/endpoints.js';
 
-// Fallback to environment variables if config not available
-const INFERENCE_BASE_URL = PUBLIC_INFERENCE_BASE_URL || import.meta.env.VITE_INFERENCE_BASE_URL || 'http://194.68.245.162:22159';
-const INFERENCE_APP_TOKEN = PUBLIC_INFERENCE_APP_TOKEN || import.meta.env.VITE_INFERENCE_APP_TOKEN || 'f6d30c6778656de0ed82045a28ab2ff3';
+// NOTE: We never call the upstream inference endpoint directly from the
+// browser anymore. The public endpoint is HTTP-only and would be blocked as
+// "mixed content" on HTTPS deployments. All chat/image traffic is proxied
+// through `/api/chat` and `/api/image` (server-side fetch is allowed).
+// These imports are kept as references in case server-rendered code paths
+// need them; they are intentionally unused at runtime.
+void PUBLIC_INFERENCE_BASE_URL;
+void PUBLIC_INFERENCE_APP_TOKEN;
 
 export { SYSTEM_PROMPT };
-
-function buildFileFromImage(image) {
-  const mimeType = image?.mimeType || 'image/jpeg';
-  const base64 = image?.base64 || '';
-  if (!base64) return null;
-
-  const sanitized = base64.includes(',') ? base64.split(',')[1] : base64;
-  const bytes = Uint8Array.from(atob(sanitized), (c) => c.charCodeAt(0));
-  const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
-  const blob = new Blob([bytes], { type: mimeType });
-
-  return { blob, filename: `upload.${ext}` };
-}
 
 async function streamViaServer(messages, images = [], systemPrompt = SYSTEM_PROMPT) {
   // Separate history from the last user message
@@ -75,37 +67,64 @@ async function streamViaServer(messages, images = [], systemPrompt = SYSTEM_PROM
     ? `${systemPrompt}\n\n${historyText}\n\nUser: ${lastMsg?.content || ''}\n\nAssistant:`
     : `${systemPrompt}\n\nUser: ${lastMsg?.content || ''}\n\nAssistant:`;
 
+  // Always route through our server proxy `/api/chat`. This is required because
+  // the upstream inference endpoint is HTTP-only and browsers block mixed
+  // content on HTTPS pages (e.g. itsmira.cloud).
   const image = Array.isArray(images) && images.length > 0 ? images[0] : null;
-  const file = buildFileFromImage(image);
 
-  const formData = new FormData();
-  formData.append('prompt', fullPrompt);
-  if (file) {
-    formData.append('file', file.blob, file.filename);
-  }
-
-  const res = await fetch(`${INFERENCE_BASE_URL}/public/analyze`, {
+  const res = await fetch('/api/chat', {
     method: 'POST',
-    headers: { 'X-App-Token': INFERENCE_APP_TOKEN },
-    body: formData,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: [{ role: 'user', content: fullPrompt }],
+      images: image ? [image] : [],
+    }),
   });
 
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
-    const error = payload?.detail || payload?.error || `API error: ${res.status}`;
+    const error = payload?.error || payload?.detail || `API error: ${res.status}`;
     throw new Error(error);
   }
 
   return res;
 }
 
+async function readSseText(response) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    // Not an SSE stream — fall back to JSON shape (legacy)
+    const payload = await response.json().catch(() => ({}));
+    return payload?.result || payload?.text || '';
+  }
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const data = trimmed.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      try {
+        const obj = JSON.parse(data);
+        if (typeof obj.text === 'string') full += obj.text;
+      } catch { /* ignore malformed line */ }
+    }
+  }
+  return full;
+}
+
 export async function sendChatMessage(messages, _model, onChunk, images = [], systemPrompt = SYSTEM_PROMPT, { onThinking } = {}) {
   const response = await streamViaServer(messages, images, systemPrompt);
+  const fullText = await readSseText(response);
 
-  const payload = await response.json();
-  
-  if (payload.result) {
-    const fullText = payload.result;
+  if (fullText) {
     onChunk?.(fullText, fullText);
     return fullText;
   }
@@ -114,57 +133,16 @@ export async function sendChatMessage(messages, _model, onChunk, images = [], sy
 }
 
 export async function generateImage(prompt, images = []) {
-  try {
-    const res = await fetch('/api/image', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, images }),
-    });
-
-    const payload = await res.json().catch(() => ({}));
-    if (res.ok) {
-      return payload;
-    }
-
-    console.warn('Server image route failed, trying direct public endpoint:', res.status, payload?.error || '');
-  } catch (err) {
-    console.warn('Server image route unavailable, trying direct public endpoint:', err.message);
-  }
-
-  if (!images.length || !images[0]?.base64) {
-    throw new Error('An image is required for analysis.');
-  }
-  if (!INFERENCE_APP_TOKEN) {
-    throw new Error('Public inference token is not configured for direct fallback.');
-  }
-
-  const image = images[0];
-  const mimeType = image.mimeType || 'image/jpeg';
-  const bytes = Uint8Array.from(atob(image.base64), (c) => c.charCodeAt(0));
-  const blob = new Blob([bytes], { type: mimeType });
-  const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
-
-  const formData = new FormData();
-  formData.append('prompt', prompt);
-  formData.append('file', blob, `upload.${ext}`);
-
-  const directRes = await fetch(`${INFERENCE_BASE_URL}/public/analyze`, {
+  const res = await fetch('/api/image', {
     method: 'POST',
-    headers: { 'X-App-Token': INFERENCE_APP_TOKEN },
-    body: formData,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, images }),
   });
 
-  const directPayload = await directRes.json().catch(() => ({}));
-  if (!directRes.ok) {
-    throw new Error(directPayload?.detail || directPayload?.error || `Inference error: ${directRes.status}`);
+  const payload = await res.json().catch(() => ({}));
+  if (res.ok) {
+    return payload;
   }
 
-  return {
-    success: true,
-    inference_type: directPayload.inference_type,
-    model: directPayload.model,
-    result: directPayload.result,
-    execution_time_ms: directPayload.execution_time_ms,
-    provider: 'custom-vision-endpoint-public-direct',
-  };
+  throw new Error(payload?.error || payload?.detail || `Image API error: ${res.status}`);
 }

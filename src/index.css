@@ -60,16 +60,21 @@
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(136, 136, 160, 0.3) transparent;
+  scrollbar-color: var(--accent) transparent;
 }
 
-*::-webkit-scrollbar { width: 5px; }
+*::-webkit-scrollbar { width: 4px; height: 4px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb {
-  background: rgba(136, 136, 160, 0.3);
+  background: var(--accent);
   border-radius: 10px;
+  opacity: 0.7;
 }
-*::-webkit-scrollbar-thumb:hover { background: rgba(136, 136, 160, 0.5); }
+*::-webkit-scrollbar-thumb:hover { background: var(--accent-light); }
+*::-webkit-scrollbar-corner { background: transparent; }
+
+/* Hide scrollbars when not needed but keep them functional */
+.no-scrollbar-x { overflow-x: hidden !important; }
 
 body {
   margin: 0;

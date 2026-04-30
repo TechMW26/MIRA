@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   X, ArrowLeft, ArrowRight, RotateCw, Globe, Sparkles,
   ExternalLink, Loader, Search, Plus, BookOpen,
-  MessageSquareText, Copy, GripVertical, FileText,
+  MessageSquareText, Copy, FileText,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -33,28 +33,14 @@ export default function BrowserPanel({ onSendToChat, onClose }) {
   const [tabs, setTabs] = useState([mkTab()]);
   const [activeTab, setActiveTab] = useState(0);
   const [inputUrl, setInputUrl] = useState('');
-  const [width, setWidth] = useState(500);
   const [selection, setSelection] = useState('');
   const [selPos, setSelPos] = useState(null);
   const [viewMode, setViewMode] = useState('reader'); // 'reader' | 'html'
-  const resizeRef = useRef(null);
   const contentRef = useRef(null);
 
   const tab = tabs[activeTab] || tabs[0];
 
   useEffect(() => { setInputUrl(tab?.url || ''); }, [activeTab, tab?.url]);
-
-  // Resize
-  useEffect(() => {
-    const h = resizeRef.current;
-    if (!h) return;
-    let sx, sw;
-    const down = (e) => { sx = e.clientX; sw = width; document.addEventListener('mousemove', move); document.addEventListener('mouseup', up); };
-    const move = (e) => setWidth(Math.max(340, Math.min(900, sw + (sx - e.clientX))));
-    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
-    h.addEventListener('mousedown', down);
-    return () => h.removeEventListener('mousedown', down);
-  }, [width]);
 
   // Text selection
   useEffect(() => {
@@ -151,13 +137,8 @@ export default function BrowserPanel({ onSendToChat, onClose }) {
   };
 
   return (
-    <div className="flex h-full" style={{ width }}>
-      {/* Resize grip */}
-      <div ref={resizeRef} className="w-1.5 cursor-col-resize flex-shrink-0 transition-colors hover:bg-violet-500" style={{ background: 'var(--border)' }}>
-        <GripVertical size={12} style={{ color: 'var(--text-tertiary)', marginTop: '50%' }} />
-      </div>
-
-      <div className="flex flex-col flex-1 min-w-0" style={{ background: 'var(--bg-primary)', borderLeft: '1px solid var(--border)' }}>
+    <div className="flex h-full w-full">
+      <div className="flex flex-col flex-1 min-w-0 h-full">
 
         {/* Tabs */}
         <div className="flex items-center overflow-x-auto flex-shrink-0" style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', minHeight: 34 }}>

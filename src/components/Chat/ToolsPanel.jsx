@@ -194,7 +194,7 @@ export default function ToolsPanel({ onClose }) {
   const Tool = TOOLS.find(t => t.id === activeTool)?.component;
 
   return (
-    <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)', borderLeft: '1px solid var(--border)' }}>
+    <div className="flex flex-col h-full w-full">
       <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
         <TrendingUp size={13} style={{ color: 'var(--accent)' }} />
         <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary)' }}>Tools</span>
