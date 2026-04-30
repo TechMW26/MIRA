@@ -125,8 +125,9 @@ export default function ChatWindow() {
 
   const sendWithMemory = useCallback((content, attachments, ws) => {
     const memCtx = getMemoryContext();
-    const enriched = memCtx ? content + memCtx : content;
-    sendMessage(enriched, attachments, ws);
+    // Memory is sent as a hidden side-channel; it must NOT appear in the
+    // user's chat bubble or be persisted to the message DB.
+    sendMessage(content, attachments, ws, { memoryContext: memCtx });
   }, [sendMessage, getMemoryContext]);
 
   const togglePanel = (name) => setPanel(p => p === name ? null : name);

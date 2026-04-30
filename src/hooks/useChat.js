@@ -97,8 +97,9 @@ export default function useChat() {
   }, [setIsGenerating]);
 
   const sendMessage = useCallback(
-    async (content, attachments = [], webSearch = false) => {
+    async (content, attachments = [], webSearch = false, options = {}) => {
       if ((!content.trim() && attachments.length === 0) || isGenerating || !user) return;
+      const memoryContext = options.memoryContext || '';
 
       abortRef.current = false;
       setIsGenerating(true);
@@ -250,6 +251,12 @@ export default function useChat() {
             userContent = userContent
               ? `${userContent}\n\n[The following file(s) have been fully parsed and attached. You can read and answer questions about their content]:\n\n${fileContents}`
               : `Please analyze the following file(s):\n\n${fileContents}`;
+          }
+
+          // Inject memory context as a hidden system-side suffix on the final
+          // user turn — never persisted to the DB, never shown in the bubble.
+          if (memoryContext) {
+            userContent = `${userContent}${memoryContext}`;
           }
           history.push({ role: 'user', content: userContent });
 
