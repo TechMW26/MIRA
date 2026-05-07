@@ -97,7 +97,15 @@ export default function useChat() {
   }, [setIsGenerating]);
 
   const sendMessage = useCallback(
+<<<<<<< Updated upstream
     async (content, attachments = [], webSearch = false, options = {}) => {
+=======
+<<<<<<< HEAD
+    async (content, attachments = [], webSearch = false) => {
+=======
+    async (content, attachments = [], webSearch = false, options = {}) => {
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
       if ((!content.trim() && attachments.length === 0) || isGenerating || !user) return;
       const memoryContext = options.memoryContext || '';
 
@@ -252,12 +260,21 @@ export default function useChat() {
               ? `${userContent}\n\n[The following file(s) have been fully parsed and attached. You can read and answer questions about their content]:\n\n${fileContents}`
               : `Please analyze the following file(s):\n\n${fileContents}`;
           }
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+=======
+>>>>>>> Stashed changes
 
           // Inject memory context as a hidden system-side suffix on the final
           // user turn — never persisted to the DB, never shown in the bubble.
           if (memoryContext) {
             userContent = `${userContent}${memoryContext}`;
           }
+<<<<<<< Updated upstream
+=======
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
           history.push({ role: 'user', content: userContent });
 
           const images = [];

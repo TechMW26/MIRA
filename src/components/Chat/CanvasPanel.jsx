@@ -1,3 +1,137 @@
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+import { useMemo, useState } from 'react';
+import { Code2, Copy, Download, FileText, Send, Sparkles, X } from 'lucide-react';
+
+function extractArtifacts(messages) {
+  const artifacts = [];
+  const blockPattern = /```(\w+)?\n([\s\S]*?)```/g;
+
+  for (const message of messages || []) {
+    if (message.role !== 'assistant' || !message.content) continue;
+    let match;
+    while ((match = blockPattern.exec(message.content))) {
+      const language = match[1] || 'text';
+      const content = match[2].trim();
+      if (!content) continue;
+      artifacts.push({
+        id: `${message.id || artifacts.length}-${artifacts.length}`,
+        title: `${language.toUpperCase()} artifact`,
+        language,
+        content,
+      });
+    }
+  }
+
+  return artifacts.reverse();
+}
+
+function downloadText(artifact) {
+  const extension = artifact.language === 'javascript' ? 'js' : artifact.language === 'typescript' ? 'ts' : artifact.language || 'txt';
+  const blob = new Blob([artifact.content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `mira-canvas.${extension}`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+export default function CanvasPanel({ messages, onClose, onRequestCanvas }) {
+  const artifacts = useMemo(() => extractArtifacts(messages), [messages]);
+  const [selectedId, setSelectedId] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const selected = artifacts.find((artifact) => artifact.id === selectedId) || artifacts[0] || null;
+
+  function requestCanvas(event) {
+    event?.preventDefault();
+    const value = prompt.trim();
+    if (!value) return;
+    onRequestCanvas(value);
+    setPrompt('');
+  }
+
+  async function copySelected() {
+    if (!selected?.content) return;
+    await navigator.clipboard?.writeText(selected.content);
+  }
+
+  return (
+    <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)', borderLeft: '1px solid var(--border)' }}>
+      <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
+        <Code2 size={13} style={{ color: 'var(--accent)' }} />
+        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary)' }}>Canvas</span>
+        <button onClick={onClose} className="p-1 rounded hover:opacity-70" title="Close"><X size={13} style={{ color: 'var(--text-tertiary)' }} /></button>
+      </div>
+
+      <form onSubmit={requestCanvas} className="p-3 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+        <textarea
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder="Ask MIRA to draft code, a chart, a mind map, or a document section..."
+          rows={3}
+          className="w-full text-xs px-3 py-2 rounded-xl outline-none resize-none"
+          style={{ background: 'var(--hover-bg)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+        />
+        <button
+          type="submit"
+          disabled={!prompt.trim()}
+          className="mt-2 w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition-all disabled:opacity-50"
+          style={{ background: 'var(--accent)', color: '#fff' }}
+        >
+          <Sparkles size={12} /> Create on Canvas
+        </button>
+      </form>
+
+      <div className="flex gap-1 p-2 flex-shrink-0 overflow-x-auto" style={{ borderBottom: '1px solid var(--border)' }}>
+        {artifacts.length === 0 ? (
+          <span className="text-[11px] px-2 py-1.5" style={{ color: 'var(--text-tertiary)' }}>No artifacts yet</span>
+        ) : artifacts.map((artifact) => (
+          <button
+            key={artifact.id}
+            onClick={() => setSelectedId(artifact.id)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium whitespace-nowrap transition-all flex-shrink-0"
+            style={{ background: selected?.id === artifact.id ? 'var(--accent)' : 'var(--hover-bg)', color: selected?.id === artifact.id ? '#fff' : 'var(--text-secondary)' }}
+          >
+            <FileText size={11} />{artifact.language}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto p-3">
+        {!selected ? (
+          <p className="text-xs text-center py-8" style={{ color: 'var(--text-tertiary)' }}>
+            Generated code blocks and structured artifacts will appear here.
+          </p>
+        ) : (
+          <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)', background: 'var(--glass-bg)' }}>
+            <div className="flex items-center gap-2 px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+              <span className="text-xs font-semibold flex-1 truncate" style={{ color: 'var(--text-primary)' }}>{selected.title}</span>
+              <button onClick={copySelected} className="p-1.5 rounded-lg hover:opacity-75" style={{ color: 'var(--text-tertiary)' }} title="Copy">
+                <Copy size={12} />
+              </button>
+              <button onClick={() => downloadText(selected)} className="p-1.5 rounded-lg hover:opacity-75" style={{ color: 'var(--text-tertiary)' }} title="Download">
+                <Download size={12} />
+              </button>
+            </div>
+            <pre className="text-xs p-3 overflow-auto whitespace-pre-wrap font-mono" style={{ color: 'var(--text-primary)', maxHeight: 'calc(100vh - 270px)' }}>{selected.content}</pre>
+          </div>
+        )}
+      </div>
+
+      {selected && (
+        <div className="p-3 flex-shrink-0" style={{ borderTop: '1px solid var(--border)' }}>
+          <button onClick={() => onRequestCanvas(`Improve this ${selected.language} artifact:\n\n${selected.content}`)} className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium" style={{ background: 'var(--hover-bg)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}>
+            <Send size={12} /> Refine with MIRA
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+=======
+>>>>>>> Stashed changes
 import { useState, useRef } from 'react';
 import { X, RefreshCw, Download, Code2, Eye, Copy, Check, Maximize2 } from 'lucide-react';
 
@@ -176,3 +310,7 @@ export default function CanvasPanel({ messages, onClose }) {
     </div>
   );
 }
+<<<<<<< Updated upstream
+=======
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes

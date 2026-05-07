@@ -1,14 +1,132 @@
 import { useState } from 'react';
 import { X, Play, CheckCircle2, Circle, Loader, ChevronDown, ChevronRight, Zap } from 'lucide-react';
+<<<<<<< Updated upstream
 
 const STATUS = { pending: 'pending', running: 'running', done: 'done', error: 'error' };
 
+=======
+<<<<<<< HEAD
+import { PUBLIC_INFERENCE_BASE_URL, PUBLIC_INFERENCE_APP_TOKEN } from '../../config/endpoints.js';
+
+const STATUS = { pending: 'pending', running: 'running', done: 'done', error: 'error' };
+
+async function readSseResponseText(res) {
+  if (!res.ok) {
+    const errorPayload = await res.json().catch(() => ({}));
+    throw new Error(errorPayload?.error || `API error ${res.status}`);
+  }
+
+  const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('application/json')) {
+    const data = await res.json().catch(() => ({}));
+    return String(data?.result || data?.text || data?.answer || '');
+  }
+
+  if (!res.body) {
+    const data = await res.text().catch(() => '');
+    return String(data || '');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let text = '';
+  const reader = res.body.getReader();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      if (line.includes('[DONE]')) continue;
+      try {
+        const payload = JSON.parse(line.slice(6));
+        if (typeof payload?.text === 'string') text += payload.text;
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  if (buffer.startsWith('data: ') && !buffer.includes('[DONE]')) {
+    try {
+      const payload = JSON.parse(buffer.slice(6));
+      if (typeof payload?.text === 'string') text += payload.text;
+    } catch {}
+  }
+
+  return text;
+}
+
+function extractJsonArray(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) throw new Error('Task plan response was empty.');
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed?.tasks && Array.isArray(parsed.tasks)) return parsed.tasks;
+  } catch {}
+
+  const start = text.indexOf('[');
+  if (start === -1) throw new Error('Could not find a JSON array in the task plan.');
+
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '[') depth++;
+    if (text[i] === ']') {
+      depth--;
+      if (depth === 0) {
+        const candidate = text.slice(start, i + 1);
+        try {
+          const parsed = JSON.parse(candidate);
+          if (Array.isArray(parsed)) return parsed;
+        } catch {}
+      }
+    }
+  }
+
+  throw new Error('Could not parse task plan.');
+}
+
+=======
+
+const STATUS = { pending: 'pending', running: 'running', done: 'done', error: 'error' };
+
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
 export default function TaskRunner({ onSendMessage, onClose }) {
   const [goal, setGoal] = useState('');
   const [tasks, setTasks] = useState([]);
   const [running, setRunning] = useState(false);
   const [expanded, setExpanded] = useState({});
 
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+  async function fetchInferencePrompt(prompt) {
+    const baseUrl = PUBLIC_INFERENCE_BASE_URL || 'http://142.127.68.223:15166';
+    const token = PUBLIC_INFERENCE_APP_TOKEN || 'f6d30c6778656de0ed82045a28ab2ff3';
+
+    const formData = new FormData();
+    formData.append('prompt', prompt);
+
+    const res = await fetch(`${baseUrl}/public/analyze`, {
+      method: 'POST',
+      headers: { 'X-App-Token': token },
+      body: formData,
+    });
+
+    return await readSseResponseText(res);
+  }
+
+=======
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
   async function planTasks() {
     if (!goal.trim()) return;
     setRunning(true);
@@ -17,6 +135,25 @@ export default function TaskRunner({ onSendMessage, onClose }) {
     const planPrompt = `Break this goal into 3-6 concrete sequential tasks. Reply ONLY with a JSON array of task objects like: [{"title":"Task name","prompt":"Exact prompt to execute this task"}]. Goal: ${goal}`;
 
     try {
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+      const planText = await fetchInferencePrompt(planPrompt);
+      const parsed = extractJsonArray(planText);
+      const taskList = parsed.map((t, i) => ({
+        id: i,
+        title: String(t.title || t.task || `Task ${i + 1}`),
+        prompt: String(t.prompt || t.task || t.description || t.title || ``),
+        status: STATUS.pending,
+        result: '',
+      }));
+
+      if (taskList.length === 0) {
+        throw new Error('Task plan returned no tasks.');
+      }
+
+=======
+>>>>>>> Stashed changes
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -47,6 +184,10 @@ export default function TaskRunner({ onSendMessage, onClose }) {
       if (!jsonMatch) throw new Error('Could not parse task plan');
       const parsed = JSON.parse(jsonMatch[0]);
       const taskList = parsed.map((t, i) => ({ id: i, title: t.title, prompt: t.prompt, status: STATUS.pending, result: '' }));
+<<<<<<< Updated upstream
+=======
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
       setTasks(taskList);
       await executeTasks(taskList);
     } catch (e) {
@@ -65,6 +206,12 @@ export default function TaskRunner({ onSendMessage, onClose }) {
         const context = results.length ? `\nPrevious results:\n${results.map((r, j) => `Step ${j + 1}: ${r}`).join('\n')}\n\n` : '';
         const fullPrompt = context + taskList[i].prompt;
 
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+        const result = await fetchInferencePrompt(fullPrompt);
+=======
+>>>>>>> Stashed changes
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -90,6 +237,10 @@ export default function TaskRunner({ onSendMessage, onClose }) {
           result = data.result || '';
         }
 
+<<<<<<< Updated upstream
+=======
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
         results.push(result.slice(0, 500));
         setTasks(prev => prev.map((t, idx) => idx === i ? { ...t, status: STATUS.done, result } : t));
       } catch (e) {
@@ -110,7 +261,15 @@ export default function TaskRunner({ onSendMessage, onClose }) {
   };
 
   return (
+<<<<<<< Updated upstream
     <div className="flex flex-col h-full w-full">
+=======
+<<<<<<< HEAD
+    <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)', borderLeft: '1px solid var(--border)' }}>
+=======
+    <div className="flex flex-col h-full w-full">
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
       <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
         <Zap size={13} style={{ color: 'var(--accent)' }} />
         <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary)' }}>Task Runner</span>

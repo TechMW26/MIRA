@@ -1,6 +1,14 @@
 export const config = { maxDuration: 60 };
 
+<<<<<<< Updated upstream
 const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://194.68.245.162:22159';
+=======
+<<<<<<< HEAD
+const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://142.127.68.223:15166';
+=======
+const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://194.68.245.162:22159';
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
 const INFERENCE_PUBLIC_PATH = process.env.INFERENCE_PUBLIC_PATH || '/public/analyze';
 const INFERENCE_PROTECTED_PATH = process.env.INFERENCE_PROTECTED_PATH || '/v1/analyze';
 const INFERENCE_APP_TOKEN = process.env.INFERENCE_APP_TOKEN || 'f6d30c6778656de0ed82045a28ab2ff3';

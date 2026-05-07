@@ -1,3 +1,67 @@
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+import { useMemo, useState } from 'react';
+import { ArrowRight, ExternalLink, Globe, Loader, Search, Send, X } from 'lucide-react';
+
+function isLikelyUrl(value) {
+  return /^(https?:\/\/)?([\w-]+\.)+[\w-]{2,}(\/.*)?$/i.test(value.trim());
+}
+
+function normalizeUrl(value) {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function stripHtml(html) {
+  const node = document.createElement('div');
+  node.innerHTML = html;
+  return node.textContent || node.innerText || '';
+}
+
+export default function BrowserPanel({ onSendToChat, onClose }) {
+  const [input, setInput] = useState('');
+  const [mode, setMode] = useState('search');
+  const [results, setResults] = useState([]);
+  const [page, setPage] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const pageText = useMemo(() => {
+    if (!page) return '';
+    return String(page.content || (page.html ? stripHtml(page.html) : '') || '').trim();
+  }, [page]);
+
+  async function searchWeb(query) {
+    setLoading(true);
+    setError('');
+    setPage(null);
+    try {
+      const res = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `Search failed (${res.status})`);
+      setResults(Array.isArray(data.results) ? data.results : []);
+      setMode('search');
+    } catch (err) {
+      setResults([]);
+      setError(err.message || 'Search failed.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function openUrl(url) {
+    const normalized = normalizeUrl(url);
+    if (!normalized) return;
+    setLoading(true);
+    setError('');
+=======
+>>>>>>> Stashed changes
 import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   X, ArrowLeft, ArrowRight, RotateCw, Globe, Sparkles,
@@ -65,10 +129,122 @@ export default function BrowserPanel({ onSendToChat, onClose }) {
     if (!target) return;
     updateTab(tabIdx, { url: target, loading: true, error: '', page: null });
     setInputUrl(target);
+<<<<<<< Updated upstream
+=======
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
     try {
       const res = await fetch('/api/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+        body: JSON.stringify({ url: normalized }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `Could not open page (${res.status})`);
+      setPage(data);
+      setMode('page');
+    } catch (err) {
+      setPage(null);
+      setError(err.message || 'Could not open this page.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function submit(event) {
+    event?.preventDefault();
+    const query = input.trim();
+    if (!query || loading) return;
+    if (isLikelyUrl(query)) openUrl(query);
+    else searchWeb(query);
+  }
+
+  function sendPageToChat() {
+    if (!page) return;
+    const title = page.title || page.url || 'Browser page';
+    const url = page.url || '';
+    const content = pageText.slice(0, 8000);
+    onSendToChat(`Use this web page as context.\n\nTitle: ${title}\nURL: ${url}\n\n${content}`);
+  }
+
+  return (
+    <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)', borderLeft: '1px solid var(--border)' }}>
+      <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
+        <Globe size={13} style={{ color: 'var(--accent)' }} />
+        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary)' }}>Browser</span>
+        {page?.url && (
+          <a href={page.url} target="_blank" rel="noreferrer" className="p-1 rounded hover:opacity-70" title="Open externally">
+            <ExternalLink size={13} style={{ color: 'var(--text-tertiary)' }} />
+          </a>
+        )}
+        <button onClick={onClose} className="p-1 rounded hover:opacity-70" title="Close"><X size={13} style={{ color: 'var(--text-tertiary)' }} /></button>
+      </div>
+
+      <form onSubmit={submit} className="p-3 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: 'var(--hover-bg)', border: '1px solid var(--border)' }}>
+          <Search size={13} style={{ color: 'var(--text-tertiary)' }} />
+          <input
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            placeholder="Search or enter a URL..."
+            className="flex-1 text-xs bg-transparent outline-none"
+            style={{ color: 'var(--text-primary)' }}
+          />
+          <button type="submit" disabled={loading || !input.trim()} className="p-1 rounded-lg disabled:opacity-40" style={{ color: 'var(--accent)' }} title="Go">
+            {loading ? <Loader size={13} className="animate-spin" /> : <ArrowRight size={13} />}
+          </button>
+        </div>
+      </form>
+
+      {error && (
+        <div className="mx-3 mt-3 rounded-xl px-3 py-2 text-xs" style={{ color: '#f87171', background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+          {error}
+        </div>
+      )}
+
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {mode === 'search' && (
+          <div className="p-3 space-y-2">
+            {results.length === 0 && !loading && !error && (
+              <p className="text-xs text-center py-8" style={{ color: 'var(--text-tertiary)' }}>Search the web or open a page.</p>
+            )}
+            {results.map((result, index) => (
+              <button
+                key={`${result.url || result.title}-${index}`}
+                onClick={() => result.url && openUrl(result.url)}
+                disabled={!result.url}
+                className="w-full text-left rounded-xl p-3 transition-all hover:opacity-85 disabled:opacity-60"
+                style={{ background: 'var(--glass-bg)', border: '1px solid var(--border)' }}
+              >
+                <div className="text-xs font-semibold mb-1 line-clamp-2" style={{ color: 'var(--text-primary)' }}>{result.title || 'Untitled result'}</div>
+                <div className="text-[11px] line-clamp-3" style={{ color: 'var(--text-secondary)' }}>{result.snippet || result.url}</div>
+                {result.url && <div className="text-[10px] mt-2 truncate" style={{ color: 'var(--accent)' }}>{result.url}</div>}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {mode === 'page' && page && (
+          <div className="flex flex-col min-h-full">
+            <div className="p-3 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+              <div className="text-xs font-semibold line-clamp-2" style={{ color: 'var(--text-primary)' }}>{page.title || page.url}</div>
+              {page.url && <div className="text-[10px] mt-1 truncate" style={{ color: 'var(--accent)' }}>{page.url}</div>}
+              <button onClick={sendPageToChat} className="mt-3 w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium" style={{ background: 'var(--accent)', color: '#fff' }}>
+                <Send size={12} /> Send to Chat
+              </button>
+            </div>
+            {page.html && !page.isMarkdown ? (
+              <div className="browser-content" dangerouslySetInnerHTML={{ __html: page.html }} />
+            ) : (
+              <div className="browser-content whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>
+                {page.content || page.description || 'No readable content was found for this page.'}
+              </div>
+            )}
+=======
+>>>>>>> Stashed changes
         body: JSON.stringify({ url: target }),
       });
       const data = await res.json();
@@ -296,9 +472,21 @@ export default function BrowserPanel({ onSendToChat, onClose }) {
               <Copy size={10} /> Copy
             </button>
             <button onClick={() => { setSelection(''); setSelPos(null); }} className="p-1 rounded hover:opacity-70"><X size={10} style={{ color: 'var(--text-tertiary)' }} /></button>
+<<<<<<< Updated upstream
+=======
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
           </div>
         )}
       </div>
     </div>
   );
+<<<<<<< Updated upstream
 }
+=======
+<<<<<<< HEAD
+}
+=======
+}
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes

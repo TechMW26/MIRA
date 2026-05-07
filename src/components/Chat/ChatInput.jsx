@@ -1,5 +1,13 @@
 import { useState, useRef, useEffect } from 'react';
+<<<<<<< Updated upstream
 import { Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Globe, Loader, PanelRight, Code2, Zap, Wrench, BookMarked, Share2 } from 'lucide-react';
+=======
+<<<<<<< HEAD
+import { Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Mic, MicOff, Globe, Loader, PanelRight, Code2, Zap, Wrench, BookMarked, Share2 } from 'lucide-react';
+=======
+import { Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Globe, Loader, PanelRight, Code2, Zap, Wrench, BookMarked, Share2 } from 'lucide-react';
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 
 const ACCEPT_TYPES = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.sh,.rs,.go,.rb,.php,.sql';
@@ -21,11 +29,56 @@ function formatFileSize(bytes) {
 export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onToggleWebSearch, activePanel, onTogglePanel, onShare, onUsePrompt, messages }) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState([]);
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+  const [isListening, setIsListening] = useState(false);
+=======
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
   const [parsing, setParsing] = useState(false);
   const [dragging, setDragging] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+<<<<<<< Updated upstream
   const dragCounterRef = useRef(0);
+=======
+<<<<<<< HEAD
+  const recognitionRef = useRef(null);
+  const dragCounterRef = useRef(0);
+
+  useEffect(() => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+
+    const recognition = new SR();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (e) => {
+      const transcript = e.results[0][0].transcript;
+      setInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
+      setIsListening(false);
+    };
+
+    recognition.onerror = () => {
+      setIsListening(false);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognitionRef.current = recognition;
+    return () => {
+      recognition.stop?.();
+    };
+  }, []);
+=======
+  const dragCounterRef = useRef(0);
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -33,6 +86,17 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
       textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 180) + 'px';
     }
   }, [input]);
+
+  function toggleListening() {
+    if (!recognitionRef.current) return;
+    if (isListening) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    } else {
+      recognitionRef.current.start();
+      setIsListening(true);
+    }
+  }
 
   function handleSubmit(e) {
     e?.preventDefault();
@@ -184,6 +248,24 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
                 {parsing ? <Loader size={16} className="animate-spin" /> : <Paperclip size={16} />}
               </button>
 
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+              {/* Voice input */}
+              {(window.SpeechRecognition || window.webkitSpeechRecognition) && (
+                <button
+                  onClick={toggleListening}
+                  className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
+                  style={isListening ? { color: 'var(--accent)', background: 'var(--hover-bg)' } : { color: 'var(--text-tertiary)' }}
+                  title={isListening ? 'Stop listening' : 'Voice input'}
+                >
+                  {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+                </button>
+              )}
+
+=======
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
               {/* Web search toggle */}
               <button
                 onClick={onToggleWebSearch}

@@ -5,6 +5,19 @@
  */
 
 // Health Check Endpoint (GET)
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+export const HEALTH_ENDPOINT = import.meta.env.VITE_HEALTH_ENDPOINT || 'http://142.127.68.223:15166/health';
+
+// Protected Endpoint - Requires API Key (for PRO/Safety users)
+export const PROTECTED_INFERENCE_BASE_URL = import.meta.env.VITE_PROTECTED_INFERENCE_BASE_URL || 'http://142.127.68.223:15166';
+export const PROTECTED_INFERENCE_API_KEY = import.meta.env.VITE_PROTECTED_INFERENCE_API_KEY || 'PRO_SAFETY_TOKEN_2026';
+
+// Public Endpoint - Requires App Token (for regular users)
+export const PUBLIC_INFERENCE_BASE_URL = import.meta.env.VITE_PUBLIC_INFERENCE_BASE_URL || 'http://142.127.68.223:15166';
+=======
+>>>>>>> Stashed changes
 export const HEALTH_ENDPOINT = import.meta.env.VITE_HEALTH_ENDPOINT || 'http://194.68.245.162:22159/health';
 
 // Protected Endpoint - Requires API Key (for PRO/Safety users)
@@ -13,6 +26,10 @@ export const PROTECTED_INFERENCE_API_KEY = import.meta.env.VITE_PROTECTED_INFERE
 
 // Public Endpoint - Requires App Token (for regular users)
 export const PUBLIC_INFERENCE_BASE_URL = import.meta.env.VITE_PUBLIC_INFERENCE_BASE_URL || 'http://194.68.245.162:22159';
+<<<<<<< Updated upstream
+=======
+>>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
+>>>>>>> Stashed changes
 export const PUBLIC_INFERENCE_APP_TOKEN = import.meta.env.VITE_PUBLIC_INFERENCE_APP_TOKEN || 'f6d30c6778656de0ed82045a28ab2ff3';
 
 // Export combined config object
