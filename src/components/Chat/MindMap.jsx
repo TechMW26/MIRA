@@ -146,18 +146,10 @@ export default function MindMap({ content }) {
           style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8 }}
         />
         <MiniMap
-<<<<<<< Updated upstream
-          nodeColor={(n) => n.style?.border?.split(' ')[2] || '#7c3aed'}
-=======
-<<<<<<< HEAD
           nodeColor={(n) => {
             const borderColor = n.style?.border?.match(/#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})/);
             return borderColor ? borderColor[0] : '#7c3aed';
           }}
-=======
-          nodeColor={(n) => n.style?.border?.split(' ')[2] || '#7c3aed'}
->>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
->>>>>>> Stashed changes
           style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8 }}
           maskColor="rgba(248,250,252,0.7)"
         />

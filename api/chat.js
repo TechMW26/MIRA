@@ -1,14 +1,6 @@
 export const config = { maxDuration: 60 };
 
-<<<<<<< Updated upstream
-const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://194.68.245.162:22159';
-=======
-<<<<<<< HEAD
 const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://142.127.68.223:15166';
-=======
-const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://194.68.245.162:22159';
->>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
->>>>>>> Stashed changes
 const INFERENCE_PUBLIC_PATH = process.env.INFERENCE_PUBLIC_PATH || '/public/analyze';
 const INFERENCE_PROTECTED_PATH = process.env.INFERENCE_PROTECTED_PATH || '/v1/analyze';
 const INFERENCE_APP_TOKEN = process.env.INFERENCE_APP_TOKEN || 'f6d30c6778656de0ed82045a28ab2ff3';
@@ -24,9 +16,6 @@ function getLastUserPrompt(messages = []) {
   return '';
 }
 
-// Small valid 64x64 white JPEG used as a placeholder when the user has no image
-// attached. The upstream multimodal endpoint requires a real decodable image
-// in the `file` field; a 1x1 transparent PNG is rejected with HTTP 503.
 const PLACEHOLDER_JPEG_BASE64 =
   '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCABAAEADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigD//2Q==';
 
@@ -51,16 +40,18 @@ function buildFileFromImage(image) {
   return { blob, filename: `upload.${ext}` };
 }
 
+function buildFormData(prompt, image) {
+  const file = buildFileFromImage(image) || buildPlaceholderFile();
+  const formData = new FormData();
+  formData.append('prompt', prompt);
+  formData.append('file', file.blob, file.filename);
+  return formData;
+}
+
 async function callInference(prompt, image) {
   if (!prompt) {
     return { ok: false, status: 400, error: 'Prompt is required.' };
   }
-
-  const file = buildFileFromImage(image) || buildPlaceholderFile();
-
-  const formData = new FormData();
-  formData.append('prompt', prompt);
-  formData.append('file', file.blob, file.filename);
 
   const attempts = [];
   if (INFERENCE_API_KEY) {
@@ -83,18 +74,14 @@ async function callInference(prompt, image) {
       const res = await fetch(attempt.url, {
         method: 'POST',
         headers: attempt.headers,
-        body: formData,
+        body: buildFormData(prompt, image),
         signal: controller.signal,
       });
       clearTimeout(timeout);
 
       const payload = await res.json().catch(() => ({}));
       if (res.ok && payload?.result) {
-        return {
-          ok: true,
-          status: 200,
-          payload,
-        };
+        return { ok: true, status: 200, payload };
       }
 
       const error = payload?.error || payload?.message || `Inference error: ${res.status}`;
@@ -131,7 +118,6 @@ function createSseResponse(text) {
 export async function POST(req) {
   try {
     const { messages = [], images = [] } = await req.json();
-
     const prompt = getLastUserPrompt(messages);
     const image = Array.isArray(images) && images.length > 0 ? images[0] : null;
 

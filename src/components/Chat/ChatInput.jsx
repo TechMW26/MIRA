@@ -1,13 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-<<<<<<< Updated upstream
-import { Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Globe, Loader, PanelRight, Code2, Zap, Wrench, BookMarked, Share2 } from 'lucide-react';
-=======
-<<<<<<< HEAD
 import { Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Mic, MicOff, Globe, Loader, PanelRight, Code2, Zap, Wrench, BookMarked, Share2 } from 'lucide-react';
-=======
-import { Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Globe, Loader, PanelRight, Code2, Zap, Wrench, BookMarked, Share2 } from 'lucide-react';
->>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
->>>>>>> Stashed changes
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 
 const ACCEPT_TYPES = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.sh,.rs,.go,.rb,.php,.sql';
@@ -26,24 +18,14 @@ function formatFileSize(bytes) {
   return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
-export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onToggleWebSearch, activePanel, onTogglePanel, onShare, onUsePrompt, messages }) {
+export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onToggleWebSearch, activePanel, onTogglePanel, onShare, messages }) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState([]);
-<<<<<<< Updated upstream
-=======
-<<<<<<< HEAD
   const [isListening, setIsListening] = useState(false);
-=======
->>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
->>>>>>> Stashed changes
   const [parsing, setParsing] = useState(false);
   const [dragging, setDragging] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
-<<<<<<< Updated upstream
-  const dragCounterRef = useRef(0);
-=======
-<<<<<<< HEAD
   const recognitionRef = useRef(null);
   const dragCounterRef = useRef(0);
 
@@ -75,10 +57,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
       recognition.stop?.();
     };
   }, []);
-=======
-  const dragCounterRef = useRef(0);
->>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
->>>>>>> Stashed changes
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -173,7 +151,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
           onDragOver={onDragOver}
           onDrop={onDrop}
         >
-          {/* Drag overlay */}
           {dragging && (
             <div className="absolute inset-0 z-20 flex flex-col items-center justify-center rounded-2xl pointer-events-none"
               style={{ background: 'var(--accent-glow)', border: '2px dashed var(--accent)', backdropFilter: 'blur(4px)' }}
@@ -182,7 +159,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
               <p className="text-sm font-medium mt-2" style={{ color: 'var(--accent)' }}>Drop files here</p>
             </div>
           )}
-          {/* Attachments preview */}
+
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 px-4 pt-3">
               {attachments.map((att, i) => {
@@ -219,7 +196,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
             </div>
           )}
 
-          {/* Textarea */}
           <textarea
             ref={textareaRef}
             value={input}
@@ -231,13 +207,10 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
             style={{ color: 'var(--text-primary)' }}
           />
 
-          {/* Hidden file input */}
           <input ref={fileInputRef} type="file" multiple accept={ACCEPT_TYPES} onChange={handleFiles} className="hidden" />
 
-          {/* Bottom controls */}
           <div className="flex items-center justify-between px-3 pb-3">
             <div className="flex items-center gap-1">
-              {/* Attach file */}
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={parsing}
@@ -248,10 +221,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
                 {parsing ? <Loader size={16} className="animate-spin" /> : <Paperclip size={16} />}
               </button>
 
-<<<<<<< Updated upstream
-=======
-<<<<<<< HEAD
-              {/* Voice input */}
               {(window.SpeechRecognition || window.webkitSpeechRecognition) && (
                 <button
                   onClick={toggleListening}
@@ -263,10 +232,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
                 </button>
               )}
 
-=======
->>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
->>>>>>> Stashed changes
-              {/* Web search toggle */}
               <button
                 onClick={onToggleWebSearch}
                 className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
@@ -276,7 +241,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
                 <Globe size={16} />
               </button>
 
-              {/* Panel toggles */}
               {[
                 { id: 'browser', icon: PanelRight, title: 'Browser' },
                 { id: 'canvas', icon: Code2, title: 'Canvas' },
@@ -329,10 +293,10 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
 }
 
 function readFileAsBase64(file) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
-    reader.onerror = () => resolve(null);
+    reader.onerror = reject;
     reader.readAsDataURL(file);
   });
 }

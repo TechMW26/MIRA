@@ -36,7 +36,6 @@ export default function useChat() {
       ? raw
       : `data:${image.mimeType || image.type || 'image/jpeg'};base64,${raw}`;
 
-    // If image is already small, keep original bytes.
     const initialBase64 = sourceDataUrl.split(',')[1] || '';
     if (initialBase64.length < 550_000) {
       return {
@@ -77,7 +76,6 @@ export default function useChat() {
     };
   }, []);
 
-  // Subscribe to messages when conversation changes
   useEffect(() => {
     if (!currentConversationId) {
       setMessages([]);
@@ -97,15 +95,7 @@ export default function useChat() {
   }, [setIsGenerating]);
 
   const sendMessage = useCallback(
-<<<<<<< Updated upstream
     async (content, attachments = [], webSearch = false, options = {}) => {
-=======
-<<<<<<< HEAD
-    async (content, attachments = [], webSearch = false) => {
-=======
-    async (content, attachments = [], webSearch = false, options = {}) => {
->>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
->>>>>>> Stashed changes
       if ((!content.trim() && attachments.length === 0) || isGenerating || !user) return;
       const memoryContext = options.memoryContext || '';
 
@@ -116,11 +106,9 @@ export default function useChat() {
 
       let convId = currentConversationId;
 
-      // Separate attachment types
       const textAttachments = attachments.filter((a) => !a.isImage);
       const imageAttachments = attachments.filter((a) => a.isImage);
 
-      // Build display content with inline images for user message
       let displayContent = content;
       const attachmentData = [];
 
@@ -140,7 +128,6 @@ export default function useChat() {
         }
       }
 
-      // Run MIRA Engine — classify, pick model, enhance prompt
       const hasImages = imageAttachments.length > 0;
       const engineResult = processQuery(content, hasImages);
       const chosenModel = engineResult.model;
@@ -153,7 +140,6 @@ export default function useChat() {
           const conv = await createConversation(user.uid, 'New Chat');
           convId = conv.id;
           setCurrentConversationId(convId);
-          // If user is inside a project workspace, assign new chat to that project
           if (activeProjectId) {
             await addConversationToProject(user.uid, activeProjectId, convId);
           }
@@ -167,7 +153,6 @@ export default function useChat() {
         });
 
         if (chosenModel === '__image__') {
-          // Image analysis with animated placeholder
           const assistantMsgId = await addMessage(convId, {
             role: 'assistant',
             content: '',
@@ -175,7 +160,6 @@ export default function useChat() {
           });
 
           try {
-            // Pass attached images so Gemini can use them as reference
             const refImages = [];
             for (const img of imageAttachments) {
               refImages.push(await normalizeImageForUpload(img));
@@ -188,7 +172,6 @@ export default function useChat() {
               type: 'text',
             });
 
-            // Generate smart title for image analysis chats
             if (isNewChat) {
               generateSmartTitle(content, analysisText).then((title) => {
                 updateConversation(user.uid, convId, { title });
@@ -201,7 +184,6 @@ export default function useChat() {
             });
           }
         } else {
-          // Build history — re-inject parsed file text from previous messages so context is never lost
           const history = messages.map((m) => {
             let msgContent = m.content;
             if (m.role === 'user' && m.attachments?.length) {
@@ -224,7 +206,6 @@ export default function useChat() {
 
           let userContent = content;
 
-          // Web search injection
           if (webSearch && content.trim()) {
             try {
               const searchRes = await fetch('/api/search', {
@@ -260,21 +241,11 @@ export default function useChat() {
               ? `${userContent}\n\n[The following file(s) have been fully parsed and attached. You can read and answer questions about their content]:\n\n${fileContents}`
               : `Please analyze the following file(s):\n\n${fileContents}`;
           }
-<<<<<<< Updated upstream
-=======
-<<<<<<< HEAD
-=======
->>>>>>> Stashed changes
 
-          // Inject memory context as a hidden system-side suffix on the final
-          // user turn — never persisted to the DB, never shown in the bubble.
           if (memoryContext) {
             userContent = `${userContent}${memoryContext}`;
           }
-<<<<<<< Updated upstream
-=======
->>>>>>> cf085363c0fd2c2330d2383b94412aabd13efb38
->>>>>>> Stashed changes
+
           history.push({ role: 'user', content: userContent });
 
           const images = [];
@@ -312,7 +283,6 @@ export default function useChat() {
           }
 
           if (fullText) {
-            // Check for image generation response
             const imgMatch = fullText.match(/\[IMAGE_GEN:\s*([^\]]+)\]/);
             if (imgMatch) {
               const imgPrompt = imgMatch[1].trim();
@@ -327,7 +297,6 @@ export default function useChat() {
                 await updateMessage(convId, assistantMsgId, { content: `Sorry, image generation failed: ${imgErr.message}`, type: 'text' });
               }
             } else {
-              // Only export if user explicitly asked to create a document AND has no uploaded files
               const requestedFormat = detectDocumentRequest(content, textAttachments.length > 0);
               if (requestedFormat) {
                 try {
@@ -343,7 +312,6 @@ export default function useChat() {
               }
             }
 
-            // Generate smart AI title after first exchange
             if (isNewChat) {
               generateSmartTitle(content, fullText).then((title) => {
                 updateConversation(user.uid, convId, { title });
