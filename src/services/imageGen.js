@@ -1,5 +1,8 @@
+<<<<<<< HEAD
 import INFERENCE_ENDPOINTS from '../config/endpoints';
 
+=======
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
 // Pollinations.ai - completely free image generation, no API key needed
 export async function generateImageFree(prompt, options = {}) {
   const { width = 1024, height = 1024, model = 'flux', seed } = options;
@@ -7,10 +10,17 @@ export async function generateImageFree(prompt, options = {}) {
   const seedParam = seed ? `&seed=${seed}` : '';
   const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=${model}&nologo=true${seedParam}`;
 
+<<<<<<< HEAD
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Image generation failed: ${res.status}`);
   const blob = await res.blob();
 
+=======
+  // Fetch as blob to convert to base64
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Image generation failed: ${res.status}`);
+  const blob = await res.blob();
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
@@ -19,6 +29,7 @@ export async function generateImageFree(prompt, options = {}) {
   });
 }
 
+<<<<<<< HEAD
 async function blobToDataUrl(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -155,4 +166,10 @@ export function detectImageRequest(message) {
     )) ||
     (/\b(image|picture|photo|illustration|artwork|logo)\b.*\b(of|showing|depicting|with)\b/i.test(lower))
   );
+=======
+export function detectImageRequest(message) {
+  const lower = message.toLowerCase();
+  return /\b(generate|create|draw|make|paint|design|render|show me|give me)\b.*\b(image|picture|photo|illustration|artwork|logo|icon|banner|poster|wallpaper|sketch|drawing)\b/i.test(lower)
+    || /\b(image|picture|photo|illustration|artwork|logo)\b.*\b(of|showing|depicting|with)\b/i.test(lower);
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
 }

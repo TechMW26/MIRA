@@ -31,16 +31,18 @@ function buildPlaceholderFile() {
   };
 }
 
+function buildFormData(prompt, image) {
+  const file = buildFileFromImage(image) || buildPlaceholderFile();
+  const formData = new FormData();
+  formData.append('prompt', prompt);
+  formData.append('file', file.blob, file.filename);
+  return formData;
+}
+
 async function callInference(prompt, image) {
   if (!prompt) {
     return { ok: false, status: 400, error: 'prompt is required' };
   }
-
-  const file = buildFileFromImage(image) || buildPlaceholderFile();
-
-  const formData = new FormData();
-  formData.append('prompt', prompt);
-  formData.append('file', file.blob, file.filename);
 
   const attempts = [];
   if (INFERENCE_API_KEY) {
@@ -63,7 +65,7 @@ async function callInference(prompt, image) {
       const res = await fetch(attempt.url, {
         method: 'POST',
         headers: attempt.headers,
-        body: formData,
+        body: buildFormData(prompt, image),
         signal: controller.signal,
       });
       clearTimeout(timeout);

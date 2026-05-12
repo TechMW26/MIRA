@@ -1,10 +1,17 @@
 import { useState } from 'react';
 import { X, Play, CheckCircle2, Circle, Loader, ChevronDown, ChevronRight, Zap } from 'lucide-react';
+<<<<<<< HEAD
 import { PUBLIC_INFERENCE_BASE_URL, PUBLIC_INFERENCE_APP_TOKEN } from '../../config/endpoints.js';
 
 const STATUS = { pending: 'pending', running: 'running', done: 'done', error: 'error' };
 
 async function readSseResponseText(res) {
+=======
+
+const STATUS = { pending: 'pending', running: 'running', done: 'done', error: 'error' };
+
+async function readSseText(res) {
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   if (!res.ok) {
     const errorPayload = await res.json().catch(() => ({}));
     throw new Error(errorPayload?.error || `API error ${res.status}`);
@@ -17,8 +24,12 @@ async function readSseResponseText(res) {
   }
 
   if (!res.body) {
+<<<<<<< HEAD
     const data = await res.text().catch(() => '');
     return String(data || '');
+=======
+    return await res.text().catch(() => '');
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   }
 
   const decoder = new TextDecoder();
@@ -32,6 +43,7 @@ async function readSseResponseText(res) {
 
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split('\n');
+<<<<<<< HEAD
     buffer = lines.pop();
 
     for (const line of lines) {
@@ -53,6 +65,22 @@ async function readSseResponseText(res) {
     } catch {}
   }
 
+=======
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const data = trimmed.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      try {
+        const payload = JSON.parse(data);
+        if (typeof payload?.text === 'string') text += payload.text;
+      } catch {}
+    }
+  }
+
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   return text;
 }
 
@@ -87,12 +115,26 @@ function extractJsonArray(text) {
   throw new Error('Could not parse task plan.');
 }
 
+<<<<<<< HEAD
+=======
+async function fetchChatPrompt(prompt) {
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages: [{ role: 'user', content: prompt }], images: [] }),
+  });
+
+  return await readSseText(res);
+}
+
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
 export default function TaskRunner({ onSendMessage, onClose }) {
   const [goal, setGoal] = useState('');
   const [tasks, setTasks] = useState([]);
   const [running, setRunning] = useState(false);
   const [expanded, setExpanded] = useState({});
 
+<<<<<<< HEAD
   async function fetchInferencePrompt(prompt) {
     const baseUrl = PUBLIC_INFERENCE_BASE_URL || 'http://142.127.68.223:15166';
     const token = PUBLIC_INFERENCE_APP_TOKEN || 'f6d30c6778656de0ed82045a28ab2ff3';
@@ -109,6 +151,8 @@ export default function TaskRunner({ onSendMessage, onClose }) {
     return await readSseResponseText(res);
   }
 
+=======
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   async function planTasks() {
     if (!goal.trim()) return;
     setRunning(true);
@@ -117,12 +161,21 @@ export default function TaskRunner({ onSendMessage, onClose }) {
     const planPrompt = `Break this goal into 3-6 concrete sequential tasks. Reply ONLY with a JSON array of task objects like: [{"title":"Task name","prompt":"Exact prompt to execute this task"}]. Goal: ${goal}`;
 
     try {
+<<<<<<< HEAD
       const planText = await fetchInferencePrompt(planPrompt);
       const parsed = extractJsonArray(planText);
       const taskList = parsed.map((t, i) => ({
         id: i,
         title: String(t.title || t.task || `Task ${i + 1}`),
         prompt: String(t.prompt || t.task || t.description || t.title || ``),
+=======
+      const planText = await fetchChatPrompt(planPrompt);
+      const parsed = extractJsonArray(planText);
+      const taskList = parsed.map((task, index) => ({
+        id: index,
+        title: String(task.title || task.task || `Task ${index + 1}`),
+        prompt: String(task.prompt || task.task || task.description || task.title || ''),
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
         status: STATUS.pending,
         result: '',
       }));
@@ -142,6 +195,7 @@ export default function TaskRunner({ onSendMessage, onClose }) {
   async function executeTasks(taskList) {
     const results = [];
     for (let i = 0; i < taskList.length; i++) {
+<<<<<<< HEAD
       setTasks(prev => prev.map((t, idx) => idx === i ? { ...t, status: STATUS.running } : t));
 
       try {
@@ -159,6 +213,23 @@ export default function TaskRunner({ onSendMessage, onClose }) {
 
     // Send final summary to chat
     const summary = `I completed the multi-step task: "${goal}"\n\nHere's a summary of all steps:\n${taskList.map((t, i) => `**Step ${i + 1}: ${t.title}**\n${results[i] || 'Error'}`).join('\n\n')}`;
+=======
+      setTasks(prev => prev.map((task, index) => index === i ? { ...task, status: STATUS.running } : task));
+
+      try {
+        const context = results.length ? `\nPrevious results:\n${results.map((result, index) => `Step ${index + 1}: ${result}`).join('\n')}\n\n` : '';
+        const fullPrompt = context + taskList[i].prompt;
+        const result = await fetchChatPrompt(fullPrompt);
+
+        results.push(result.slice(0, 500));
+        setTasks(prev => prev.map((task, index) => index === i ? { ...task, status: STATUS.done, result } : task));
+      } catch (e) {
+        setTasks(prev => prev.map((task, index) => index === i ? { ...task, status: STATUS.error, result: e.message } : task));
+      }
+    }
+
+    const summary = `I completed the multi-step task: "${goal}"\n\nHere's a summary of all steps:\n${taskList.map((task, index) => `**Step ${index + 1}: ${task.title}**\n${results[index] || 'Error'}`).join('\n\n')}`;
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
     onSendMessage(summary);
   }
 
@@ -170,7 +241,11 @@ export default function TaskRunner({ onSendMessage, onClose }) {
   };
 
   return (
+<<<<<<< HEAD
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)', borderLeft: '1px solid var(--border)' }}>
+=======
+    <div className="flex flex-col h-full w-full">
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
       <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
         <Zap size={13} style={{ color: 'var(--accent)' }} />
         <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary)' }}>Task Runner</span>
@@ -180,7 +255,11 @@ export default function TaskRunner({ onSendMessage, onClose }) {
       <div className="p-3 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         <textarea
           value={goal}
+<<<<<<< HEAD
           onChange={e => setGoal(e.target.value)}
+=======
+          onChange={event => setGoal(event.target.value)}
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
           placeholder="Describe a complex goal... e.g. 'Research quantum computing, write a summary, create a presentation'"
           rows={3}
           className="w-full text-xs px-3 py-2 rounded-xl outline-none resize-none"
@@ -203,20 +282,35 @@ export default function TaskRunner({ onSendMessage, onClose }) {
             Enter a goal above and MIRA will break it into steps and execute each one automatically.
           </p>
         )}
+<<<<<<< HEAD
         {tasks.map((task, i) => (
           <div key={task.id} className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
             <button
               onClick={() => setExpanded(e => ({ ...e, [i]: !e[i] }))}
+=======
+        {tasks.map((task, index) => (
+          <div key={task.id} className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+            <button
+              onClick={() => setExpanded(value => ({ ...value, [index]: !value[index] }))}
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
               className="w-full flex items-center gap-2 px-3 py-2.5 text-left"
               style={{ background: 'var(--glass-bg)' }}
             >
               {statusIcon(task.status)}
               <span className="text-xs font-medium flex-1" style={{ color: 'var(--text-primary)' }}>
+<<<<<<< HEAD
                 Step {i + 1}: {task.title}
               </span>
               {expanded[i] ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
             </button>
             {expanded[i] && task.result && (
+=======
+                Step {index + 1}: {task.title}
+              </span>
+              {expanded[index] ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+            </button>
+            {expanded[index] && task.result && (
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
               <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-secondary)', background: 'var(--bg-primary)', borderTop: '1px solid var(--border)' }}>
                 {task.result.slice(0, 400)}{task.result.length > 400 ? '...' : ''}
               </div>

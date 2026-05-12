@@ -118,6 +118,10 @@ async function handleSearch(body) {
     }).then(r => r.ok ? r.json() : null),
   ]);
 
+<<<<<<< HEAD
+=======
+  // Paid APIs first
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   const brave = braveRes.value?.web?.results;
   if (brave?.length) return { results: brave.slice(0, 6).map(r => ({ title: r.title, snippet: r.description || r.title, url: r.url })), source: 'brave' };
 
@@ -170,6 +174,7 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
+<<<<<<< HEAD
 function tryListen(startPort, attempts = 20) {
   const portEnv = process.env.PORT;
   const port = portEnv ? Number(portEnv) : startPort;
@@ -198,3 +203,6 @@ function tryListen(startPort, attempts = 20) {
 }
 
 tryListen(3002);
+=======
+server.listen(3002, () => console.log('Dev API server running on http://localhost:3002'));
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020

@@ -41,6 +41,7 @@ import {
   PUBLIC_INFERENCE_APP_TOKEN,
 } from '../config/endpoints.js';
 
+<<<<<<< HEAD
 // Fallback to environment variables if config not available
 const INFERENCE_BASE_URL = PUBLIC_INFERENCE_BASE_URL || import.meta.env.VITE_INFERENCE_BASE_URL || 'http://194.68.245.162:22159';
 const INFERENCE_APP_TOKEN = PUBLIC_INFERENCE_APP_TOKEN || import.meta.env.VITE_INFERENCE_APP_TOKEN || 'f6d30c6778656de0ed82045a28ab2ff3';
@@ -66,16 +67,33 @@ async function streamViaServer(messages, images = [], systemPrompt = SYSTEM_PROM
   const lastMsg = messages[messages.length - 1];
 
   // Build conversation history (without last message)
+=======
+// Browser calls must go through server routes so HTTPS deployments do not hit
+// mixed-content blocks when the inference server is HTTP-only.
+void PUBLIC_INFERENCE_BASE_URL;
+void PUBLIC_INFERENCE_APP_TOKEN;
+
+export { SYSTEM_PROMPT };
+
+async function streamViaServer(messages, images = [], systemPrompt = SYSTEM_PROMPT) {
+  const history = messages.slice(0, -1);
+  const lastMsg = messages[messages.length - 1];
+
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   const historyText = history
     .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
     .join('\n\n');
 
+<<<<<<< HEAD
   // Last user message goes at the very end so the model sees it last
+=======
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   const fullPrompt = historyText
     ? `${systemPrompt}\n\n${historyText}\n\nUser: ${lastMsg?.content || ''}\n\nAssistant:`
     : `${systemPrompt}\n\nUser: ${lastMsg?.content || ''}\n\nAssistant:`;
 
   const image = Array.isArray(images) && images.length > 0 ? images[0] : null;
+<<<<<<< HEAD
   const file = buildFileFromImage(image);
 
   const formData = new FormData();
@@ -88,17 +106,32 @@ async function streamViaServer(messages, images = [], systemPrompt = SYSTEM_PROM
     method: 'POST',
     headers: { 'X-App-Token': INFERENCE_APP_TOKEN },
     body: formData,
+=======
+
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: [{ role: 'user', content: fullPrompt }],
+      images: image ? [image] : [],
+    }),
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   });
 
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
+<<<<<<< HEAD
     const error = payload?.detail || payload?.error || `API error: ${res.status}`;
+=======
+    const error = payload?.error || payload?.detail || `API error: ${res.status}`;
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
     throw new Error(error);
   }
 
   return res;
 }
 
+<<<<<<< HEAD
 export async function sendChatMessage(messages, _model, onChunk, images = [], systemPrompt = SYSTEM_PROMPT, { onThinking } = {}) {
   const response = await streamViaServer(messages, images, systemPrompt);
 
@@ -110,10 +143,57 @@ export async function sendChatMessage(messages, _model, onChunk, images = [], sy
     return fullText;
   }
 
+=======
+async function readSseText(response) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const payload = await response.json().catch(() => ({}));
+    return payload?.result || payload?.text || '';
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const data = trimmed.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      try {
+        const obj = JSON.parse(data);
+        if (typeof obj.text === 'string') full += obj.text;
+      } catch {}
+    }
+  }
+
+  return full;
+}
+
+export async function sendChatMessage(messages, _model, onChunk, images = [], systemPrompt = SYSTEM_PROMPT, { onThinking } = {}) {
+  void onThinking;
+  const response = await streamViaServer(messages, images, systemPrompt);
+  const fullText = await readSseText(response);
+
+  if (fullText) {
+    onChunk?.(fullText, fullText);
+    return fullText;
+  }
+
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   throw new Error('No result in response');
 }
 
 export async function generateImage(prompt, images = []) {
+<<<<<<< HEAD
   try {
     const res = await fetch('/api/image', {
       method: 'POST',
@@ -152,13 +232,20 @@ export async function generateImage(prompt, images = []) {
     method: 'POST',
     headers: { 'X-App-Token': INFERENCE_APP_TOKEN },
     body: formData,
+=======
+  const res = await fetch('/api/image', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, images }),
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   });
 
-  const directPayload = await directRes.json().catch(() => ({}));
-  if (!directRes.ok) {
-    throw new Error(directPayload?.detail || directPayload?.error || `Inference error: ${directRes.status}`);
+  const payload = await res.json().catch(() => ({}));
+  if (res.ok) {
+    return payload;
   }
 
+<<<<<<< HEAD
   return {
     success: true,
     inference_type: directPayload.inference_type,
@@ -167,4 +254,7 @@ export async function generateImage(prompt, images = []) {
     execution_time_ms: directPayload.execution_time_ms,
     provider: 'custom-vision-endpoint-public-direct',
   };
+=======
+  throw new Error(payload?.error || payload?.detail || `Image API error: ${res.status}`);
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
 }

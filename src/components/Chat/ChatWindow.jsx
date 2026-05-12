@@ -16,6 +16,66 @@ const FONT_SIZE_MAP = { small: '13px', medium: '14px', large: '16px' };
 function getStoredFontSize() {
   try { return FONT_SIZE_MAP[JSON.parse(localStorage.getItem('mira_preferences') || '{}').fontSize] || '14px'; }
   catch { return '14px'; }
+<<<<<<< HEAD
+=======
+}
+
+function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children }) {
+  const storageKey = `mira_panel_w_${id}`;
+  const [width, setWidth] = useState(() => {
+    const stored = Number(localStorage.getItem(storageKey));
+    return stored && stored >= minWidth && stored <= maxWidth ? stored : defaultWidth;
+  });
+  const [resizing, setResizing] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem(storageKey, String(width));
+  }, [storageKey, width]);
+
+  function onHandleMouseDown(e) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = width;
+    setResizing(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMove = (ev) => {
+      const dx = startX - ev.clientX;
+      const next = Math.max(minWidth, Math.min(maxWidth, startW + dx));
+      setWidth(next);
+    };
+    const onUp = () => {
+      setResizing(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  return (
+    <div
+      className="flex-shrink-0 flex h-full py-3 pr-3 pl-0 animate-fade-in"
+      style={{ width: width + 14 }}
+    >
+      <div
+        onMouseDown={onHandleMouseDown}
+        className="w-1 mr-2 my-2 rounded-full cursor-col-resize flex-shrink-0 transition-all"
+        style={{
+          background: resizing ? 'var(--accent)' : 'var(--border)',
+          opacity: resizing ? 1 : 0.5,
+        }}
+        title="Drag to resize"
+      />
+      <div className="flex-1 min-w-0 rounded-2xl overflow-hidden glass-strong">
+        {children}
+      </div>
+    </div>
+  );
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
 }
 
 export default function ChatWindow() {
@@ -24,7 +84,11 @@ export default function ChatWindow() {
   const { getMemoryContext, processAndSave } = useMemory();
 
   const [webSearch, setWebSearch] = useState(false);
+<<<<<<< HEAD
   const [panel, setPanel] = useState(null); // 'browser' | 'canvas' | 'tasks' | 'tools' | 'prompts'
+=======
+  const [panel, setPanel] = useState(null);
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   const [showShare, setShowShare] = useState(false);
   const [chatFontSize, setChatFontSize] = useState(getStoredFontSize);
   const bottomRef = useRef(null);
@@ -47,7 +111,10 @@ export default function ChatWindow() {
     return () => window.removeEventListener('mira-preferences-changed', handler);
   }, []);
 
+<<<<<<< HEAD
   // Auto-extract memories after each exchange
+=======
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   useEffect(() => {
     if (messages.length < 2) return;
     const last = messages[messages.length - 1];
@@ -59,8 +126,12 @@ export default function ChatWindow() {
 
   const sendWithMemory = useCallback((content, attachments, ws) => {
     const memCtx = getMemoryContext();
+<<<<<<< HEAD
     const enriched = memCtx ? content + memCtx : content;
     sendMessage(enriched, attachments, ws);
+=======
+    sendMessage(content, attachments, ws, { memoryContext: memCtx });
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   }, [sendMessage, getMemoryContext]);
 
   const requestCanvas = useCallback((prompt) => {
@@ -74,10 +145,16 @@ export default function ChatWindow() {
     <div className="flex-1 flex min-h-0 relative overflow-hidden">
       {showShare && <ShareModal messages={messages} title={messages[0]?.content?.slice(0, 50)} onClose={() => setShowShare(false)} />}
 
+<<<<<<< HEAD
       {/* Chat column */}
       <div className="flex flex-col flex-1 min-w-0 min-h-0">
         <div className="flex-1 overflow-y-auto" style={{ fontSize: chatFontSize }}>
           <div className="max-w-3xl mx-auto flex flex-col justify-end min-h-full py-4 gap-5">
+=======
+      <div className="flex flex-col flex-1 min-w-0 min-h-0">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden" style={{ fontSize: chatFontSize }}>
+          <div className="max-w-3xl mx-auto flex flex-col justify-end min-h-full py-4 gap-5 px-3 w-full min-w-0">
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
             {displayMessages.length === 0 ? (
               <WelcomeScreen onSend={(p) => sendWithMemory(p, [], webSearch)} />
             ) : (
@@ -98,11 +175,15 @@ export default function ChatWindow() {
           activePanel={panel}
           onTogglePanel={togglePanel}
           onShare={() => setShowShare(true)}
+<<<<<<< HEAD
           onUsePrompt={(p) => sendWithMemory(p, [], webSearch)}
+=======
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
           messages={messages}
         />
       </div>
 
+<<<<<<< HEAD
       {/* Side panels */}
       {panel === 'browser' && (
         <div className="flex-shrink-0 animate-fade-in" style={{ width: 500 }}>
@@ -128,6 +209,32 @@ export default function ChatWindow() {
         <div className="flex-shrink-0 animate-fade-in" style={{ width: 320 }}>
           <PromptLibrary onUsePrompt={(p) => { sendWithMemory(p, [], webSearch); setPanel(null); }} onClose={() => setPanel(null)} />
         </div>
+=======
+      {panel === 'browser' && (
+        <RightPanel id="browser" defaultWidth={500} minWidth={340} maxWidth={900}>
+          <BrowserPanel onSendToChat={(c) => sendWithMemory(c, [], false)} onClose={() => setPanel(null)} />
+        </RightPanel>
+      )}
+      {panel === 'canvas' && (
+        <RightPanel id="canvas" defaultWidth={480} minWidth={320} maxWidth={1000}>
+          <CanvasPanel messages={messages} onClose={() => setPanel(null)} onRequestCanvas={requestCanvas} />
+        </RightPanel>
+      )}
+      {panel === 'tasks' && (
+        <RightPanel id="tasks" defaultWidth={360} minWidth={280} maxWidth={720}>
+          <TaskRunner onSendMessage={(c) => sendWithMemory(c, [], false)} onClose={() => setPanel(null)} />
+        </RightPanel>
+      )}
+      {panel === 'tools' && (
+        <RightPanel id="tools" defaultWidth={320} minWidth={260} maxWidth={620}>
+          <ToolsPanel onClose={() => setPanel(null)} />
+        </RightPanel>
+      )}
+      {panel === 'prompts' && (
+        <RightPanel id="prompts" defaultWidth={340} minWidth={280} maxWidth={680}>
+          <PromptLibrary onUsePrompt={(p) => { sendWithMemory(p, [], webSearch); setPanel(null); }} onClose={() => setPanel(null)} />
+        </RightPanel>
+>>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
       )}
     </div>
   );
