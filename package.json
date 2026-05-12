@@ -5,19 +5,37 @@
   "description": "MIRA - Multi-Intelligent Responsive Assistant",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently \"node dev-api.js\" \"vite\"",
+    "dev:api": "node dev-api.js",
+    "dev:vite": "vite",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "@pdf-lib/fontkit": "^1.1.1",
     "@vercel/blob": "^2.3.3",
+    "docx": "^9.6.1",
     "firebase": "^11.6.0",
     "highlight.js": "^11.11.0",
+    "html-to-image": "^1.11.13",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^3.8.4",
+    "linkedom": "^0.18.12",
     "lucide-react": "^0.468.0",
+    "mammoth": "^1.12.0",
+    "marked": "^18.0.2",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.6.205",
+    "pptxgenjs": "^4.0.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-is": "^19.2.5",
     "react-markdown": "^9.0.3",
     "react-router-dom": "^7.1.0",
+    "reactflow": "^11.11.4",
+    "recharts": "^3.8.1",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.0"
   },
@@ -25,10 +43,11 @@
     "@tailwindcss/typography": "^0.5.16",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.20",
+    "concurrently": "^9.2.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
-    "vite": "^6.0.0"
+    "vite": "^6.4.2"
   }
 }

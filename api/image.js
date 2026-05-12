@@ -1,14 +1,14 @@
 export const config = { maxDuration: 60 };
 
-const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://1.193.139.71:34906';
+const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://142.127.68.223:15166';
 const INFERENCE_PUBLIC_PATH = process.env.INFERENCE_PUBLIC_PATH || '/public/analyze';
 const INFERENCE_PROTECTED_PATH = process.env.INFERENCE_PROTECTED_PATH || '/v1/analyze';
-const INFERENCE_APP_TOKEN = process.env.INFERENCE_APP_TOKEN;
-const INFERENCE_API_KEY = process.env.INFERENCE_API_KEY;
+const INFERENCE_APP_TOKEN = process.env.INFERENCE_APP_TOKEN || 'f6d30c6778656de0ed82045a28ab2ff3';
+const INFERENCE_API_KEY = process.env.INFERENCE_API_KEY || 'PRO_SAFETY_TOKEN_2026';
 const INFERENCE_TIMEOUT_MS = Number(process.env.INFERENCE_TIMEOUT_MS || 35000);
 
-const PLACEHOLDER_PNG_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+const PLACEHOLDER_JPEG_BASE64 =
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCABAAEADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigD//2Q==';
 
 function buildFileFromImage(image) {
   const mimeType = image?.mimeType || 'image/jpeg';
@@ -24,10 +24,10 @@ function buildFileFromImage(image) {
 }
 
 function buildPlaceholderFile() {
-  const bytes = Buffer.from(PLACEHOLDER_PNG_BASE64, 'base64');
+  const bytes = Buffer.from(PLACEHOLDER_JPEG_BASE64, 'base64');
   return {
-    blob: new Blob([bytes], { type: 'image/png' }),
-    filename: 'placeholder.png',
+    blob: new Blob([bytes], { type: 'image/jpeg' }),
+    filename: 'placeholder.jpg',
   };
 }
 

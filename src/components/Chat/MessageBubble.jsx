@@ -1,8 +1,11 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Copy, Check, Volume2, VolumeX, User, FileText, FileCode, File, X, ExternalLink } from 'lucide-react';
+import { Copy, Check, Volume2, VolumeX, User, FileText, FileCode, File, X, ExternalLink, Download } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
+import MindMap from './MindMap';
+import Chart from './Chart';
+import { exportDocument, detectDocumentRequest } from '../../utils/documentExport';
 
 function getFileIcon(name) {
   const ext = (name || '').split('.').pop().toLowerCase();
@@ -48,6 +51,8 @@ function AttachmentPreview({ attachment }) {
 
   // Document / non-image file
   const Icon = getFileIcon(attachment.name);
+  const ext = (attachment.name || '').split('.').pop().toLowerCase();
+  const isParsed = ['pdf','docx','doc'].includes(ext) || attachment.parsed;
   return (
     <div
       className="mt-2 flex items-center gap-2.5 px-3 py-2.5 rounded-xl glass-subtle cursor-pointer transition-all hover:opacity-80"
@@ -65,6 +70,9 @@ function AttachmentPreview({ attachment }) {
         <span className="text-xs font-medium truncate block" style={{ color: 'var(--text-primary)' }}>{attachment.name}</span>
         <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{attachment.type}</span>
       </div>
+      {isParsed && (
+        <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium" style={{ background: 'rgba(16,185,129,0.15)', color: '#10b981' }}>parsed</span>
+      )}
       <ExternalLink size={12} style={{ color: 'var(--text-tertiary)' }} />
     </div>
   );
@@ -205,6 +213,8 @@ function MessageBubble({ message, isLast }) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(message.content);
@@ -218,38 +228,75 @@ function MessageBubble({ message, isLast }) {
       setSpeaking(false);
       return;
     }
-    const utter = new SpeechSynthesisUtterance(message.content);
+    const cleaned = message.content
+      .replace(/```[\s\S]*?```/g, 'code block')
+      .replace(/[#*`_~>]/g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .trim();
+    const utter = new SpeechSynthesisUtterance(cleaned);
+    utter.rate = 1;
+    utter.pitch = 1;
     utter.onend = () => setSpeaking(false);
+    utter.onerror = () => setSpeaking(false);
     window.speechSynthesis.speak(utter);
     setSpeaking(true);
   }, [message.content, speaking]);
 
+  const handleExport = useCallback(async (format) => {
+    setExporting(true);
+    setShowExportMenu(false);
+    try {
+      const filename = `mira-response-${Date.now()}.${format}`;
+      await exportDocument(message.content, format, filename);
+    } catch (error) {
+      console.error('Export failed:', error);
+      alert('Export failed. Please try again.');
+    } finally {
+      setExporting(false);
+    }
+  }, [message.content]);
+
   const markdownComponents = useMemo(() => ({
     img({ src, alt }) {
+      const s = typeof src === 'string' ? src.trim() : '';
+
+      // If markdown produces an empty url, don't render an <img> with empty src.
+      if (!s) return null;
+
+      // Sometimes we may receive raw base64 without data: prefix.
+      const finalSrc = s.startsWith('data:')
+        ? s
+        : `data:image/png;base64,${s}`;
+
+      // Guard: only allow image data urls
+      if (!finalSrc.startsWith('data:image/')) return null;
+
       return (
         <img
-          src={src}
+          src={finalSrc}
           alt={alt || 'Generated Image'}
           className="rounded-xl my-3 max-w-full shadow-lg"
           style={{ maxHeight: '512px', objectFit: 'contain' }}
           loading="lazy"
           onError={(e) => {
-            // If Vercel Blob URL fails, hide the broken icon and show a message
-            e.target.style.display = 'none';
+            // Hide broken image and show message
+            e.currentTarget.style.display = 'none';
             const msg = document.createElement('div');
             msg.className = 'text-sm py-3 px-4 rounded-xl my-2';
             msg.style.cssText = 'background: var(--glass-bg); color: var(--text-tertiary);';
-            msg.textContent = 'Image failed to load — it may have expired.';
-            e.target.parentNode.insertBefore(msg, e.target.nextSibling);
+            msg.textContent = 'Image failed to load — check the generated data URL.';
+            e.currentTarget.parentNode.insertBefore(msg, e.currentTarget.nextSibling);
           }}
         />
       );
     },
     code({ node, inline, className, children, ...props }) {
       const match = /language-(\w+)/.exec(className || '');
-      if (!inline && match) {
-        return <CodeBlock language={match[1]}>{String(children).replace(/\n$/, '')}</CodeBlock>;
-      }
+      const lang = match?.[1];
+      const raw = String(children).replace(/\n$/, '');
+      if (!inline && lang === 'mindmap') return <MindMap content={raw} />;
+      if (!inline && lang === 'chart') return <Chart content={raw} />;
+      if (!inline && lang) return <CodeBlock language={lang}>{raw}</CodeBlock>;
       return (
         <code
           className="px-1.5 py-0.5 rounded-md text-sm font-mono"
@@ -353,6 +400,45 @@ function MessageBubble({ message, isLast }) {
             <button onClick={handleSpeak} className="p-1.5 rounded-lg transition-all hover:scale-110" style={{ color: speaking ? 'var(--accent)' : 'var(--text-tertiary)' }} title="Read aloud">
               {speaking ? <VolumeX size={13} /> : <Volume2 size={13} />}
             </button>
+            <div className="relative">
+              <button 
+                onClick={() => setShowExportMenu(!showExportMenu)} 
+                className="p-1.5 rounded-lg transition-all hover:scale-110" 
+                style={{ color: exporting ? 'var(--accent)' : 'var(--text-tertiary)' }} 
+                title="Export"
+                disabled={exporting}
+              >
+                <Download size={13} />
+              </button>
+              {showExportMenu && (
+                <div 
+                  className="absolute left-0 top-full mt-1 py-1 rounded-lg shadow-lg z-50 min-w-[100px]" 
+                  style={{ background: 'var(--glass-bg)', border: '1px solid var(--border)' }}
+                >
+                  <button 
+                    onClick={() => handleExport('pdf')} 
+                    className="w-full px-3 py-1.5 text-left text-xs hover:opacity-80 transition-opacity"
+                    style={{ color: 'var(--text-primary)' }}
+                  >
+                    PDF
+                  </button>
+                  <button 
+                    onClick={() => handleExport('docx')} 
+                    className="w-full px-3 py-1.5 text-left text-xs hover:opacity-80 transition-opacity"
+                    style={{ color: 'var(--text-primary)' }}
+                  >
+                    DOCX
+                  </button>
+                  <button 
+                    onClick={() => handleExport('pptx')} 
+                    className="w-full px-3 py-1.5 text-left text-xs hover:opacity-80 transition-opacity"
+                    style={{ color: 'var(--text-primary)' }}
+                  >
+                    PPTX
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

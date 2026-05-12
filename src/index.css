@@ -424,6 +424,33 @@ body {
 .light .prose a { color: #6d28d9; }
 .light .prose blockquote { border-left-color: #6d28d9; color: #4a4a5a; }
 
+/* ── Browser panel content styles ───────────── */
+.browser-content { padding: 16px; font-size: 13px; line-height: 1.7; }
+.browser-content * { max-width: 100% !important; box-sizing: border-box; }
+.browser-content img { height: auto; border-radius: 6px; margin: 6px 0; display: block; }
+.browser-content a { color: var(--accent) !important; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.browser-content a:hover { opacity: 0.8; }
+.browser-content h1 { font-size: 1.5em; font-weight: 800; margin: 16px 0 8px; color: var(--text-primary) !important; line-height: 1.3; }
+.browser-content h2 { font-size: 1.25em; font-weight: 700; margin: 14px 0 6px; color: var(--text-primary) !important; }
+.browser-content h3 { font-size: 1.1em; font-weight: 600; margin: 12px 0 5px; color: var(--text-primary) !important; }
+.browser-content h4, .browser-content h5, .browser-content h6 { font-size: 1em; font-weight: 600; margin: 10px 0 4px; color: var(--text-primary) !important; }
+.browser-content p { margin: 6px 0; color: var(--text-secondary) !important; }
+.browser-content ul, .browser-content ol { padding-left: 22px; margin: 6px 0; }
+.browser-content li { margin: 3px 0; color: var(--text-secondary) !important; }
+.browser-content table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 0.85em; }
+.browser-content th, .browser-content td { padding: 7px 10px; border: 1px solid var(--border); text-align: left; color: var(--text-primary) !important; }
+.browser-content th { background: var(--hover-bg) !important; font-weight: 600; }
+.browser-content tr:nth-child(even) { background: var(--hover-bg) !important; }
+.browser-content pre { background: var(--hover-bg) !important; border-radius: 8px; padding: 12px; overflow-x: auto; margin: 8px 0; border: 1px solid var(--border); }
+.browser-content code { background: var(--hover-bg) !important; border-radius: 4px; padding: 1px 5px; font-size: 0.85em; font-family: monospace; color: var(--accent) !important; }
+.browser-content pre code { background: transparent !important; padding: 0; color: var(--text-primary) !important; }
+.browser-content blockquote { border-left: 3px solid var(--accent); padding: 4px 12px; margin: 8px 0; color: var(--text-tertiary) !important; font-style: italic; background: var(--hover-bg); border-radius: 0 6px 6px 0; }
+.browser-content hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+.browser-content input, .browser-content button, .browser-content select, .browser-content textarea { display: none !important; }
+.browser-content [style*='color'] { color: var(--text-primary) !important; }
+.browser-content [style*='background'] { background: transparent !important; }
+.browser-content [style*='font-size'] { font-size: inherit !important; }
+
 /* ── Hover effect ────────────────────────────── */
 .btn-shine {
   position: relative;
