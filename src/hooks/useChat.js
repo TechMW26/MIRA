@@ -13,11 +13,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useChatContext } from '../contexts/ChatContext';
 import { generateSmartTitle } from '../utils/helpers';
 import { detectDocumentRequest, exportDocument } from '../utils/documentExport';
-<<<<<<< HEAD
 import { generateImageFromMiraServer, detectImageRequest } from '../services/imageGen';
-=======
-import { generateImageFree, detectImageRequest } from '../services/imageGen';
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
 
 export default function useChat() {
   const { user } = useAuth();
@@ -98,11 +94,7 @@ export default function useChat() {
   }, [setIsGenerating]);
 
   const sendMessage = useCallback(
-<<<<<<< HEAD
-    async (content, attachments = [], webSearch = false) => {
-=======
     async (content, attachments = [], webSearch = false, options = {}) => {
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
       if ((!content.trim() && attachments.length === 0) || isGenerating || !user) return;
       const memoryContext = options.memoryContext || '';
 
@@ -160,10 +152,7 @@ export default function useChat() {
         });
 
         if (chosenModel === '__image__') {
-<<<<<<< HEAD
           // Immediate text-to-image generation using ONLY our Mira image server
-=======
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
           const assistantMsgId = await addMessage(convId, {
             role: 'assistant',
             content: '',
@@ -171,17 +160,11 @@ export default function useChat() {
           });
 
           try {
-<<<<<<< HEAD
             // If user provided images, we ignore them for now since your /generate is text-only spec.
             // Use the user content as prompt. (This avoids depending on the model to emit [IMAGE_GEN: ...].)
             const imgPrompt = content?.trim();
             if (!imgPrompt) {
               throw new Error('Empty prompt provided for image generation.');
-=======
-            const refImages = [];
-            for (const img of imageAttachments) {
-              refImages.push(await normalizeImageForUpload(img));
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
             }
 
             const raw = await generateImageFromMiraServer(imgPrompt);
@@ -208,10 +191,7 @@ export default function useChat() {
               image: base64,
             });
 
-<<<<<<< HEAD
             // Generate smart title for image generation chats
-=======
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
             if (isNewChat) {
               generateSmartTitle(content, 'Image generated successfully.').then((title) => {
                 updateConversation(user.uid, convId, { title });
@@ -224,10 +204,7 @@ export default function useChat() {
             });
           }
         } else {
-<<<<<<< HEAD
           // Build history — re-inject parsed file text from previous messages so context is never lost
-=======
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
           const history = messages.map((m) => {
             let msgContent = m.content;
             if (m.role === 'user' && m.attachments?.length) {
@@ -250,10 +227,7 @@ export default function useChat() {
 
           let userContent = content;
 
-<<<<<<< HEAD
           // Web search injection
-=======
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
           if (webSearch && content.trim()) {
             try {
               const searchRes = await fetch('/api/search', {
@@ -273,8 +247,6 @@ export default function useChat() {
             } catch (e) {
               console.warn('Web search failed:', e.message);
             }
-<<<<<<< HEAD
-=======
           }
 
           if (textAttachments.length > 0) {
@@ -294,7 +266,6 @@ export default function useChat() {
 
           if (memoryContext) {
             userContent = `${userContent}${memoryContext}`;
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
           }
 
           if (textAttachments.length > 0) {
@@ -348,7 +319,6 @@ export default function useChat() {
           }
 
           if (fullText) {
-<<<<<<< HEAD
             // Check for image generation response (support multiple tag formats)
             const imgMatch =
               fullText.match(/\[IMAGE_GEN:\s*([^\]]+)\]/) ||
@@ -378,23 +348,6 @@ export default function useChat() {
                 }
               }
             } else {
-              // Only export if user explicitly asked to create a document AND has no uploaded files
-=======
-            const imgMatch = fullText.match(/\[IMAGE_GEN:\s*([^\]]+)\]/);
-            if (imgMatch) {
-              const imgPrompt = imgMatch[1].trim();
-              await updateMessage(convId, assistantMsgId, { content: '🎨 Generating image...', type: 'text' });
-              try {
-                const base64 = await generateImageFree(imgPrompt);
-                await updateMessage(convId, assistantMsgId, {
-                  content: `Here's your generated image:\n\n![Generated Image](${base64})`,
-                  type: 'text',
-                });
-              } catch (imgErr) {
-                await updateMessage(convId, assistantMsgId, { content: `Sorry, image generation failed: ${imgErr.message}`, type: 'text' });
-              }
-            } else {
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
               const requestedFormat = detectDocumentRequest(content, textAttachments.length > 0);
               if (requestedFormat) {
                 try {

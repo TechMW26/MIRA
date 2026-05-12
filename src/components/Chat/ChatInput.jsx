@@ -18,11 +18,7 @@ function formatFileSize(bytes) {
   return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
-<<<<<<< HEAD
-export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onToggleWebSearch, activePanel, onTogglePanel, onShare, onUsePrompt, messages }) {
-=======
 export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onToggleWebSearch, activePanel, onTogglePanel, onShare, messages }) {
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [isListening, setIsListening] = useState(false);
@@ -155,10 +151,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
           onDragOver={onDragOver}
           onDrop={onDrop}
         >
-<<<<<<< HEAD
-          {/* Drag overlay */}
-=======
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
           {dragging && (
             <div className="absolute inset-0 z-20 flex flex-col items-center justify-center rounded-2xl pointer-events-none"
               style={{ background: 'var(--accent-glow)', border: '2px dashed var(--accent)', backdropFilter: 'blur(4px)' }}
@@ -167,11 +159,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
               <p className="text-sm font-medium mt-2" style={{ color: 'var(--accent)' }}>Drop files here</p>
             </div>
           )}
-<<<<<<< HEAD
-          {/* Attachments preview */}
-=======
-
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 px-4 pt-3">
               {attachments.map((att, i) => {
@@ -219,10 +206,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
             style={{ color: 'var(--text-primary)' }}
           />
 
-<<<<<<< HEAD
-          {/* Hidden file input */}
-=======
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
           <input ref={fileInputRef} type="file" multiple accept={ACCEPT_TYPES} onChange={handleFiles} className="hidden" />
 
           <div className="flex items-center justify-between px-3 pb-3">
@@ -237,10 +220,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
                 {parsing ? <Loader size={16} className="animate-spin" /> : <Paperclip size={16} />}
               </button>
 
-<<<<<<< HEAD
-              {/* Voice input */}
-=======
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
               {(window.SpeechRecognition || window.webkitSpeechRecognition) && (
                 <button
                   onClick={toggleListening}
@@ -252,10 +231,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
                 </button>
               )}
 
-<<<<<<< HEAD
-              {/* Web search toggle */}
-=======
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
               <button
                 onClick={onToggleWebSearch}
                 className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
@@ -265,10 +240,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
                 <Globe size={16} />
               </button>
 
-<<<<<<< HEAD
-              {/* Panel toggles */}
-=======
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
               {[
                 { id: 'browser', icon: PanelRight, title: 'Browser' },
                 { id: 'canvas', icon: Code2, title: 'Canvas' },

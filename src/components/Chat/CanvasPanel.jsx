@@ -1,63 +1,3 @@
-<<<<<<< HEAD
-import { useMemo, useState } from 'react';
-
-export default function CanvasPanel({ messages, onClose, onRequestCanvas }) {
-  const [prompt, setPrompt] = useState('');
-
-  const canRequest = useMemo(() => prompt.trim().length > 0, [prompt]);
-
-  return (
-    <div className="h-full flex flex-col bg-white/5 backdrop-blur border border-white/10 rounded-xl overflow-hidden">
-      <div className="p-3 border-b border-white/10 flex items-center justify-between">
-        <div className="font-semibold text-sm">Canvas</div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-xs px-2 py-1 rounded hover:bg-white/10"
-          aria-label="Close Canvas Panel"
-        >
-          Close
-        </button>
-      </div>
-
-      <div className="p-3 flex-1 overflow-y-auto">
-        <div className="text-xs text-white/70 mb-2">
-          Describe what you want to generate. This will be sent to chat as a request.
-        </div>
-
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="e.g., Create a diagram of the MIRA architecture..."
-          className="w-full min-h-32 resize-none p-2 text-sm rounded bg-black/20 border border-white/10 outline-none focus:border-white/25"
-        />
-
-        <div className="mt-3 flex gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              if (!canRequest) return;
-              onRequestCanvas?.(prompt.trim());
-              setPrompt('');
-              onClose?.();
-            }}
-            disabled={!canRequest}
-            className="flex-1 text-sm px-3 py-2 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:hover:bg-blue-600"
-          >
-            Request Canvas
-          </button>
-        </div>
-
-        {Array.isArray(messages) && messages.length > 0 && (
-          <div className="mt-4 text-[11px] text-white/50">
-            Using {messages.length} message(s) for context.
-          </div>
-        )}
-      </div>
-
-      <div className="p-3 border-t border-white/10 text-[11px] text-white/50">
-        Tip: keep prompts specific and actionable.
-=======
 import { useState, useRef } from 'react';
 import { X, RefreshCw, Download, Code2, Eye, Copy, Check, Maximize2 } from 'lucide-react';
 
@@ -116,7 +56,7 @@ function buildPreviewHtml(artifact) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://unpkg.com/react@18/umd/react.development.js"></script><script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script><script src="https://unpkg.com/@babel/standalone/babel.min.js"></script><style>body{font-family:system-ui,sans-serif;margin:16px;}</style></head><body><div id="root"></div><script type="text/babel">${artifact.code}\nconst rootEl = document.getElementById('root');\nconst root = ReactDOM.createRoot(rootEl);\ntry { root.render(React.createElement(typeof App !== 'undefined' ? App : 'div', null, 'Component loaded')); } catch(e) { rootEl.innerHTML = '<pre style="color:red">'+e.message+'</pre>'; }</script></body></html>`;
 }
 
-export default function CanvasPanel({ messages, onClose }) {
+export default function CanvasPanel({ messages = [], onClose }) {
   const [tab, setTab] = useState('preview');
   const [copied, setCopied] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
@@ -167,7 +107,7 @@ export default function CanvasPanel({ messages, onClose }) {
       <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         <Code2 size={13} style={{ color: 'var(--accent)' }} />
         <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary)' }}>
-          Canvas {artifact ? `· ${artifact.type.toUpperCase()}` : ''}
+          Canvas {artifact ? `- ${artifact.type.toUpperCase()}` : ''}
         </span>
         <div className="flex items-center gap-1">
           {canPreview && (
@@ -223,7 +163,6 @@ export default function CanvasPanel({ messages, onClose }) {
             {artifact.code}
           </pre>
         )}
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
       </div>
     </div>
   );

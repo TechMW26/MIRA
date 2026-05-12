@@ -1,10 +1,6 @@
 /**
  * AI Model Endpoint Configuration
-<<<<<<< HEAD
- * 
-=======
  *
->>>>>>> 8c839060c0f2a4ead530ba0fdc44e0712b33d020
  * All inference endpoints for MIRA AI assistant
  */
 
