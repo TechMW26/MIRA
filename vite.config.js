@@ -6,8 +6,8 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/api/chat': { target: 'https://www.itsmira.cloud', changeOrigin: true, secure: true },
-      '/api/image': { target: 'https://www.itsmira.cloud', changeOrigin: true, secure: true },
+      '/api/chat': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/image': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/scrape': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search': { target: 'http://localhost:3002', changeOrigin: true },
     },
