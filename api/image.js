@@ -1,8 +1,7 @@
 export const config = { maxDuration: 60 };
 
-const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://142.127.68.223:15166';
-const INFERENCE_PUBLIC_PATH = process.env.INFERENCE_PUBLIC_PATH || '/public/analyze';
-const INFERENCE_PROTECTED_PATH = process.env.INFERENCE_PROTECTED_PATH || '/v1/analyze';
+const IMAGE_BASE_URL = process.env.IMAGE_BASE_URL || 'http://142.112.39.215:50978';
+const IMAGE_GENERATE_PATH = process.env.IMAGE_GENERATE_PATH || '/generate';
 const INFERENCE_APP_TOKEN = process.env.INFERENCE_APP_TOKEN || 'f6d30c6778656de0ed82045a28ab2ff3';
 const INFERENCE_API_KEY = process.env.INFERENCE_API_KEY || 'PRO_SAFETY_TOKEN_2026';
 const INFERENCE_TIMEOUT_MS = Number(process.env.INFERENCE_TIMEOUT_MS || 35000);
@@ -47,12 +46,12 @@ async function callInference(prompt, image) {
   const attempts = [];
   if (INFERENCE_API_KEY) {
     attempts.push({
-      url: `${INFERENCE_BASE_URL}${INFERENCE_PROTECTED_PATH}`,
+      url: `${IMAGE_BASE_URL}${IMAGE_GENERATE_PATH}`,
       headers: { 'X-API-KEY': INFERENCE_API_KEY },
     });
   }
   attempts.push({
-    url: `${INFERENCE_BASE_URL}${INFERENCE_PUBLIC_PATH}`,
+    url: `${IMAGE_BASE_URL}${IMAGE_GENERATE_PATH}`,
     headers: { 'X-App-Token': INFERENCE_APP_TOKEN || '' },
   });
 

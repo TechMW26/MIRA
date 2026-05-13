@@ -1,6 +1,6 @@
 export const config = { maxDuration: 60 };
 
-const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://142.127.68.223:15166';
+const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://142.112.39.215:50971';
 const INFERENCE_PUBLIC_PATH = process.env.INFERENCE_PUBLIC_PATH || '/public/analyze';
 const INFERENCE_PROTECTED_PATH = process.env.INFERENCE_PROTECTED_PATH || '/v1/analyze';
 const INFERENCE_APP_TOKEN = process.env.INFERENCE_APP_TOKEN || 'f6d30c6778656de0ed82045a28ab2ff3';
