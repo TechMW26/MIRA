@@ -337,7 +337,7 @@ body {
   }
 }
 
-/* ── Image lightbox modal ──────────────────── */
+/* ── Image lightbox modal (theme-aware, portal-rendered) ── */
 @keyframes lightboxFadeIn {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -347,22 +347,89 @@ body {
   to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
+/* Default (dark) tokens — overridden by .light below */
 .image-lightbox {
+  --lb-backdrop-1: rgba(15, 23, 42, 0.78);
+  --lb-backdrop-2: rgba(0, 0, 0, 0.92);
+  --lb-card-bg-1: rgba(20, 23, 33, 0.94);
+  --lb-card-bg-2: rgba(12, 14, 22, 0.97);
+  --lb-card-border: rgba(255, 255, 255, 0.08);
+  --lb-card-ring: rgba(255, 255, 255, 0.04);
+  --lb-card-inset: rgba(255, 255, 255, 0.05);
+  --lb-divider: rgba(255, 255, 255, 0.06);
+  --lb-header-tint: rgba(255, 255, 255, 0.04);
+  --lb-footer-tint: rgba(255, 255, 255, 0.03);
+  --lb-text-strong: rgba(241, 245, 249, 0.95);
+  --lb-text-soft: rgba(203, 213, 225, 0.85);
+  --lb-btn-bg: rgba(255, 255, 255, 0.06);
+  --lb-btn-bg-hover: rgba(255, 255, 255, 0.12);
+  --lb-btn-border: rgba(255, 255, 255, 0.08);
+  --lb-checker: rgba(255, 255, 255, 0.015);
+  --lb-img-shadow: 0 20px 60px -10px rgba(0, 0, 0, 0.6);
+  --lb-img-ring: rgba(255, 255, 255, 0.05);
+  --lb-card-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.7);
+
   position: fixed;
   inset: 0;
-  z-index: 300;
+  z-index: 2147483646;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: clamp(12px, 3vw, 32px);
-  background: radial-gradient(
-      ellipse at center,
-      rgba(15, 23, 42, 0.78) 0%,
-      rgba(0, 0, 0, 0.92) 100%
-    );
+  background: radial-gradient(ellipse at center, var(--lb-backdrop-1) 0%, var(--lb-backdrop-2) 100%);
   backdrop-filter: blur(20px) saturate(140%);
   -webkit-backdrop-filter: blur(20px) saturate(140%);
   animation: lightboxFadeIn 0.18s ease-out;
+}
+
+/* Light theme overrides — applied when ancestor html/body has .light */
+.light .image-lightbox,
+html.light .image-lightbox,
+body.light .image-lightbox {
+  --lb-backdrop-1: rgba(241, 245, 249, 0.78);
+  --lb-backdrop-2: rgba(203, 213, 225, 0.88);
+  --lb-card-bg-1: rgba(255, 255, 255, 0.98);
+  --lb-card-bg-2: rgba(248, 250, 252, 0.98);
+  --lb-card-border: rgba(15, 23, 42, 0.10);
+  --lb-card-ring: rgba(15, 23, 42, 0.04);
+  --lb-card-inset: rgba(255, 255, 255, 0.6);
+  --lb-divider: rgba(15, 23, 42, 0.08);
+  --lb-header-tint: rgba(15, 23, 42, 0.03);
+  --lb-footer-tint: rgba(15, 23, 42, 0.02);
+  --lb-text-strong: rgba(15, 23, 42, 0.92);
+  --lb-text-soft: rgba(51, 65, 85, 0.85);
+  --lb-btn-bg: rgba(15, 23, 42, 0.05);
+  --lb-btn-bg-hover: rgba(15, 23, 42, 0.10);
+  --lb-btn-border: rgba(15, 23, 42, 0.08);
+  --lb-checker: rgba(15, 23, 42, 0.025);
+  --lb-img-shadow: 0 20px 60px -10px rgba(15, 23, 42, 0.18);
+  --lb-img-ring: rgba(15, 23, 42, 0.06);
+  --lb-card-shadow: 0 30px 80px -20px rgba(15, 23, 42, 0.25);
+}
+
+/* System preference fallback when no .light/.dark class present */
+@media (prefers-color-scheme: light) {
+  :root:not(.dark):not(.light) .image-lightbox {
+    --lb-backdrop-1: rgba(241, 245, 249, 0.78);
+    --lb-backdrop-2: rgba(203, 213, 225, 0.88);
+    --lb-card-bg-1: rgba(255, 255, 255, 0.98);
+    --lb-card-bg-2: rgba(248, 250, 252, 0.98);
+    --lb-card-border: rgba(15, 23, 42, 0.10);
+    --lb-card-ring: rgba(15, 23, 42, 0.04);
+    --lb-card-inset: rgba(255, 255, 255, 0.6);
+    --lb-divider: rgba(15, 23, 42, 0.08);
+    --lb-header-tint: rgba(15, 23, 42, 0.03);
+    --lb-footer-tint: rgba(15, 23, 42, 0.02);
+    --lb-text-strong: rgba(15, 23, 42, 0.92);
+    --lb-text-soft: rgba(51, 65, 85, 0.85);
+    --lb-btn-bg: rgba(15, 23, 42, 0.05);
+    --lb-btn-bg-hover: rgba(15, 23, 42, 0.10);
+    --lb-btn-border: rgba(15, 23, 42, 0.08);
+    --lb-checker: rgba(15, 23, 42, 0.025);
+    --lb-img-shadow: 0 20px 60px -10px rgba(15, 23, 42, 0.18);
+    --lb-img-ring: rgba(15, 23, 42, 0.06);
+    --lb-card-shadow: 0 30px 80px -20px rgba(15, 23, 42, 0.25);
+  }
 }
 
 .image-lightbox-card {
@@ -373,16 +440,12 @@ body {
   max-height: 92vh;
   border-radius: 20px;
   overflow: hidden;
-  background: linear-gradient(
-      180deg,
-      rgba(20, 23, 33, 0.92),
-      rgba(12, 14, 22, 0.96)
-    );
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, var(--lb-card-bg-1), var(--lb-card-bg-2));
+  border: 1px solid var(--lb-card-border);
   box-shadow:
-    0 30px 80px -20px rgba(0, 0, 0, 0.7),
-    0 0 0 1px rgba(255, 255, 255, 0.04),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    var(--lb-card-shadow),
+    0 0 0 1px var(--lb-card-ring),
+    inset 0 1px 0 var(--lb-card-inset);
   animation: lightboxZoomIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -391,8 +454,8 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 14px 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+  border-bottom: 1px solid var(--lb-divider);
+  background: linear-gradient(180deg, var(--lb-header-tint), transparent);
 }
 
 .image-lightbox-badge {
@@ -403,7 +466,7 @@ body {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(226, 232, 240, 0.85);
+  color: var(--lb-text-strong);
 }
 
 .image-lightbox-dot {
@@ -421,14 +484,14 @@ body {
   width: 32px;
   height: 32px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: rgba(226, 232, 240, 0.9);
+  background: var(--lb-btn-bg);
+  border: 1px solid var(--lb-btn-border);
+  color: var(--lb-text-strong);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 .image-lightbox-close:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--lb-btn-bg-hover);
   transform: scale(1.05);
 }
 
@@ -440,7 +503,7 @@ body {
   justify-content: center;
   padding: 16px;
   background:
-    repeating-conic-gradient(rgba(255,255,255,0.015) 0% 25%, transparent 0% 50%) 50% / 24px 24px,
+    repeating-conic-gradient(var(--lb-checker) 0% 25%, transparent 0% 50%) 50% / 24px 24px,
     radial-gradient(circle at 50% 0%, rgba(139, 92, 246, 0.10), transparent 60%);
 }
 
@@ -450,8 +513,8 @@ body {
   object-fit: contain;
   border-radius: 12px;
   box-shadow:
-    0 20px 60px -10px rgba(0, 0, 0, 0.6),
-    0 0 0 1px rgba(255, 255, 255, 0.05);
+    var(--lb-img-shadow),
+    0 0 0 1px var(--lb-img-ring);
 }
 
 .image-lightbox-footer {
@@ -460,15 +523,15 @@ body {
   justify-content: space-between;
   gap: 16px;
   padding: 12px 18px 14px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(0deg, rgba(255, 255, 255, 0.03), transparent);
+  border-top: 1px solid var(--lb-divider);
+  background: linear-gradient(0deg, var(--lb-footer-tint), transparent);
 }
 
 .image-lightbox-prompt {
   margin: 0;
   flex: 1;
   font-size: 0.78rem;
-  color: rgba(203, 213, 225, 0.85);
+  color: var(--lb-text-soft);
   line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;

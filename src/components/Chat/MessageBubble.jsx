@@ -1,4 +1,5 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Copy, Check, Volume2, VolumeX, User, FileText, FileCode, File, X, ExternalLink, Download } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -378,7 +379,7 @@ function GeneratedImageCard({ prompt }) {
         )}
       </div>
 
-      {open && (
+      {open && typeof document !== 'undefined' && createPortal(
         <div
           className="image-lightbox"
           onClick={() => setOpen(false)}
@@ -428,7 +429,8 @@ function GeneratedImageCard({ prompt }) {
               </a>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
