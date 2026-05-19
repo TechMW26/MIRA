@@ -6,7 +6,7 @@ import CodeBlock from './CodeBlock';
 import MindMap from './MindMap';
 import Chart from './Chart';
 import ParticleText from './ParticleText';
-import { exportDocument } from '../../utils/documentExport';
+import { exportDocument, sanitizeDocumentContent } from '../../utils/documentExport';
 
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN:\s*([\s\S]*?)\]/i;
 
@@ -15,16 +15,46 @@ function extractImagePrompt(content = '') {
   return match?.[1]?.trim() || '';
 }
 
-function buildGeneratedImageUrl(prompt) {
+function enhanceImagePrompt(prompt = '') {
+  const base = String(prompt).trim();
+  if (!base) return base;
+  // Avoid double-appending if the user already asked for these cues.
+  const lower = base.toLowerCase();
+  const realismCues = [
+    'photorealistic',
+    'ultra-detailed',
+    'sharp focus',
+    'natural lighting',
+    'high dynamic range',
+    'shot on Canon EOS R5, 50mm f/1.4',
+    '8k',
+    'cinematic color grading',
+  ];
+  const missing = realismCues.filter((cue) => !lower.includes(cue.toLowerCase()));
+  if (!missing.length) return base;
+  return `${base}, ${missing.join(', ')}`;
+}
+
+// Fallback model chain — start with the reliable `flux`, then try `turbo` as a backup.
+const IMAGE_MODEL_CHAIN = ['flux', 'turbo'];
+
+function buildPollinationsUrl(prompt, model, seed) {
   const params = new URLSearchParams({
-    width: '1024',
-    height: '1024',
+    width: '1280',
+    height: '1280',
     nologo: 'true',
     enhance: 'true',
-    model: 'flux',
-    seed: String(Math.abs(hashString(prompt)) % 1000000),
+    model,
+    seed: String(seed),
   });
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?${params.toString()}`;
+}
+
+function buildGeneratedImageUrl(prompt, modelIndex = 0) {
+  const enhanced = enhanceImagePrompt(prompt);
+  const model = IMAGE_MODEL_CHAIN[Math.min(modelIndex, IMAGE_MODEL_CHAIN.length - 1)];
+  const seed = Math.abs(hashString(enhanced)) % 1000000;
+  return buildPollinationsUrl(enhanced, model, seed);
 }
 
 function hashString(value = '') {
@@ -73,12 +103,7 @@ function getDownloadLinkFormat(children, href) {
 }
 
 function cleanExportContent(content = '') {
-  return String(content)
-    .replace(/^\s*\[Download Button\]\s*$/gim, '')
-    .replace(/^\s*\[Note:[\s\S]*?download[\s\S]*?\]\s*$/gim, '')
-    .replace(/\[Download[^\]]*(?:PDF|DOCX|PPTX|Word|PowerPoint|Presentation|Slides)[^\]]*\]\([^)]*\)/gi, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return sanitizeDocumentContent(content);
 }
 
 function formatLabel(format) {
@@ -233,24 +258,178 @@ function ThinkingSection({ content, isActive }) {
   );
 }
 
+const THINKING_PHRASES = [
+  'Let me think...',
+  'Gathering my thoughts...',
+  'Connecting the dots...',
+  'Working on it...',
+  'Searching the right words...',
+  'Putting it together...',
+  'Reasoning through this...',
+  'Almost there...',
+  'Composing a response...',
+  'Thinking carefully...',
+  'Lining up the details...',
+  'Tuning the answer...',
+];
+
 function ThinkingPlaceholder() {
+  const phrase = useMemo(
+    () => THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)],
+    []
+  );
   return (
-    <ParticleText text="MIRA is forming the first words..." active placeholder />
+    <ParticleText text={phrase} active placeholder />
   );
 }
 
 function GeneratedImageCard({ prompt }) {
-  const imageUrl = useMemo(() => buildGeneratedImageUrl(prompt), [prompt]);
+  const [modelIndex, setModelIndex] = useState(0);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const [status, setStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
+  const [open, setOpen] = useState(false);
+
+  const imageUrl = useMemo(
+    () => `${buildGeneratedImageUrl(prompt, modelIndex)}&_r=${retryNonce}`,
+    [prompt, modelIndex, retryNonce]
+  );
+
+  // Reset to loading whenever we point at a new URL
+  useEffect(() => {
+    setStatus('loading');
+  }, [imageUrl]);
+
+  const handleImgError = useCallback(() => {
+    if (modelIndex < IMAGE_MODEL_CHAIN.length - 1) {
+      setModelIndex((i) => i + 1);
+    } else {
+      setStatus('error');
+    }
+  }, [modelIndex]);
+
+  const handleRetry = useCallback(() => {
+    setModelIndex(0);
+    setRetryNonce((n) => n + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [open]);
+
   return (
-    <div className="generated-image-card">
-      <div className="generated-image-frame">
-        <img src={imageUrl} alt={prompt} loading="lazy" />
+    <div className="generated-image-card not-prose">
+      <div
+        className={`generated-image-frame status-${status}`}
+        onClick={() => status === 'ready' && setOpen(true)}
+        role={status === 'ready' ? 'button' : undefined}
+        tabIndex={status === 'ready' ? 0 : -1}
+        onKeyDown={(e) => {
+          if (status === 'ready' && (e.key === 'Enter' || e.key === ' ')) setOpen(true);
+        }}
+        style={{ cursor: status === 'ready' ? 'zoom-in' : 'default' }}
+      >
+        {status !== 'error' && (
+          <img
+            key={imageUrl}
+            src={imageUrl}
+            alt=""
+            loading="lazy"
+            onLoad={() => setStatus('ready')}
+            onError={handleImgError}
+            style={{ opacity: status === 'ready' ? 1 : 0 }}
+          />
+        )}
+
+        {status === 'loading' && (
+          <div className="generated-image-loader">
+            <div className="generated-image-spinner" />
+            <span>Generating image…</span>
+          </div>
+        )}
+
+        {status === 'error' && (
+          <div className="generated-image-loader generated-image-errored">
+            <span>Image failed to generate.</span>
+            <button type="button" onClick={handleRetry} className="generated-image-retry">
+              Retry
+            </button>
+          </div>
+        )}
       </div>
       <div className="generated-image-meta">
         <span className="generated-image-label">Generated image</span>
         <p>{prompt}</p>
-        <a href={imageUrl} target="_blank" rel="noopener noreferrer">Open full image</a>
+        {status === 'ready' && (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="generated-image-open"
+          >
+            Open full image
+          </button>
+        )}
       </div>
+
+      {open && (
+        <div
+          className="image-lightbox"
+          onClick={() => setOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Generated image preview"
+        >
+          <div
+            className="image-lightbox-card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="image-lightbox-header">
+              <div className="image-lightbox-badge">
+                <span className="image-lightbox-dot" />
+                Generated image
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="image-lightbox-close"
+                aria-label="Close preview"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="image-lightbox-body">
+              <img
+                src={imageUrl}
+                alt={prompt}
+                className="image-lightbox-img"
+              />
+            </div>
+
+            <div className="image-lightbox-footer">
+              <p className="image-lightbox-prompt" title={prompt}>{prompt}</p>
+              <a
+                href={imageUrl}
+                download={`generated-${Date.now()}.png`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="image-lightbox-download"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Download size={14} />
+                Download
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -271,7 +450,7 @@ function DocumentDownloadAction({ format, exporting, exportError, onExport }) {
         {exporting ? `Preparing ${label}...` : `Download ${label}`}
       </button>
       <span className="text-[11px]" style={{ color: exportError ? '#ef4444' : 'var(--text-tertiary)' }}>
-        {exportError || 'Ready as a real file export.'}
+        {exportError || 'Ready to download.'}
       </span>
     </div>
   );
@@ -335,13 +514,19 @@ function MessageBubble({ message, isLast }) {
       // If markdown produces an empty url, don't render an <img> with empty src.
       if (!s) return null;
 
-      // Sometimes we may receive raw base64 without data: prefix.
-      const finalSrc = s.startsWith('data:')
-        ? s
-        : `data:image/png;base64,${s}`;
-
-      // Guard: only allow image data urls
-      if (!finalSrc.startsWith('data:image/')) return null;
+      // Accept already-valid sources: data: URIs, http(s) URLs, blob: URLs,
+      // protocol-relative URLs and root/relative paths. Only treat as raw
+      // base64 if the string contains no scheme/path indicators.
+      let finalSrc;
+      if (/^(data:|https?:\/\/|blob:|\/\/|\/)/i.test(s)) {
+        finalSrc = s;
+      } else if (/^[A-Za-z0-9+/=\s]+$/.test(s) && s.length > 64) {
+        // Looks like raw base64 (no URL chars) — wrap as PNG data URI.
+        finalSrc = `data:image/png;base64,${s.replace(/\s+/g, '')}`;
+      } else {
+        // Unknown/invalid src — skip rendering rather than producing a broken image.
+        return null;
+      }
 
       return (
         <img

@@ -12,7 +12,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useChatContext } from '../contexts/ChatContext';
 import { generateSmartTitle } from '../utils/helpers';
-import { detectDocumentRequest, exportDocument } from '../utils/documentExport';
+import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 const HISTORY_ATTACHMENT_CHAR_LIMIT = 16000;
@@ -188,7 +188,7 @@ export default function useChat() {
         enhancedSystemPrompt += '\n\nIMAGE GENERATION ROUTE: The user is asking for an actual generated image. Respond with exactly one [IMAGE_GEN: ...] block and no prose, markdown, bullet points, or explanations.';
       }
       if (requestedDocumentFormat) {
-        enhancedSystemPrompt += `\n\nDOCUMENT EXPORT ROUTE: The user wants a downloadable ${requestedDocumentFormat.toUpperCase()} file. Generate only the polished document body as clean markdown. Do not include fake download buttons, placeholder links, Google Drive notes, or instructions about downloading. The app will handle the actual file export.`;
+        enhancedSystemPrompt += `\n\nDOCUMENT EXPORT ROUTE: The user wants a downloadable ${requestedDocumentFormat.toUpperCase()} file. Generate only the polished document body as clean markdown. The first line must be the real document title. Never write conversational wrapper text such as "Here is...", "Below is...", "complete PDF content", or "well-structured markdown". Do not include fake download buttons, placeholder links, Google Drive notes, page labels, image placeholder labels, or instructions about downloading. The app will handle the actual file export.`;
       }
 
       try {
@@ -233,8 +233,9 @@ export default function useChat() {
 
           let userContent = content;
 
-          // Web search injection
-          if (webSearch && content.trim()) {
+          // Web search injection — skip when an explicit document export is requested,
+          // so unrelated search results don't override the attached/previous file context.
+          if (webSearch && content.trim() && !requestedDocumentFormat) {
             try {
               const searchRes = await fetch('/api/search', {
                 method: 'POST',
@@ -263,7 +264,17 @@ export default function useChat() {
           }
 
           if (requestedDocumentFormat) {
-            userContent = `${userContent}\n\nDOCUMENT EXPORT REQUEST: Create the complete ${requestedDocumentFormat.toUpperCase()} document content now. Use the uploaded file content if provided. Return only the document content in well-structured markdown. Do not add any fake download button, fake URL, placeholder link, or download instructions.`;
+            const priorFileNames = historySource
+              .flatMap((m) => (m.role === 'user' && Array.isArray(m.attachments)) ? m.attachments : [])
+              .filter((a) => a && !a.isImage && (a.parsedText || a.parseError))
+              .map((a) => a.name)
+              .filter(Boolean);
+            const currentFileNames = textAttachments.map((a) => a.name).filter(Boolean);
+            const sourceFiles = [...new Set([...currentFileNames, ...priorFileNames])];
+            const sourceHint = sourceFiles.length
+              ? ` The document must be built strictly from the uploaded file(s) already in this conversation: ${sourceFiles.join(', ')}. Do not introduce unrelated topics, web search snippets, or invented references.`
+              : '';
+            userContent = `${userContent}\n\nDOCUMENT EXPORT REQUEST: Create the complete ${requestedDocumentFormat.toUpperCase()} document content now.${sourceHint} Return only the final document body in markdown. Start with the actual document title only. Do not add any conversational intro, fake download button, fake URL, placeholder link, page marker, image placeholder, download instruction, or note about markdown. Ignore any unrelated prior search results.`;
           }
 
           if (wantsImageGeneration) {
@@ -308,14 +319,15 @@ export default function useChat() {
           if (fullText) {
             const requestedFormat = requestedDocumentFormat;
             if (requestedFormat) {
+              const documentContent = sanitizeDocumentContent(fullText);
               const documentUpdate = {
-                content: fullText,
+                content: documentContent,
                 exportFormat: requestedFormat,
                 exportStatus: 'ready',
               };
               try {
                 const filename = `mira-${requestedFormat}-${Date.now()}.${requestedFormat}`;
-                await exportDocument(fullText, requestedFormat, filename);
+                await exportDocument(documentContent, requestedFormat, filename);
               } catch (exportErr) {
                 documentUpdate.exportStatus = 'failed';
                 documentUpdate.exportError = exportErr?.message || 'Export failed';
@@ -326,7 +338,7 @@ export default function useChat() {
             }
 
             if (isNewChat) {
-              generateSmartTitle(content, fullText).then((title) => {
+              generateSmartTitle(content, requestedFormat ? sanitizeDocumentContent(fullText) : fullText).then((title) => {
                 updateConversation(user.uid, convId, { title });
               });
             }

@@ -6,6 +6,20 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import DOMPurify from 'dompurify';
+
+const HTML_SANITIZE_CONFIG = {
+  USE_PROFILES: { html: true },
+  FORBID_TAGS: ['style', 'link', 'meta', 'base', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'textarea', 'select'],
+  FORBID_ATTR: ['style', 'srcdoc', 'formaction', 'background', 'ping'],
+  ALLOW_DATA_ATTR: false,
+  ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|[#/])/i,
+};
+
+function sanitizeBrowserHtml(html) {
+  if (!html) return '';
+  try { return DOMPurify.sanitize(html, HTML_SANITIZE_CONFIG); } catch { return ''; }
+}
 
 function normalizeUrl(input) {
   const s = input.trim();
@@ -90,7 +104,12 @@ export default function BrowserPanel({ onSendToChat, onClose }) {
     const a = e.target.closest('a');
     if (!a) return;
     const href = a.getAttribute('href');
-    if (!href || href.startsWith('#') || href.startsWith('javascript')) return;
+    if (!href || href.startsWith('#')) return;
+    const lower = href.trim().toLowerCase();
+    if (lower.startsWith('javascript:') || lower.startsWith('vbscript:') || lower.startsWith('data:') || lower.startsWith('file:')) {
+      e.preventDefault();
+      return;
+    }
     e.preventDefault();
     try {
       const abs = href.startsWith('http') ? href : new URL(href, tab.page?.url || '').href;
@@ -256,13 +275,13 @@ export default function BrowserPanel({ onSendToChat, onClose }) {
                   {tab.page.content}
                 </ReactMarkdown>
               ) : (
-                <div className="browser-content" onClick={handleContentClick} dangerouslySetInnerHTML={{ __html: tab.page.html || '' }} />
+                <div className="browser-content" onClick={handleContentClick} dangerouslySetInnerHTML={{ __html: sanitizeBrowserHtml(tab.page.html) }} />
               )}
             </div>
           )}
 
           {!tab.loading && !tab.error && tab.page && viewMode === 'html' && (
-            <div className="browser-content" onClick={handleContentClick} dangerouslySetInnerHTML={{ __html: tab.page.html || '<p style="padding:16px;color:var(--text-tertiary)">No HTML available</p>' }} />
+            <div className="browser-content" onClick={handleContentClick} dangerouslySetInnerHTML={{ __html: tab.page.html ? sanitizeBrowserHtml(tab.page.html) : '<p style="padding:16px;color:var(--text-tertiary)">No HTML available</p>' }} />
           )}
         </div>
 

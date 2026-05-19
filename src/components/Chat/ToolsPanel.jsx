@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Calculator, Code2, Cloud, DollarSign, TrendingUp, X, Play, Loader } from 'lucide-react';
 
 function CalculatorTool() {
@@ -47,19 +47,70 @@ function CodeRunnerTool() {
   const [code, setCode] = useState('// Write JavaScript here\nconsole.log("Hello from MIRA!");\n\n// Try: Math.random(), Date.now(), etc.');
   const [output, setOutput] = useState('');
   const [running, setRunning] = useState(false);
+  const iframeRef = useRef(null);
+  const runIdRef = useRef(0);
+
+  useEffect(() => {
+    function handleMessage(e) {
+      const data = e.data;
+      if (!data || data.__mira !== 'code-runner') return;
+      if (data.runId !== runIdRef.current) return;
+      if (data.type === 'result') {
+        setOutput(data.logs.length ? data.logs.join('\n') : '(no output)');
+        setRunning(false);
+      } else if (data.type === 'error') {
+        setOutput('Error: ' + data.message);
+        setRunning(false);
+      }
+    }
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
 
   function run() {
     setRunning(true);
     setOutput('');
-    try {
-      const logs = [];
-      const fakeConsole = { log: (...a) => logs.push(a.map(String).join(' ')), error: (...a) => logs.push('ERROR: ' + a.join(' ')), warn: (...a) => logs.push('WARN: ' + a.join(' ')) };
-      new Function('console', code)(fakeConsole);
-      setOutput(logs.join('\n') || '(no output)');
-    } catch (e) {
-      setOutput('Error: ' + e.message);
+    const runId = ++runIdRef.current;
+
+    // Build a sandboxed iframe document that executes the user code in isolation.
+    // The sandbox attribute uses only allow-scripts (NO allow-same-origin) so the
+    // iframe runs in a null origin without access to parent DOM, cookies, storage, etc.
+    const runner = `
+      <!doctype html><html><head><meta charset="utf-8"></head><body><script>
+      (function(){
+        var logs = [];
+        var fmt = function(a){ try { return typeof a === 'string' ? a : JSON.stringify(a); } catch(e){ return String(a); } };
+        var send = function(msg){ try { parent.postMessage(Object.assign({__mira:'code-runner', runId:${runId}}, msg), '*'); } catch(e){} };
+        var sandboxConsole = {
+          log: function(){ logs.push(Array.prototype.map.call(arguments, fmt).join(' ')); },
+          warn: function(){ logs.push('WARN: ' + Array.prototype.map.call(arguments, fmt).join(' ')); },
+          error: function(){ logs.push('ERROR: ' + Array.prototype.map.call(arguments, fmt).join(' ')); },
+          info: function(){ logs.push(Array.prototype.map.call(arguments, fmt).join(' ')); },
+        };
+        var timer = setTimeout(function(){ send({ type:'error', message:'Execution timed out (3s)' }); }, 3000);
+        try {
+          (new Function('console', ${JSON.stringify(code)}))(sandboxConsole);
+          clearTimeout(timer);
+          send({ type:'result', logs: logs });
+        } catch(e) {
+          clearTimeout(timer);
+          send({ type:'error', message: (e && e.message) ? e.message : String(e) });
+        }
+      })();
+      </script></body></html>
+    `;
+
+    if (iframeRef.current) {
+      iframeRef.current.srcdoc = runner;
     }
-    setRunning(false);
+
+    // Hard fail-safe in case the iframe never reports back.
+    setTimeout(() => {
+      if (runIdRef.current === runId && running) {
+        setRunning(false);
+        setOutput(prev => prev || 'Error: Execution did not return.');
+      }
+    }, 5000);
   }
 
   return (
@@ -78,6 +129,8 @@ function CodeRunnerTool() {
           {output}
         </pre>
       )}
+      <iframe ref={iframeRef} title="code-runner-sandbox" sandbox="allow-scripts"
+        style={{ display: 'none' }} aria-hidden="true" />
     </div>
   );
 }

@@ -6,6 +6,14 @@ const SALAD_MODEL = process.env.SALAD_MODEL || 'llama3.2-vision';
 const SALAD_MAX_TOKENS = Number(process.env.SALAD_MAX_TOKENS || 2048);
 const SALAD_TIMEOUT_MS = Number(process.env.SALAD_TIMEOUT_MS || 55000);
 
+// Hard caps to prevent DoS / runaway requests.
+const MAX_BODY_BYTES = 5 * 1024 * 1024;        // 5 MB request body
+const MAX_MESSAGES = 200;                       // history depth
+const MAX_TEXT_CONTENT_CHARS = 200_000;         // total chars across a single message
+const MAX_IMAGES = 6;
+const MAX_TOKENS_CAP = 8192;
+const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
+
 function imageToDataUrl(image) {
   const raw = image?.base64 || image?.data || image?.url || '';
   if (!raw) return null;
@@ -50,15 +58,34 @@ function withImages(messages, images = []) {
 }
 
 function normalizeMessages(messages = [], systemPrompt) {
-  const normalized = messages
+  const list = Array.isArray(messages) ? messages.slice(-MAX_MESSAGES) : [];
+  const normalized = list
     .filter((message) => message?.role && message.content != null)
-    .map((message) => ({
-      role: ['system', 'assistant', 'user'].includes(message.role) ? message.role : 'user',
-      content: message.content,
-    }));
+    .map((message) => {
+      const role = ALLOWED_ROLES.has(message.role) ? message.role : 'user';
+      let content = message.content;
+      // Cap text length to defend against pathological payloads.
+      if (typeof content === 'string') {
+        content = content.slice(0, MAX_TEXT_CONTENT_CHARS);
+      } else if (Array.isArray(content)) {
+        let remaining = MAX_TEXT_CONTENT_CHARS;
+        content = content.slice(0, 32).map((part) => {
+          if (part?.type === 'text' && typeof part.text === 'string') {
+            const text = part.text.slice(0, Math.max(0, remaining));
+            remaining -= text.length;
+            return { type: 'text', text };
+          }
+          return part;
+        });
+      }
+      return { role, content };
+    });
 
-  if (systemPrompt) {
-    return [{ role: 'system', content: systemPrompt }, ...normalized.filter((message) => message.role !== 'system')];
+  if (systemPrompt && typeof systemPrompt === 'string') {
+    return [
+      { role: 'system', content: systemPrompt.slice(0, MAX_TEXT_CONTENT_CHARS) },
+      ...normalized.filter((message) => message.role !== 'system'),
+    ];
   }
   return normalized;
 }
@@ -76,12 +103,22 @@ export async function POST(req) {
   }
 
   try {
+    // Enforce request body size cap.
+    const lengthHeader = Number(req.headers.get?.('content-length') || 0);
+    if (lengthHeader && lengthHeader > MAX_BODY_BYTES) {
+      return jsonResponse({ error: 'Request body too large.' }, 413);
+    }
+
     const body = await req.json();
-    const messages = withImages(normalizeMessages(body.messages, body.systemPrompt), body.images);
+    const imageList = Array.isArray(body.images) ? body.images.slice(0, MAX_IMAGES) : [];
+    const messages = withImages(normalizeMessages(body.messages, body.systemPrompt), imageList);
 
     if (messages.length === 0) {
       return jsonResponse({ error: 'At least one chat message is required.' }, 400);
     }
+
+    const requestedMax = Number(body.max_tokens) || SALAD_MAX_TOKENS;
+    const safeMax = Math.max(1, Math.min(requestedMax, MAX_TOKENS_CAP));
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), SALAD_TIMEOUT_MS);
@@ -92,10 +129,10 @@ export async function POST(req) {
         'Salad-Api-Key': SALAD_API_KEY,
       },
       body: JSON.stringify({
-        model: body.model || SALAD_MODEL,
+        model: typeof body.model === 'string' ? body.model : SALAD_MODEL,
         messages,
         stream: body.stream !== false,
-        max_tokens: body.max_tokens || SALAD_MAX_TOKENS,
+        max_tokens: safeMax,
       }),
       signal: controller.signal,
     });
@@ -103,7 +140,9 @@ export async function POST(req) {
 
     if (!upstream.ok) {
       const errorText = await upstream.text().catch(() => '');
-      return jsonResponse({ error: errorText || `Salad API error: ${upstream.status}` }, upstream.status);
+      // Don't leak upstream provider error verbatim; log it and return a generic message.
+      console.error('Upstream chat error:', upstream.status, errorText?.slice(0, 500));
+      return jsonResponse({ error: `Chat upstream error (${upstream.status}).` }, upstream.status);
     }
 
     return new Response(upstream.body, {
@@ -115,8 +154,8 @@ export async function POST(req) {
       },
     });
   } catch (err) {
-    const message = err.name === 'AbortError' ? `Salad API timeout after ${SALAD_TIMEOUT_MS}ms` : err.message;
-    console.error('Chat API error:', message);
+    const message = err.name === 'AbortError' ? 'Chat request timed out.' : 'Chat request failed.';
+    console.error('Chat API error:', err?.message);
     return jsonResponse({ error: message }, 500);
   }
 }

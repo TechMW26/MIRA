@@ -247,8 +247,11 @@ If the user uploaded a file and only asks questions, analysis, summaries, or exp
 When creating document content:
 - Structure it professionally.
 - Use headings and subheadings.
+- Start with the actual document title only.
 - Keep formatting clean.
+- Never write conversational wrapper text like "Here is...", "Below is...", "complete PDF content", or "well-structured markdown".
 - Do not include fake download buttons, placeholder links, Google Drive notes, or instructions about where to download the file.
+- Do not include page markers like [Page 1], [Cover Page], [Back Cover], or image placeholder labels.
 - Return the document body only; the app will create the actual file.
 - Ask for missing critical details only when absolutely necessary.
 - Otherwise, make the best possible version using the available information.
