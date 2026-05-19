@@ -224,13 +224,16 @@ body {
   margin-top: 0;
 }
 
-.generated-image-frame::before {
+/* Shimmer only while we're actively waiting for the image — prevents the
+   permanent flickering once the image is ready or errored. */
+.generated-image-frame.status-loading::before {
   content: '';
   position: absolute;
   inset: 0;
   background: linear-gradient(90deg, transparent, rgba(255,255,255,0.16), transparent);
   animation: shimmer 1.8s ease-in-out infinite;
   z-index: 0;
+  pointer-events: none;
 }
 
 .generated-image-frame img {
@@ -332,7 +335,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .particle-text-active .particle-glyph,
-  .generated-image-frame::before {
+  .generated-image-frame.status-loading::before {
     animation: none;
   }
 }

@@ -19,25 +19,23 @@ function extractImagePrompt(content = '') {
 function enhanceImagePrompt(prompt = '') {
   const base = String(prompt).trim();
   if (!base) return base;
-  // Avoid double-appending if the user already asked for these cues.
+  // Keep realism cues short — Pollinations rejects pathologically long URLs
+  // and longer prompts also slow generation / increase failure rate.
   const lower = base.toLowerCase();
   const realismCues = [
     'photorealistic',
     'ultra-detailed',
-    'sharp focus',
     'natural lighting',
-    'high dynamic range',
-    'shot on Canon EOS R5, 50mm f/1.4',
     '8k',
-    'cinematic color grading',
   ];
-  const missing = realismCues.filter((cue) => !lower.includes(cue.toLowerCase()));
+  const missing = realismCues.filter((cue) => !lower.includes(cue));
   if (!missing.length) return base;
   return `${base}, ${missing.join(', ')}`;
 }
 
 // Fallback model chain — start with the reliable `flux`, then try `turbo` as a backup.
 const IMAGE_MODEL_CHAIN = ['flux', 'turbo'];
+const MAX_TRANSIENT_RETRIES = 2; // retry same URL up to 2x before advancing chain
 
 function buildPollinationsUrl(prompt, model, seed) {
   const params = new URLSearchParams({
@@ -287,12 +285,14 @@ function ThinkingPlaceholder() {
 function GeneratedImageCard({ prompt }) {
   const [modelIndex, setModelIndex] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
+  const [transientAttempt, setTransientAttempt] = useState(0);
   const [status, setStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
   const [open, setOpen] = useState(false);
+  const transientTimerRef = useRef(null);
 
   const imageUrl = useMemo(
-    () => `${buildGeneratedImageUrl(prompt, modelIndex)}&_r=${retryNonce}`,
-    [prompt, modelIndex, retryNonce]
+    () => `${buildGeneratedImageUrl(prompt, modelIndex)}&_r=${retryNonce}-${transientAttempt}`,
+    [prompt, modelIndex, retryNonce, transientAttempt]
   );
 
   // Reset to loading whenever we point at a new URL
@@ -300,16 +300,38 @@ function GeneratedImageCard({ prompt }) {
     setStatus('loading');
   }, [imageUrl]);
 
+  // Clear any pending retry timer when the component unmounts.
+  useEffect(() => () => {
+    if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
+  }, []);
+
   const handleImgError = useCallback(() => {
-    if (modelIndex < IMAGE_MODEL_CHAIN.length - 1) {
-      setModelIndex((i) => i + 1);
-    } else {
-      setStatus('error');
+    // First, retry the same URL a couple times with backoff — Pollinations
+    // frequently 502s on cold-start and succeeds on the second hit.
+    if (transientAttempt < MAX_TRANSIENT_RETRIES) {
+      const delay = 600 * (transientAttempt + 1);
+      transientTimerRef.current = setTimeout(() => {
+        setTransientAttempt((n) => n + 1);
+      }, delay);
+      return;
     }
-  }, [modelIndex]);
+    // Same URL exhausted — advance to the next model in the chain.
+    if (modelIndex < IMAGE_MODEL_CHAIN.length - 1) {
+      setTransientAttempt(0);
+      setModelIndex((i) => i + 1);
+      return;
+    }
+    setStatus('error');
+  }, [modelIndex, transientAttempt]);
+
+  const handleImgLoad = useCallback(() => {
+    setStatus('ready');
+  }, []);
 
   const handleRetry = useCallback(() => {
+    if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
     setModelIndex(0);
+    setTransientAttempt(0);
     setRetryNonce((n) => n + 1);
   }, []);
 
@@ -343,7 +365,7 @@ function GeneratedImageCard({ prompt }) {
             src={imageUrl}
             alt=""
             loading="lazy"
-            onLoad={() => setStatus('ready')}
+            onLoad={handleImgLoad}
             onError={handleImgError}
             style={{ opacity: status === 'ready' ? 1 : 0 }}
           />
