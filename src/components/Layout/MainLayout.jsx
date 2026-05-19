@@ -1,23 +1,11 @@
-import { useEffect } from 'react';
 import { Menu } from 'lucide-react';
 import { useChatContext } from '../../contexts/ChatContext';
 import Sidebar from '../Sidebar/Sidebar';
 import ChatWindow from '../Chat/ChatWindow';
 import SettingsModal from '../Profile/ProfilePage';
-import { getUserMemories } from '../../services/database';
 
 export default function MainLayout() {
   const { sidebarOpen, setSidebarOpen, showSettings, setShowSettings } = useChatContext();
-
-  // Preload memories to localStorage so the engine has them from the start
-  useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('mira_user') || 'null');
-    if (user?.uid) {
-      getUserMemories(user.uid).then((mems) => {
-        localStorage.setItem('mira_memories', JSON.stringify((mems || []).map((m) => m.content)));
-      });
-    }
-  }, []);
 
   return (
     <div className="relative flex h-screen overflow-hidden" style={{ background: 'var(--bg-primary)' }}>

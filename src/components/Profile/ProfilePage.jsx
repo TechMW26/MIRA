@@ -9,9 +9,7 @@ import {
   Trash2,
   Save,
   Loader2,
-  Plus,
   X,
-  Brain,
   Palette,
   Bell,
   Shield,
@@ -20,7 +18,7 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useChatContext } from '../../contexts/ChatContext';
-import { getUserProfile, updateUserProfile, getUserMemories, addUserMemory, deleteUserMemory } from '../../services/database';
+import { getUserProfile, updateUserProfile } from '../../services/database';
 
 export default function SettingsModal({ onClose }) {
   const { user, logout } = useAuth();
@@ -40,8 +38,6 @@ export default function SettingsModal({ onClose }) {
     notifications: true,
     streamResponses: true,
   });
-  const [memories, setMemories] = useState([]);
-  const [newMemory, setNewMemory] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [activeSection, setActiveSection] = useState('profile');
@@ -51,7 +47,6 @@ export default function SettingsModal({ onClose }) {
   useEffect(() => {
     if (!user) return;
     loadProfile();
-    loadMemories();
   }, [user]);
 
   async function loadProfile() {
@@ -75,13 +70,6 @@ export default function SettingsModal({ onClose }) {
     }
   }
 
-  async function loadMemories() {
-    const mems = await getUserMemories(user.uid);
-    setMemories(mems || []);
-    // Persist to localStorage for engine context
-    localStorage.setItem('mira_memories', JSON.stringify((mems || []).map((m) => m.content)));
-  }
-
   async function handleSave() {
     if (!user) return;
     setSaving(true);
@@ -95,7 +83,6 @@ export default function SettingsModal({ onClose }) {
       });
       // Persist preferences to localStorage for instant access by engine/UI
       localStorage.setItem('mira_preferences', JSON.stringify(preferences));
-      localStorage.setItem('mira_profile', JSON.stringify({ bio: profile.bio, displayName: profile.displayName }));
       window.dispatchEvent(new Event('mira-preferences-changed'));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -122,24 +109,10 @@ export default function SettingsModal({ onClose }) {
     reader.readAsDataURL(file);
   }
 
-  async function handleAddMemory() {
-    if (!newMemory.trim() || !user) return;
-    await addUserMemory(user.uid, newMemory.trim());
-    setNewMemory('');
-    loadMemories();
-  }
-
-  async function handleDeleteMemory(memId) {
-    if (!user) return;
-    await deleteUserMemory(user.uid, memId);
-    loadMemories();
-  }
-
   const sections = [
     { id: 'profile', label: 'Profile', icon: User },
     { id: 'appearance', label: 'Appearance', icon: Palette },
     { id: 'preferences', label: 'Preferences', icon: Bell },
-    { id: 'memory', label: 'Memory', icon: Brain },
     { id: 'account', label: 'Account', icon: Shield },
   ];
 
@@ -366,68 +339,6 @@ export default function SettingsModal({ onClose }) {
 
             <ToggleRow label="Stream responses" desc="Show AI responses as they generate" value={preferences.streamResponses} onChange={(v) => setPreferences((p) => ({ ...p, streamResponses: v }))} />
             <ToggleRow label="Notifications" desc="Get notified when AI finishes long tasks" value={preferences.notifications} onChange={(v) => setPreferences((p) => ({ ...p, notifications: v }))} />
-          </div>
-        )}
-
-        {/* Memory section */}
-        {activeSection === 'memory' && (
-          <div className="space-y-6 animate-fade-in">
-            <div className="glass-subtle rounded-2xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Memory</h3>
-                  <p className="text-xs mt-0.5" style={{ color: 'var(--text-tertiary)' }}>Things MIRA remembers about you for better responses</p>
-                </div>
-                <span className="text-xs px-2 py-1 rounded-lg" style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}>
-                  {memories.length} items
-                </span>
-              </div>
-
-              {/* Add new memory */}
-              <div className="flex gap-2 mb-4">
-                <input
-                  value={newMemory}
-                  onChange={(e) => setNewMemory(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddMemory()}
-                  placeholder="Add something for MIRA to remember..."
-                  className="flex-1 glass-input rounded-xl px-4 py-2.5 text-sm outline-none transition-all duration-200 focus:ring-1 focus:ring-[var(--border)]"
-                  style={{ color: 'var(--text-primary)' }}
-                />
-                <button
-                  onClick={handleAddMemory}
-                  disabled={!newMemory.trim()}
-                  className="px-4 rounded-xl transition-all hover:opacity-90 disabled:opacity-40"
-                  style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
-                >
-                  <Plus size={16} />
-                </button>
-              </div>
-
-              {/* Memory list */}
-              <div className="space-y-2 max-h-[400px] overflow-y-auto">
-                {memories.length === 0 && (
-                  <div className="text-center py-8 text-sm" style={{ color: 'var(--text-tertiary)' }}>
-                    No memories yet. Add things like your coding preferences, favorite frameworks, or how you like responses formatted.
-                  </div>
-                )}
-                {memories.map((mem) => (
-                  <div
-                    key={mem.id}
-                    className="group flex items-start gap-3 p-3 rounded-xl transition-all"
-                    style={{ background: 'var(--glass-bg)', border: '1px solid var(--glass-border)' }}
-                  >
-                    <Brain size={14} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--accent)' }} />
-                    <span className="flex-1 text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>{mem.content}</span>
-                    <button
-                      onClick={() => handleDeleteMemory(mem.id)}
-                      className="flex-shrink-0 p-1 rounded-lg opacity-0 group-hover:opacity-100 transition-all hover:scale-110 text-red-400"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
           </div>
         )}
 

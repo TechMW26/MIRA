@@ -2,7 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Mic, MicOff, Globe, Loader, PanelRight, Code2, Zap, Wrench, BookMarked, Share2 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 
-const ACCEPT_TYPES = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.sh,.rs,.go,.rb,.php,.sql';
+const ACCEPT_TYPES = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic,.sh,.rs,.go,.rb,.php,.sql';
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'heic']);
 
 function getFileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
@@ -16,6 +17,97 @@ function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+function getExt(name = '') {
+  return name.split('.').pop().toLowerCase();
+}
+
+function mimeFromName(name = '') {
+  const ext = getExt(name);
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'svg') return 'image/svg+xml';
+  if (IMAGE_EXTS.has(ext)) return `image/${ext}`;
+  return '';
+}
+
+function isImageFile(file) {
+  return file?.type?.startsWith('image/') || IMAGE_EXTS.has(getExt(file?.name || ''));
+}
+
+function normalizeImageDataUrl(dataUrl, mimeType) {
+  if (!mimeType || !dataUrl.startsWith('data:application/octet-stream;base64,')) return dataUrl;
+  return dataUrl.replace('data:application/octet-stream;base64,', `data:${mimeType};base64,`);
+}
+
+function namedClipboardFile(file) {
+  if (file.name && file.name !== 'image.png') return file;
+  const mimeType = file.type || 'image/png';
+  const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+  return new File([file], `pasted-image-${Date.now()}.${ext}`, { type: mimeType });
+}
+
+function dataUrlToFile(dataUrl) {
+  const mimeType = dataUrl.match(/^data:([^;,]+)/)?.[1] || 'image/png';
+  const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+  return fetch(dataUrl)
+    .then((res) => res.blob())
+    .then((blob) => new File([blob], `dropped-image-${Date.now()}.${ext}`, { type: mimeType }));
+}
+
+async function imageUrlToFile(url) {
+  if (!url) return null;
+  if (url.startsWith('data:image/')) return dataUrlToFile(url);
+  if (!/^https?:\/\//i.test(url)) return null;
+  const cleanUrl = url.trim();
+  const extension = getExt(cleanUrl.split('?')[0].split('#')[0]);
+  if (!IMAGE_EXTS.has(extension)) return null;
+  const response = await fetch(cleanUrl);
+  if (!response.ok) return null;
+  const blob = await response.blob();
+  if (!blob.type.startsWith('image/') && !IMAGE_EXTS.has(extension)) return null;
+  const filename = decodeURIComponent(cleanUrl.split('/').pop()?.split('?')[0] || `dropped-image.${extension || 'png'}`);
+  return new File([blob], filename, { type: blob.type || mimeFromName(filename) || 'image/png' });
+}
+
+function getImageUrlsFromDataTransfer(dataTransfer) {
+  const urls = new Set();
+  const uriList = dataTransfer.getData('text/uri-list') || dataTransfer.getData('text/plain') || '';
+  uriList
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+    .forEach((line) => urls.add(line));
+
+  const html = dataTransfer.getData('text/html') || '';
+  const imgMatch = html.match(/<img\b[^>]*src=["']([^"']+)["']/i);
+  if (imgMatch?.[1]) urls.add(imgMatch[1]);
+  return [...urls];
+}
+
+function hasFileLikeDrag(dataTransfer) {
+  const types = Array.from(dataTransfer?.types || []);
+  return types.includes('Files') || types.includes('text/uri-list') || types.includes('text/html');
+}
+
+function getClipboardImageFiles(clipboard) {
+  const candidates = [
+    ...Array.from(clipboard?.files || []),
+    ...Array.from(clipboard?.items || [])
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter(Boolean),
+  ];
+  const seen = new Set();
+  return candidates
+    .filter(isImageFile)
+    .map(namedClipboardFile)
+    .filter((file) => {
+      const key = `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onToggleWebSearch, activePanel, onTogglePanel, onShare, messages }) {
@@ -92,20 +184,33 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
   }
 
   async function processFiles(files) {
-    if (!files.length) return;
+    const fileList = files.filter(Boolean);
+    if (!fileList.length) return;
     setParsing(true);
-    const processed = await Promise.all(
-      files.map(async (file) => {
-        const isImage = file.type.startsWith('image/');
-        const base64 = await readFileAsBase64(file);
-        if (isImage) return { name: file.name, size: file.size, type: file.type, isImage: true, base64, mimeType: file.type };
-        let text = '';
-        if (isExtractableFile(file)) text = await extractFileText(file) || '';
-        return { name: file.name, size: file.size, type: file.type, isImage: false, text, base64, mimeType: file.type, parsed: !!text };
-      })
-    );
-    setAttachments((prev) => [...prev, ...processed]);
-    setParsing(false);
+    try {
+      const processed = (await Promise.all(
+        fileList.map(async (file) => {
+          const isImage = isImageFile(file);
+          const mimeType = file.type || mimeFromName(file.name);
+          const rawBase64 = await readFileAsBase64(file);
+          const base64 = isImage ? normalizeImageDataUrl(rawBase64, mimeType) : rawBase64;
+          if (isImage) return { name: file.name, size: file.size, type: mimeType, isImage: true, base64, mimeType };
+          let text = '';
+          let parseError = '';
+          if (isExtractableFile(file)) {
+            try {
+              text = await extractFileText(file) || '';
+            } catch (error) {
+              parseError = error?.message || 'Could not read this file.';
+            }
+          }
+          return { name: file.name, size: file.size, type: mimeType, isImage: false, text, base64, mimeType, parsed: !!text, parseError };
+        })
+      )).filter(Boolean);
+      if (processed.length) setAttachments((prev) => [...prev, ...processed]);
+    } finally {
+      setParsing(false);
+    }
   }
 
   async function handleFiles(e) {
@@ -113,28 +218,65 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
     if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
+  async function processDropPayload(dataTransfer) {
+    const files = Array.from(dataTransfer.files || []);
+    const urlFiles = await Promise.allSettled(
+      getImageUrlsFromDataTransfer(dataTransfer).map((url) => imageUrlToFile(url))
+    );
+    const droppedImages = urlFiles
+      .filter((result) => result.status === 'fulfilled' && result.value)
+      .map((result) => result.value);
+    await processFiles([...files, ...droppedImages]);
+  }
+
+  async function handlePaste(e) {
+    const clipboard = e.clipboardData;
+    if (!clipboard) return;
+    const imageFiles = getClipboardImageFiles(clipboard);
+    if (imageFiles.length) {
+      e.preventDefault?.();
+      textareaRef.current?.focus();
+      await processFiles(imageFiles);
+    }
+  }
+
+  useEffect(() => {
+    const handleDocumentPaste = (event) => {
+      handlePaste(event);
+    };
+
+    document.addEventListener('paste', handleDocumentPaste, true);
+    return () => {
+      document.removeEventListener('paste', handleDocumentPaste, true);
+    };
+  }, []);
+
   function onDragEnter(e) {
+    if (!hasFileLikeDrag(e.dataTransfer)) return;
     e.preventDefault();
     dragCounterRef.current++;
     setDragging(true);
   }
 
   function onDragLeave(e) {
+    if (!hasFileLikeDrag(e.dataTransfer)) return;
     e.preventDefault();
     dragCounterRef.current--;
     if (dragCounterRef.current === 0) setDragging(false);
   }
 
   function onDragOver(e) {
+    if (!hasFileLikeDrag(e.dataTransfer)) return;
     e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
   }
 
   async function onDrop(e) {
+    if (!hasFileLikeDrag(e.dataTransfer)) return;
     e.preventDefault();
     dragCounterRef.current = 0;
     setDragging(false);
-    const files = Array.from(e.dataTransfer.files || []);
-    await processFiles(files);
+    await processDropPayload(e.dataTransfer);
   }
 
   function removeAttachment(index) {
@@ -142,10 +284,10 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
   }
 
   return (
-    <div className="px-3 lg:px-0 pb-4 pt-2">
+    <div className="flex-shrink-0 px-3 lg:px-0 pb-4 pt-2">
       <div className="max-w-3xl mx-auto">
         <div
-          className="glass rounded-2xl overflow-hidden transition-all duration-300 focus-within:ring-1 focus-within:ring-[var(--border)] relative"
+          className="glass rounded-2xl overflow-hidden transition-shadow duration-200 focus-within:ring-1 focus-within:ring-[var(--border)] relative"
           onDragEnter={onDragEnter}
           onDragLeave={onDragLeave}
           onDragOver={onDragOver}

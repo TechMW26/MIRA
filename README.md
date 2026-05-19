@@ -1,10 +1,10 @@
 # MIRA — Multi-Intelligent Responsive Assistant
 
-A conversational and vision analysis platform powered by a single custom inference endpoint.
+A conversational and vision analysis platform powered by Salad Cloud's chat endpoint.
 
 ## Features
 
-- **Single Custom Model** — Uses only your self-hosted inference endpoint
+- **Single Salad Model** — Uses the configured Salad Cloud `llama3.2-vision` chat endpoint
 - **Chat Interface** — Streaming responses, markdown rendering, syntax-highlighted code
 - **Voice Mode** — Hands-free conversation with speech-to-text and text-to-speech
 - **Image Analysis** — Analyze uploaded images with prompt-based reasoning
@@ -49,4 +49,4 @@ A conversational and vision analysis platform powered by a single custom inferen
 - **Backend:** Vercel Serverless Functions (Edge Runtime)
 - **Database:** Firebase Realtime Database
 - **Auth:** Custom auth via Firebase RTB (SHA-256 hashed passwords)
-- **AI:** Custom inference endpoint (`/public/analyze` and `/v1/analyze`)
+- **AI:** Salad Cloud chat endpoint (`/api/chat`)

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Sparkles, Code2, Lightbulb, MessageCircle, Image, Bug, PenLine, Calculator, Database, FlaskConical, FileText, BarChart3, Globe, Palette, Shield, Send, X } from 'lucide-react';
+import { Sparkles, Code2, Lightbulb, MessageCircle, Eye, Bug, PenLine, Calculator, Database, FlaskConical, FileText, BarChart3, Globe, Palette, Shield, Send, X } from 'lucide-react';
 
 const TEMPLATE_POOL = [
   {
@@ -33,14 +33,14 @@ const TEMPLATE_POOL = [
     buildPrompt: (v) => `Write a professional email for: ${v.purpose}. Key points: ${v.details}`,
   },
   {
-    icon: Image,
-    label: 'Generate an image',
+    icon: Eye,
+    label: 'Analyze an image',
     color: 'bg-pink-500',
     inputs: [
-      { key: 'desc', label: 'Image description', placeholder: 'Describe what you want to see...', multiline: true },
-      { key: 'style', label: 'Style (optional)', placeholder: 'e.g., watercolor, photorealistic, minimalist' },
+      { key: 'desc', label: 'What should be analyzed?', placeholder: 'Describe the image or attach one after submitting...', multiline: true },
+      { key: 'focus', label: 'Focus area (optional)', placeholder: 'e.g., objects, text, design, safety' },
     ],
-    buildPrompt: (v) => `Generate an image of ${v.desc}${v.style ? ` in a ${v.style} style` : ''}`,
+    buildPrompt: (v) => `Analyze this image${v.focus ? ` focusing on ${v.focus}` : ''}: ${v.desc}`,
   },
   {
     icon: Bug,

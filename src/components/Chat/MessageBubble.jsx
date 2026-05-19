@@ -5,7 +5,87 @@ import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
 import MindMap from './MindMap';
 import Chart from './Chart';
-import { exportDocument, detectDocumentRequest } from '../../utils/documentExport';
+import ParticleText from './ParticleText';
+import { exportDocument } from '../../utils/documentExport';
+
+const IMAGE_GEN_PATTERN = /\[IMAGE_GEN:\s*([\s\S]*?)\]/i;
+
+function extractImagePrompt(content = '') {
+  const match = String(content).match(IMAGE_GEN_PATTERN);
+  return match?.[1]?.trim() || '';
+}
+
+function buildGeneratedImageUrl(prompt) {
+  const params = new URLSearchParams({
+    width: '1024',
+    height: '1024',
+    nologo: 'true',
+    enhance: 'true',
+    model: 'flux',
+    seed: String(Math.abs(hashString(prompt)) % 1000000),
+  });
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?${params.toString()}`;
+}
+
+function hashString(value = '') {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return hash;
+}
+
+function nodeToText(node) {
+  if (node == null) return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(nodeToText).join('');
+  if (node?.props?.children) return nodeToText(node.props.children);
+  return '';
+}
+
+function normalizeExportFormat(value = '') {
+  const lower = String(value).toLowerCase();
+  if (/\bpdf\b/.test(lower)) return 'pdf';
+  if (/\b(docx|word document|word file)\b/.test(lower)) return 'docx';
+  if (/\b(pptx|powerpoint|presentation|slides?)\b/.test(lower)) return 'pptx';
+  return '';
+}
+
+function getSuggestedExportFormat(message) {
+  const explicit = normalizeExportFormat(message?.exportFormat || message?.documentFormat || '');
+  if (explicit) return explicit;
+
+  const content = String(message?.content || '');
+  const hasExportCue = /\[(?:download button|page\s+\d+)\]|\b(download|export|save)\b/i.test(content);
+  if (!hasExportCue) return '';
+  return normalizeExportFormat(content);
+}
+
+function isFakeDownloadHref(href = '') {
+  const value = String(href || '').trim().toLowerCase();
+  return !value || value === '#' || value === 'about:blank' || value.startsWith('javascript:');
+}
+
+function getDownloadLinkFormat(children, href) {
+  const combined = `${nodeToText(children)} ${href || ''}`;
+  if (!/\b(download|export|save)\b/i.test(combined)) return '';
+  return normalizeExportFormat(combined);
+}
+
+function cleanExportContent(content = '') {
+  return String(content)
+    .replace(/^\s*\[Download Button\]\s*$/gim, '')
+    .replace(/^\s*\[Note:[\s\S]*?download[\s\S]*?\]\s*$/gim, '')
+    .replace(/\[Download[^\]]*(?:PDF|DOCX|PPTX|Word|PowerPoint|Presentation|Slides)[^\]]*\]\([^)]*\)/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function formatLabel(format) {
+  if (format === 'docx') return 'DOCX';
+  if (format === 'pptx') return 'PPTX';
+  return 'PDF';
+}
 
 function getFileIcon(name) {
   const ext = (name || '').split('.').pop().toLowerCase();
@@ -51,8 +131,8 @@ function AttachmentPreview({ attachment }) {
 
   // Document / non-image file
   const Icon = getFileIcon(attachment.name);
-  const ext = (attachment.name || '').split('.').pop().toLowerCase();
-  const isParsed = ['pdf','docx','doc'].includes(ext) || attachment.parsed;
+  const isParsed = Boolean(attachment.parsedText || attachment.parsed);
+  const parseFailed = Boolean(attachment.parseError || (!isParsed && attachment.parsedText === ''));
   return (
     <div
       className="mt-2 flex items-center gap-2.5 px-3 py-2.5 rounded-xl glass-subtle cursor-pointer transition-all hover:opacity-80"
@@ -72,6 +152,9 @@ function AttachmentPreview({ attachment }) {
       </div>
       {isParsed && (
         <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium" style={{ background: 'rgba(16,185,129,0.15)', color: '#10b981' }}>parsed</span>
+      )}
+      {parseFailed && (
+        <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>unread</span>
       )}
       <ExternalLink size={12} style={{ color: 'var(--text-tertiary)' }} />
     </div>
@@ -150,61 +233,46 @@ function ThinkingSection({ content, isActive }) {
   );
 }
 
-const THINKING_PHRASES = [
-  'Analyzing query structure…',
-  'Searching knowledge base…',
-  'Cross-referencing sources…',
-  'Evaluating context signals…',
-  'Building response graph…',
-  'Synthesizing information…',
-  'Checking web for updates…',
-  'Processing data streams…',
-  'Mapping relevant concepts…',
-  'Running inference chains…',
-  'Validating conclusions…',
-  'Assembling final output…',
-];
-
 function ThinkingPlaceholder() {
-  const [activeLines, setActiveLines] = useState([0]);
-  const intervalRef = useRef(null);
-
-  useEffect(() => {
-    let idx = 0;
-    intervalRef.current = setInterval(() => {
-      idx = (idx + 1) % THINKING_PHRASES.length;
-      setActiveLines((prev) => {
-        const next = [...prev, idx];
-        return next.length > 6 ? next.slice(-6) : next;
-      });
-    }, 700);
-    return () => clearInterval(intervalRef.current);
-  }, []);
-
   return (
-    <div className="thinking-section">
-      <div className="thinking-header">
-        <span className="thinking-sparkle">✦</span>
-        <span className="thinking-label">Processing</span>
-        <div className="thinking-pulse-bar">
-          <div className="thinking-pulse-bar-inner" />
-        </div>
+    <ParticleText text="MIRA is forming the first words..." active placeholder />
+  );
+}
+
+function GeneratedImageCard({ prompt }) {
+  const imageUrl = useMemo(() => buildGeneratedImageUrl(prompt), [prompt]);
+  return (
+    <div className="generated-image-card">
+      <div className="generated-image-frame">
+        <img src={imageUrl} alt={prompt} loading="lazy" />
       </div>
-      <div className="thinking-placeholder-lines">
-        {activeLines.map((phraseIdx, i) => (
-          <div
-            key={`${phraseIdx}-${i}`}
-            className="thinking-placeholder-line"
-            style={{
-              opacity: Math.min(0.15 + (i / activeLines.length) * 0.55, 0.7),
-              animationDelay: `${i * 0.08}s`,
-            }}
-          >
-            <span className="thinking-line-marker">›</span>
-            <span>{THINKING_PHRASES[phraseIdx]}</span>
-          </div>
-        ))}
+      <div className="generated-image-meta">
+        <span className="generated-image-label">Generated image</span>
+        <p>{prompt}</p>
+        <a href={imageUrl} target="_blank" rel="noopener noreferrer">Open full image</a>
       </div>
+    </div>
+  );
+}
+
+function DocumentDownloadAction({ format, exporting, exportError, onExport }) {
+  if (!format) return null;
+  const label = formatLabel(format);
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2" style={{ background: 'var(--hover-bg)', border: '1px solid var(--border)' }}>
+      <button
+        type="button"
+        onClick={() => onExport(format)}
+        disabled={exporting}
+        className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-all hover:opacity-90 disabled:opacity-50"
+        style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
+      >
+        <Download size={14} />
+        {exporting ? `Preparing ${label}...` : `Download ${label}`}
+      </button>
+      <span className="text-[11px]" style={{ color: exportError ? '#ef4444' : 'var(--text-tertiary)' }}>
+        {exportError || 'Ready as a real file export.'}
+      </span>
     </div>
   );
 }
@@ -215,6 +283,10 @@ function MessageBubble({ message, isLast }) {
   const [speaking, setSpeaking] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const imagePrompt = !isUser ? extractImagePrompt(message.content) : '';
+  const suggestedExportFormat = !isUser && !message.isStreaming && !imagePrompt
+    ? getSuggestedExportFormat(message)
+    : '';
 
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(message.content);
@@ -247,7 +319,7 @@ function MessageBubble({ message, isLast }) {
     setShowExportMenu(false);
     try {
       const filename = `mira-response-${Date.now()}.${format}`;
-      await exportDocument(message.content, format, filename);
+      await exportDocument(cleanExportContent(message.content), format, filename);
     } catch (error) {
       console.error('Export failed:', error);
       alert('Export failed. Please try again.');
@@ -308,6 +380,21 @@ function MessageBubble({ message, isLast }) {
       );
     },
     a({ href, children }) {
+      const label = nodeToText(children);
+      const linkFormat = getDownloadLinkFormat(children, href) || (/\b(download|export|save)\b/i.test(label) ? suggestedExportFormat : '');
+      if (linkFormat && isFakeDownloadHref(href)) {
+        return (
+          <button
+            type="button"
+            onClick={() => handleExport(linkFormat)}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all hover:opacity-90"
+            style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}
+          >
+            <Download size={13} />
+            {label || `Download ${formatLabel(linkFormat)}`}
+          </button>
+        );
+      }
       return (
         <a href={href} target="_blank" rel="noopener noreferrer" className="underline decoration-violet-400/50 underline-offset-2 transition-colors" style={{ color: 'var(--accent)' }}>
           {children}
@@ -327,7 +414,7 @@ function MessageBubble({ message, isLast }) {
     td({ children }) {
       return <td className="px-4 py-2.5 text-sm" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)' }}>{children}</td>;
     },
-  }), []);
+  }), [handleExport, suggestedExportFormat]);
 
   return (
     <div className={`group flex gap-3 px-4 lg:px-0 ${isUser ? 'justify-end' : 'justify-start'} animate-fade-in`}>
@@ -381,9 +468,23 @@ function MessageBubble({ message, isLast }) {
               {message.thinkingContent && (
                 <ThinkingSection content={message.thinkingContent} isActive={message.isThinkingActive} />
               )}
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                {message.content}
-              </ReactMarkdown>
+              {imagePrompt ? (
+                <GeneratedImageCard prompt={imagePrompt} />
+              ) : message.isStreaming && message.content ? (
+                <ParticleText text={message.content} active />
+              ) : (
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  {message.content}
+                </ReactMarkdown>
+              )}
+              {suggestedExportFormat && (
+                <DocumentDownloadAction
+                  format={suggestedExportFormat}
+                  exporting={exporting}
+                  exportError={message.exportError}
+                  onExport={handleExport}
+                />
+              )}
               {isLast && message.content === '' && !message.thinkingContent && (
                 <ThinkingPlaceholder />
               )}

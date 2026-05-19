@@ -35,7 +35,7 @@ export async function createConversation(uid, title = 'New Chat') {
     title,
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    model: 'vision-multimodal',
+    model: 'llama3.2-vision',
   };
   await set(convRef, conv);
   return { id: convRef.key, ...conv };
@@ -160,26 +160,3 @@ export async function updateUserProfile(uid, data) {
   });
 }
 
-// ── User Memories ──────────────────────────────────────
-export async function getUserMemories(uid) {
-  const snap = await get(ref(db, `memories/${uid}`));
-  if (!snap.exists()) return [];
-  const mems = [];
-  snap.forEach((child) => {
-    mems.push({ id: child.key, ...child.val() });
-  });
-  return mems;
-}
-
-export async function addUserMemory(uid, content) {
-  const memRef = push(ref(db, `memories/${uid}`));
-  await set(memRef, {
-    content,
-    createdAt: Date.now(),
-  });
-  return memRef.key;
-}
-
-export async function deleteUserMemory(uid, memId) {
-  await remove(ref(db, `memories/${uid}/${memId}`));
-}

@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle, PageBreak, TableOfContents } from 'docx';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle, PageBreak, Header, Footer, PageNumber, ShadingType } from 'docx';
 import PptxGenJS from 'pptxgenjs';
 import { marked } from 'marked';
 
@@ -34,51 +34,81 @@ const DESIGN = {
   },
 };
 
-// Function to remove asterisks from text
-function removeAsterisks(text) {
+function cleanInlineText(text) {
   if (!text) return '';
-  // Remove all * characters
-  return text.replace(/\*/g, '');
+  return String(text)
+    .replace(/<[^>]*>/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[`*_~]/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getTokenText(token) {
+  if (typeof token === 'string') return token;
+  return token?.text || token?.raw || '';
+}
+
+function looksLikePlainHeading(text, sectionCount) {
+  if (!text) return false;
+  const words = text.split(/\s+/).filter(Boolean);
+  if (text.length > 110 || words.length > 14) return false;
+  if (/[.!?]$/.test(text)) return false;
+  if (sectionCount === 0) return true;
+  if (/[:;]\s+/.test(text)) return false;
+  return words.length <= 8;
 }
 
 // Advanced Markdown Parser with Enhanced Features
 function parseMarkdownAdvanced(content) {
-  // Remove asterisks from entire content first
-  const cleanContent = removeAsterisks(content);
-  const tokens = marked.lexer(cleanContent);
+  const tokens = marked.lexer(content || '');
   const sections = [];
-  let currentSection = null;
+
+  const pushTextBlock = (rawText) => {
+    const parts = String(rawText || '').split(/\n+/).map(cleanInlineText).filter(Boolean);
+    for (const text of parts) {
+      if (looksLikePlainHeading(text, sections.length)) {
+        const depth = sections.length === 0 ? 1 : 2;
+        sections.push({
+          type: `heading${depth}`,
+          content: text,
+          level: depth,
+          id: text.toLowerCase().replace(/[^\w]+/g, '-'),
+        });
+      } else {
+        sections.push({
+          type: 'paragraph',
+          content: text,
+          formatting: { bold: /\*\*|__/.test(rawText), italic: /(^|[^*])\*[^*]/.test(rawText), hasLink: /\[[^\]]+\]\([^)]+\)/.test(rawText) },
+        });
+      }
+    }
+  };
 
   for (const token of tokens) {
     switch (token.type) {
       case 'heading':
         sections.push({
           type: `heading${token.depth}`,
-          content: removeAsterisks(token.text),
+          content: cleanInlineText(token.text),
           level: token.depth,
           id: token.text.toLowerCase().replace(/[^\w]+/g, '-'),
         });
         break;
 
       case 'paragraph':
-        // Detect special formatting
-        const text = removeAsterisks(token.text);
-        const isBold = text.includes('**');
-        const isItalic = text.includes('*');
-        const hasLink = text.includes('[');
-        
-        sections.push({
-          type: 'paragraph',
-          content: text,
-          formatting: { bold: isBold, italic: isItalic, hasLink },
-        });
+        pushTextBlock(token.text || token.raw || '');
         break;
 
       case 'list':
         sections.push({
           type: token.ordered ? 'ordered-list' : 'bullet-list',
           items: token.items.map(item => ({
-            text: removeAsterisks(item.text),
+            text: cleanInlineText(item.text),
             checked: item.checked,
           })),
         });
@@ -95,15 +125,15 @@ function parseMarkdownAdvanced(content) {
       case 'blockquote':
         sections.push({
           type: 'blockquote',
-          content: removeAsterisks(token.text),
+          content: cleanInlineText(token.text),
         });
         break;
 
       case 'table':
         sections.push({
           type: 'table',
-          header: token.header.map(h => removeAsterisks(h.text)),
-          rows: token.rows.map(row => row.map(cell => removeAsterisks(cell.text))),
+          header: token.header.map(h => cleanInlineText(getTokenText(h))),
+          rows: token.rows.map(row => row.map(cell => cleanInlineText(getTokenText(cell)))),
           align: token.align,
         });
         break;
@@ -135,6 +165,49 @@ function getCurrentStyle() {
   return styles[styleKey] || styles.professional;
 }
 
+function getGeneratedDate() {
+  return new Date().toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+}
+
+function rgbToHex(rgb) {
+  return rgb.map((value) => value.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+function titleFromFilename(filename = '') {
+  const base = filename.split('/').pop()?.replace(/\.[^.]+$/, '') || 'MIRA Document';
+  return base.replace(/[-_]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function getDocumentMeta(sections, filename) {
+  const titleSource = sections.find((section) => section.type === 'heading1')
+    || sections.find((section) => section.type === 'heading2')
+    || sections.find((section) => section.type === 'paragraph');
+  const title = cleanInlineText(titleSource?.content) || titleFromFilename(filename);
+  const subtitleSource = sections.find((section) => section.content && section.content !== title && section.content.length <= 120);
+  const subtitle = subtitleSource?.content && subtitleSource.content !== title ? cleanInlineText(subtitleSource.content) : '';
+  return { title, subtitle };
+}
+
+function getRenderableSections(sections, meta) {
+  let skippedTitle = false;
+  let skippedSubtitle = false;
+  return sections.filter((section) => {
+    if (!skippedTitle && section.content === meta.title && ['heading1', 'heading2', 'paragraph'].includes(section.type)) {
+      skippedTitle = true;
+      return false;
+    }
+    if (meta.subtitle && !skippedSubtitle && section.content === meta.subtitle && ['heading1', 'heading2', 'paragraph'].includes(section.type)) {
+      skippedSubtitle = true;
+      return false;
+    }
+    return section.type !== 'space';
+  });
+}
+
 // ==================== PROFESSIONAL PDF GENERATION ====================
 export async function generatePDF(content, filename = 'document.pdf') {
   const doc = new jsPDF({
@@ -147,155 +220,234 @@ export async function generatePDF(content, filename = 'document.pdf') {
   const sections = parseMarkdownAdvanced(content);
   const pageWidth = doc.internal.pageSize.width;
   const pageHeight = doc.internal.pageSize.height;
-  const margin = 20;
+  const margin = 18;
   const contentWidth = pageWidth - 2 * margin;
-  let y = 30;
-  let pageNum = 1;
-  
-  // Get selected style colors
   const style = getCurrentStyle();
+  const meta = getDocumentMeta(sections, filename);
+  const renderSections = getRenderableSections(sections, meta);
+  const generatedDate = getGeneratedDate();
+  let y = 34;
 
-  // Check page break
+  doc.setProperties({
+    title: meta.title,
+    subject: meta.subtitle || 'Professional document generated by MIRA',
+    author: 'MIRA',
+    creator: 'MIRA',
+  });
+
+  const setFill = (rgb) => doc.setFillColor(rgb[0], rgb[1], rgb[2]);
+  const setDraw = (rgb) => doc.setDrawColor(rgb[0], rgb[1], rgb[2]);
+  const setText = (rgb) => doc.setTextColor(rgb[0], rgb[1], rgb[2]);
+
+  const drawCover = () => {
+    const [r, g, b] = style.primary;
+    doc.setFillColor(15, 23, 42);
+    doc.rect(0, 0, pageWidth, pageHeight, 'F');
+    setFill(style.primary);
+    doc.rect(0, 0, pageWidth, 93, 'F');
+    doc.setFillColor(Math.min(r + 40, 255), Math.min(g + 35, 255), Math.min(b + 45, 255));
+    doc.circle(pageWidth - 18, 22, 36, 'F');
+    doc.setFillColor(255, 255, 255);
+    doc.circle(pageWidth - 54, 78, 12, 'F');
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(margin, 105, contentWidth, 116, 4, 4, 'F');
+    setFill(style.accent);
+    doc.roundedRect(margin, 105, 5, 116, 3, 3, 'F');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(255, 255, 255);
+    doc.text('MIRA', margin, 22);
+    doc.setFont('helvetica', 'normal');
+    doc.text('Professional Document', margin + 16, 22);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(28);
+    doc.setTextColor(30, 41, 59);
+    const titleLines = doc.splitTextToSize(meta.title, contentWidth - 26);
+    doc.text(titleLines, margin + 16, 130);
+
+    if (meta.subtitle) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(13);
+      doc.setTextColor(71, 85, 105);
+      doc.text(doc.splitTextToSize(meta.subtitle, contentWidth - 26), margin + 16, 154 + titleLines.length * 8);
+    }
+
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Generated ${generatedDate}`, margin + 16, 204);
+
+    doc.setFillColor(241, 245, 249);
+    doc.roundedRect(margin + 16, 232, 52, 16, 3, 3, 'F');
+    doc.roundedRect(margin + 73, 232, 52, 16, 3, 3, 'F');
+    doc.roundedRect(margin + 130, 232, 44, 16, 3, 3, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(30, 41, 59);
+    doc.text('Structured', margin + 22, 242);
+    doc.text('Branded', margin + 80, 242);
+    doc.text('Ready', margin + 139, 242);
+  };
+
+  const drawPageChrome = (pageIndex, totalPages) => {
+    if (pageIndex === 1) return;
+    doc.setPage(pageIndex);
+    setFill(style.primary);
+    doc.rect(0, 0, pageWidth, 13, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(255, 255, 255);
+    doc.text('MIRA', margin, 8.5);
+    doc.setFont('helvetica', 'normal');
+    doc.text(meta.title.slice(0, 82), margin + 14, 8.5);
+
+    doc.setDrawColor(226, 232, 240);
+    doc.setLineWidth(0.3);
+    doc.line(margin, pageHeight - 18, pageWidth - margin, pageHeight - 18);
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    doc.text('Generated by MIRA', margin, pageHeight - 10);
+    doc.text(`Page ${pageIndex - 1} of ${Math.max(totalPages - 1, 1)}`, pageWidth - margin, pageHeight - 10, { align: 'right' });
+  };
+
   const checkPageBreak = (requiredSpace) => {
-    if (y + requiredSpace > pageHeight - 25) {
+    if (y + requiredSpace > pageHeight - 30) {
       doc.addPage();
-      pageNum++;
-      y = 30;
+      y = 34;
       return true;
     }
     return false;
   };
 
-  // Process sections
-  for (let i = 0; i < sections.length; i++) {
-    const section = sections[i];
+  const renderWrappedText = (lines, x, lineHeight, options = {}) => {
+    for (const line of lines) {
+      checkPageBreak(lineHeight + 4);
+      doc.text(line, x, y, options);
+      y += lineHeight;
+    }
+  };
+
+  drawCover();
+  doc.addPage();
+  y = 34;
+
+  if (renderSections.length === 0) {
+    renderSections.push({ type: 'paragraph', content: 'No document content was available to export.' });
+  }
+
+  for (const section of renderSections) {
 
     if (section.type === 'heading1') {
-      checkPageBreak(25);
-      
-      // Large heading with underline
-      doc.setFontSize(24);
+      checkPageBreak(24);
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(margin, y - 8, contentWidth, 20, 3, 3, 'F');
+      setFill(style.accent);
+      doc.roundedRect(margin, y - 8, 4, 20, 2, 2, 'F');
+      doc.setFontSize(17);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(30, 41, 59);
-      
-      const lines = doc.splitTextToSize(section.content, contentWidth);
-      doc.text(lines, margin, y);
-      y += lines.length * 10;
-      
-      // Accent line
-      doc.setDrawColor(139, 92, 246);
-      doc.setLineWidth(1.5);
-      doc.line(margin, y, margin + 50, y);
-      y += 12;
+      const lines = doc.splitTextToSize(section.content, contentWidth - 14);
+      doc.text(lines, margin + 10, y + 4);
+      y += Math.max(24, lines.length * 8 + 14);
 
     } else if (section.type === 'heading2') {
-      checkPageBreak(20);
-      
-      doc.setFontSize(18);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(51, 65, 85);
-      
-      const lines = doc.splitTextToSize(section.content, contentWidth);
-      doc.text(lines, margin, y);
-      y += lines.length * 8 + 8;
-
-    } else if (section.type === 'heading3') {
-      checkPageBreak(15);
-      
+      checkPageBreak(17);
+      setDraw(style.accent);
+      doc.setLineWidth(1.2);
+      doc.line(margin, y - 2, margin + 16, y - 2);
       doc.setFontSize(14);
       doc.setFont('helvetica', 'bold');
-      doc.setTextColor(71, 85, 105);
-      
+      doc.setTextColor(30, 41, 59);
       const lines = doc.splitTextToSize(section.content, contentWidth);
-      doc.text(lines, margin, y);
-      y += lines.length * 7 + 6;
+      doc.text(lines, margin, y + 5);
+      y += lines.length * 7 + 9;
+
+    } else if (section.type === 'heading3') {
+      checkPageBreak(13);
+      doc.setFontSize(11.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(71, 85, 105);
+      const lines = doc.splitTextToSize(section.content, contentWidth);
+      doc.text(lines, margin, y + 3);
+      y += lines.length * 6 + 6;
 
     } else if (section.type === 'paragraph') {
-      checkPageBreak(15);
-      
-      doc.setFontSize(11);
+      doc.setFontSize(10.5);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(51, 65, 85);
-      
       const lines = doc.splitTextToSize(section.content, contentWidth);
-      doc.text(lines, margin, y);
-      y += lines.length * 6 + 5;
+      renderWrappedText(lines, margin, 5.8);
+      y += 3;
 
     } else if (section.type === 'bullet-list' || section.type === 'ordered-list') {
       section.items.forEach((item, idx) => {
-        checkPageBreak(10);
-        
+        checkPageBreak(9);
         doc.setFontSize(11);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(51, 65, 85);
-        
-        const bullet = section.type === 'ordered-list' ? `${idx + 1}.` : '•';
+        const bullet = section.type === 'ordered-list' ? `${idx + 1}.` : '';
         const lines = doc.splitTextToSize(item.text, contentWidth - 10);
-        
-        doc.text(bullet, margin + 2, y);
+        if (section.type === 'ordered-list') {
+          doc.setFont('helvetica', 'bold');
+          setText(style.primary);
+          doc.text(bullet, margin + 1, y);
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(51, 65, 85);
+        } else {
+          setFill(style.accent);
+          doc.circle(margin + 3, y - 1.2, 1.5, 'F');
+        }
         doc.text(lines, margin + 10, y);
-        y += lines.length * 6 + 3;
+        y += lines.length * 5.8 + 4;
       });
-      y += 3;
+      y += 2;
 
     } else if (section.type === 'code') {
       const codeLines = section.content.split('\n');
-      const boxHeight = Math.min(codeLines.length * 5 + 10, 100);
-      
+      const boxHeight = Math.min(codeLines.length * 4.8 + 14, 102);
       checkPageBreak(boxHeight + 5);
-      
-      // Code block background
-      doc.setFillColor(241, 245, 249);
+      doc.setFillColor(15, 23, 42);
       doc.roundedRect(margin, y - 3, contentWidth, boxHeight, 3, 3, 'F');
-      
-      // Language label
       if (section.language && section.language !== 'text') {
-        doc.setFillColor(139, 92, 246);
-        doc.roundedRect(margin + 5, y - 2, 30, 5, 2, 2, 'F');
+        setFill(style.accent);
+        doc.roundedRect(margin + 5, y + 2, 28, 6, 2, 2, 'F');
         doc.setFontSize(8);
         doc.setTextColor(255, 255, 255);
         doc.setFont('helvetica', 'bold');
-        doc.text(section.language.toUpperCase(), margin + 7, y + 2);
+        doc.text(section.language.toUpperCase().slice(0, 10), margin + 7, y + 6.4);
       }
-      
-      // Code content
       doc.setFontSize(9);
       doc.setFont('courier', 'normal');
-      doc.setTextColor(30, 41, 59);
-      
-      const displayLines = codeLines.slice(0, Math.floor((boxHeight - 10) / 5));
+      doc.setTextColor(226, 232, 240);
+      const displayLines = codeLines.slice(0, Math.floor((boxHeight - 12) / 4.8));
       displayLines.forEach((line, idx) => {
-        doc.text(line.substring(0, 100), margin + 5, y + 10 + idx * 5);
+        doc.text(line.substring(0, 105), margin + 6, y + 15 + idx * 4.8);
       });
-      
       y += boxHeight + 8;
 
     } else if (section.type === 'blockquote') {
-      checkPageBreak(15);
-      
-      // Left border
-      doc.setDrawColor(139, 92, 246);
-      doc.setLineWidth(2);
-      doc.line(margin, y - 2, margin, y + 15);
-      
+      const lines = doc.splitTextToSize(section.content, contentWidth - 16);
+      const boxHeight = lines.length * 5.8 + 12;
+      checkPageBreak(boxHeight);
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(margin, y - 4, contentWidth, boxHeight, 3, 3, 'F');
+      setFill(style.accent);
+      doc.rect(margin, y - 4, 3, boxHeight, 'F');
       doc.setFontSize(11);
       doc.setFont('helvetica', 'italic');
       doc.setTextColor(100, 116, 139);
-      
-      const lines = doc.splitTextToSize(section.content, contentWidth - 10);
-      doc.text(lines, margin + 8, y);
-      y += lines.length * 6 + 8;
+      doc.text(lines, margin + 9, y + 4);
+      y += boxHeight + 6;
 
     } else if (section.type === 'table') {
       checkPageBreak(30);
-      
       doc.autoTable({
         startY: y,
         head: [section.header],
         body: section.rows,
-        theme: 'grid',
+        theme: 'striped',
         headStyles: {
-          fillColor: [37, 99, 235],
+          fillColor: style.primary,
           textColor: [255, 255, 255],
           fontStyle: 'bold',
           fontSize: 10,
@@ -303,18 +455,18 @@ export async function generatePDF(content, filename = 'document.pdf') {
         bodyStyles: {
           textColor: [51, 65, 85],
           fontSize: 10,
+          cellPadding: 3,
         },
         alternateRowStyles: {
           fillColor: [248, 250, 252],
         },
-        margin: { left: margin, right: margin },
+        styles: { lineColor: [226, 232, 240], lineWidth: 0.1 },
+        margin: { left: margin, right: margin, top: 32, bottom: 28 },
       });
-      
       y = doc.lastAutoTable.finalY + 10;
 
     } else if (section.type === 'divider') {
       checkPageBreak(5);
-      
       doc.setDrawColor(226, 232, 240);
       doc.setLineWidth(0.5);
       doc.line(margin, y, pageWidth - margin, y);
@@ -325,29 +477,66 @@ export async function generatePDF(content, filename = 'document.pdf') {
     }
   }
 
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let pageIndex = 1; pageIndex <= totalPages; pageIndex++) {
+    drawPageChrome(pageIndex, totalPages);
+  }
+
   doc.save(filename);
 }
 
 // ==================== PROFESSIONAL DOCX GENERATION ====================
 export async function generateDOCX(content, filename = 'document.docx') {
   const sections = parseMarkdownAdvanced(content);
+  const meta = getDocumentMeta(sections, filename);
+  const renderSections = getRenderableSections(sections, meta);
+  const style = getCurrentStyle();
+  const primary = rgbToHex(style.primary);
+  const accent = rgbToHex(style.accent);
+  const generatedDate = getGeneratedDate();
   const children = [];
 
-  // Process content
-  for (const section of sections) {
+  children.push(
+    new Paragraph({
+      children: [new TextRun({ text: 'MIRA', bold: true, color: primary, size: 24 })],
+      alignment: AlignmentType.RIGHT,
+      spacing: { after: 900 },
+    }),
+    new Paragraph({
+      children: [new TextRun({ text: meta.title, bold: true, color: '0F172A', size: 48 })],
+      spacing: { after: 240 },
+    }),
+    new Paragraph({
+      children: [new TextRun({ text: meta.subtitle || 'Professional document', color: '475569', size: 26 })],
+      spacing: { after: 420 },
+    }),
+    new Paragraph({
+      children: [new TextRun({ text: `Generated ${generatedDate}`, color: '64748B', size: 20 })],
+      shading: { type: ShadingType.SOLID, fill: 'F8FAFC' },
+      border: {
+        left: { style: BorderStyle.SINGLE, size: 18, color: accent },
+      },
+      spacing: { before: 160, after: 900 },
+      indent: { left: 240 },
+    }),
+    new Paragraph({ children: [new PageBreak()] })
+  );
+
+  const contentSections = renderSections.length
+    ? renderSections
+    : [{ type: 'paragraph', content: 'No document content was available to export.' }];
+
+  for (const section of contentSections) {
     if (section.type === 'heading1') {
       children.push(
         new Paragraph({
-          text: section.content,
+          children: [new TextRun({ text: section.content, bold: true, color: '0F172A', size: 34 })],
           heading: HeadingLevel.HEADING_1,
+          shading: { type: ShadingType.SOLID, fill: 'F8FAFC' },
+          indent: { left: 180 },
           spacing: { before: 480, after: 240 },
           border: {
-            bottom: {
-              color: '8B5CF6',
-              space: 1,
-              style: BorderStyle.SINGLE,
-              size: 24,
-            },
+            left: { color: accent, space: 1, style: BorderStyle.SINGLE, size: 28 },
           },
         })
       );
@@ -355,16 +544,19 @@ export async function generateDOCX(content, filename = 'document.docx') {
     } else if (section.type === 'heading2') {
       children.push(
         new Paragraph({
-          text: section.content,
+          children: [new TextRun({ text: section.content, bold: true, color: '1E293B', size: 30 })],
           heading: HeadingLevel.HEADING_2,
-          spacing: { before: 360, after: 180 },
+          spacing: { before: 420, after: 180 },
+          border: {
+            bottom: { color: 'E2E8F0', space: 1, style: BorderStyle.SINGLE, size: 6 },
+          },
         })
       );
 
     } else if (section.type === 'heading3') {
       children.push(
         new Paragraph({
-          text: section.content,
+          children: [new TextRun({ text: section.content, bold: true, color: '334155', size: 24 })],
           heading: HeadingLevel.HEADING_3,
           spacing: { before: 280, after: 140 },
         })
@@ -380,7 +572,7 @@ export async function generateDOCX(content, filename = 'document.docx') {
               color: '334155',
             }),
           ],
-          spacing: { before: 120, after: 120 },
+          spacing: { before: 120, after: 160, line: 320 },
           alignment: AlignmentType.JUSTIFIED,
         })
       );
@@ -389,9 +581,9 @@ export async function generateDOCX(content, filename = 'document.docx') {
       section.items.forEach((item) => {
         children.push(
           new Paragraph({
-            text: item.text,
+            children: [new TextRun({ text: item.text, color: '334155', size: 23 })],
             bullet: { level: 0 },
-            spacing: { before: 100, after: 100 },
+            spacing: { before: 80, after: 80, line: 300 },
           })
         );
       });
@@ -400,9 +592,12 @@ export async function generateDOCX(content, filename = 'document.docx') {
       section.items.forEach((item, idx) => {
         children.push(
           new Paragraph({
-            text: item.text,
-            numbering: { reference: 'default-numbering', level: 0 },
-            spacing: { before: 100, after: 100 },
+            children: [
+              new TextRun({ text: `${idx + 1}. `, bold: true, color: primary, size: 23 }),
+              new TextRun({ text: item.text, color: '334155', size: 23 }),
+            ],
+            spacing: { before: 80, after: 80, line: 300 },
+            indent: { left: 360 },
           })
         );
       });
@@ -415,16 +610,16 @@ export async function generateDOCX(content, filename = 'document.docx') {
               text: section.content,
               font: 'Courier New',
               size: 20,
-              color: '1E293B',
+              color: 'E2E8F0',
             }),
           ],
           spacing: { before: 240, after: 240 },
-          shading: { fill: 'F1F5F9' },
+          shading: { type: ShadingType.SOLID, fill: '0F172A' },
           border: {
-            top: { style: BorderStyle.SINGLE, size: 6, color: 'E2E8F0' },
-            bottom: { style: BorderStyle.SINGLE, size: 6, color: 'E2E8F0' },
-            left: { style: BorderStyle.SINGLE, size: 6, color: 'E2E8F0' },
-            right: { style: BorderStyle.SINGLE, size: 6, color: 'E2E8F0' },
+            top: { style: BorderStyle.SINGLE, size: 8, color: '1E293B' },
+            bottom: { style: BorderStyle.SINGLE, size: 8, color: '1E293B' },
+            left: { style: BorderStyle.SINGLE, size: 8, color: accent },
+            right: { style: BorderStyle.SINGLE, size: 8, color: '1E293B' },
           },
         })
       );
@@ -442,8 +637,9 @@ export async function generateDOCX(content, filename = 'document.docx') {
           ],
           spacing: { before: 240, after: 240 },
           indent: { left: 720 },
+          shading: { type: ShadingType.SOLID, fill: 'F8FAFC' },
           border: {
-            left: { style: BorderStyle.SINGLE, size: 24, color: '8B5CF6' },
+            left: { style: BorderStyle.SINGLE, size: 24, color: accent },
           },
         })
       );
@@ -456,12 +652,11 @@ export async function generateDOCX(content, filename = 'document.docx') {
               new TableCell({
                 children: [
                   new Paragraph({
-                    text: h,
-                    bold: true,
+                    children: [new TextRun({ text: h, bold: true, color: 'FFFFFF', size: 22 })],
                     alignment: AlignmentType.CENTER,
                   }),
                 ],
-                shading: { fill: '2563EB' },
+                shading: { type: ShadingType.SOLID, fill: primary },
               })
           ),
         }),
@@ -471,7 +666,8 @@ export async function generateDOCX(content, filename = 'document.docx') {
               children: row.map(
                 (cell) =>
                   new TableCell({
-                    children: [new Paragraph(cell)],
+                    children: [new Paragraph({ children: [new TextRun({ text: cell, color: '334155', size: 21 })] })],
+                    shading: { type: ShadingType.SOLID, fill: 'FFFFFF' },
                   })
               ),
             })
@@ -504,16 +700,49 @@ export async function generateDOCX(content, filename = 'document.docx') {
     }
   }
 
+  const header = new Header({
+    children: [
+      new Paragraph({
+        children: [
+          new TextRun({ text: 'MIRA', bold: true, color: primary, size: 18 }),
+          new TextRun({ text: `  |  ${meta.title}`, color: '64748B', size: 18 }),
+        ],
+        border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'E2E8F0' } },
+      }),
+    ],
+  });
+
+  const footer = new Footer({
+    children: [
+      new Paragraph({
+        alignment: AlignmentType.RIGHT,
+        children: [
+          new TextRun({ text: 'Page ', color: '64748B', size: 18 }),
+          new TextRun({ children: [PageNumber.CURRENT], color: '64748B', size: 18 }),
+          new TextRun({ text: ' of ', color: '64748B', size: 18 }),
+          new TextRun({ children: [PageNumber.TOTAL_PAGES], color: '64748B', size: 18 }),
+        ],
+      }),
+    ],
+  });
+
   const doc = new Document({
+    creator: 'MIRA',
+    title: meta.title,
+    description: meta.subtitle || 'Professional document generated by MIRA',
     sections: [
       {
+        headers: { default: header },
+        footers: { default: footer },
         properties: {
           page: {
             margin: {
-              top: 1440,
+              top: 1240,
               right: 1440,
-              bottom: 1440,
+              bottom: 1240,
               left: 1440,
+              header: 720,
+              footer: 720,
             },
           },
         },
@@ -666,8 +895,7 @@ export async function generatePPTX(content, filename = 'presentation.pptx') {
 
 // Detect document format request — only triggers on explicit CREATE/GENERATE/DOWNLOAD intent
 export function detectDocumentRequest(message, hasFileAttachments = false) {
-  // Never auto-export if user uploaded a file — they're asking about it, not creating one
-  if (hasFileAttachments) return null;
+  void hasFileAttachments;
 
   const lower = message.toLowerCase();
 
@@ -678,6 +906,7 @@ export function detectDocumentRequest(message, hasFileAttachments = false) {
   if (/\b(as|to|in|a|the)?\s*(pdf)\b/.test(lower) && createIntent) return 'pdf';
   if (/\b(as|to|in|a|the)?\s*(docx|word document|word file)\b/.test(lower) && createIntent) return 'docx';
   if (/\b(as|to|in|a|the)?\s*(pptx|powerpoint|presentation|slides)\b/.test(lower) && createIntent) return 'pptx';
+  if (/\b(download|export|save)\b[\s\S]{0,40}\b(file|document)\b/.test(lower) && createIntent) return 'pdf';
 
   return null;
 }

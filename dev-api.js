@@ -28,142 +28,133 @@ import path from 'path';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
 
-// === Inference (chat + image) configuration ===
-const INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL || 'http://142.112.39.215:50971';
-const INFERENCE_PUBLIC_PATH = process.env.INFERENCE_PUBLIC_PATH || '/public/analyze';
-const INFERENCE_PROTECTED_PATH = process.env.INFERENCE_PROTECTED_PATH || '/v1/analyze';
-const INFERENCE_APP_TOKEN = process.env.INFERENCE_APP_TOKEN || 'f6d30c6778656de0ed82045a28ab2ff3';
-const INFERENCE_API_KEY = process.env.INFERENCE_API_KEY || 'PRO_SAFETY_TOKEN_2026';
-const INFERENCE_TIMEOUT_MS = Number(process.env.INFERENCE_TIMEOUT_MS || 35000);
-const IMAGE_BASE_URL = process.env.IMAGE_BASE_URL || 'http://142.112.39.215:50978';
-const IMAGE_GENERATE_PATH = process.env.IMAGE_GENERATE_PATH || '/generate';
+// === Salad chat configuration ===
+const SALAD_API_URL = process.env.SALAD_API_URL || process.env.API_URL;
+const SALAD_API_KEY = process.env.SALAD_API_KEY || process.env.API_KEY;
+const SALAD_MODEL = process.env.SALAD_MODEL || 'llama3.2-vision';
+const SALAD_MAX_TOKENS = Number(process.env.SALAD_MAX_TOKENS || 2048);
+const SALAD_TIMEOUT_MS = Number(process.env.SALAD_TIMEOUT_MS || 55000);
 
-const PLACEHOLDER_JPEG_BASE64 =
-  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCABAAEADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigD//2Q==';
-
-function buildFileFromImage(image) {
-  const mimeType = image?.mimeType || 'image/jpeg';
-  const base64 = image?.base64 || '';
-  if (!base64) return null;
-  const sanitized = base64.includes(',') ? base64.split(',')[1] : base64;
-  const bytes = Buffer.from(sanitized, 'base64');
-  const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
-  const blob = new Blob([bytes], { type: mimeType });
-  return { blob, filename: `upload.${ext}` };
+function imageToDataUrl(image) {
+  const raw = image?.base64 || image?.data || image?.url || '';
+  if (!raw) return null;
+  if (raw.startsWith('data:') || raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+  return `data:${image?.mimeType || image?.type || 'image/jpeg'};base64,${raw}`;
 }
 
-function buildPlaceholderFile() {
-  const bytes = Buffer.from(PLACEHOLDER_JPEG_BASE64, 'base64');
-  return { blob: new Blob([bytes], { type: 'image/jpeg' }), filename: 'placeholder.jpg' };
+function contentToParts(content) {
+  if (Array.isArray(content)) return [...content];
+  if (content == null) return [];
+  return [{ type: 'text', text: String(content) }];
 }
 
-function buildInferenceFormData(prompt, image) {
-  const file = buildFileFromImage(image) || buildPlaceholderFile();
-  const formData = new FormData();
-  formData.append('prompt', prompt);
-  formData.append('file', file.blob, file.filename);
-  return formData;
-}
+function withImages(messages, images = []) {
+  const imageParts = images
+    .map(imageToDataUrl)
+    .filter(Boolean)
+    .map((url) => ({ type: 'image_url', image_url: { url } }));
+  if (imageParts.length === 0) return messages;
 
-function getLastUserPrompt(messages = []) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === 'user' && messages[i]?.content) {
-      return String(messages[i].content).trim();
+  const nextMessages = [...messages];
+  let userIndex = -1;
+  for (let index = nextMessages.length - 1; index >= 0; index -= 1) {
+    if (nextMessages[index]?.role === 'user') {
+      userIndex = index;
+      break;
     }
   }
-  return '';
+
+  if (userIndex === -1) {
+    nextMessages.push({ role: 'user', content: imageParts });
+    return nextMessages;
+  }
+
+  const target = nextMessages[userIndex];
+  nextMessages[userIndex] = { ...target, content: [...contentToParts(target.content), ...imageParts] };
+  return nextMessages;
 }
 
-async function callInferenceEndpoint(baseUrl, paths, prompt, image) {
-  const attempts = [];
-  if (INFERENCE_API_KEY) {
-    attempts.push({ url: `${baseUrl}${paths.protected}`, headers: { 'X-API-KEY': INFERENCE_API_KEY } });
+function normalizeMessages(messages = [], systemPrompt) {
+  const normalized = messages
+    .filter((message) => message?.role && message.content != null)
+    .map((message) => ({
+      role: ['system', 'assistant', 'user'].includes(message.role) ? message.role : 'user',
+      content: message.content,
+    }));
+  if (systemPrompt) {
+    return [{ role: 'system', content: systemPrompt }, ...normalized.filter((message) => message.role !== 'system')];
   }
-  attempts.push({ url: `${baseUrl}${paths.public}`, headers: { 'X-App-Token': INFERENCE_APP_TOKEN || '' } });
-
-  let lastError = 'Inference provider unavailable.';
-  for (const attempt of attempts) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), INFERENCE_TIMEOUT_MS);
-      const res = await fetch(attempt.url, {
-        method: 'POST',
-        headers: attempt.headers,
-        body: buildInferenceFormData(prompt, image),
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-
-      const payload = await res.json().catch(() => ({}));
-      if (res.ok && payload?.result) return { ok: true, status: 200, payload };
-      lastError = payload?.error || payload?.message || `Inference error: ${res.status}`;
-      console.warn(`[dev-api] Inference ${attempt.url} failed ${res.status}: ${lastError}`);
-    } catch (err) {
-      lastError = err.name === 'AbortError' ? `Inference timeout after ${INFERENCE_TIMEOUT_MS}ms` : err.message;
-      console.warn('[dev-api] Inference request failed:', err.message);
-    }
-  }
-  return { ok: false, status: 503, error: lastError };
+  return normalized;
 }
 
-async function handleChat(body, res) {
-  const { messages = [], images = [] } = JSON.parse(body || '{}');
-  const prompt = getLastUserPrompt(messages);
-  const image = Array.isArray(images) && images.length > 0 ? images[0] : null;
-  if (!prompt) {
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Prompt is required.' }));
+async function writeUpstreamBody(upstream, res) {
+  const reader = upstream.body?.getReader();
+  if (!reader) {
+    res.end(await upstream.text());
     return;
   }
-  const inference = await callInferenceEndpoint(
-    INFERENCE_BASE_URL,
-    { protected: INFERENCE_PROTECTED_PATH, public: INFERENCE_PUBLIC_PATH },
-    prompt,
-    image,
-  );
-  if (!inference.ok) {
-    res.writeHead(inference.status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: inference.error }));
-    return;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    res.write(Buffer.from(value));
   }
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-  res.write(`data: ${JSON.stringify({ text: inference.payload.result })}\n\n`);
-  res.write('data: [DONE]\n\n');
   res.end();
 }
 
-async function handleImage(body, res) {
-  const { prompt, images = [] } = JSON.parse(body || '{}');
-  const image = Array.isArray(images) && images.length > 0 ? images[0] : null;
-  if (!prompt) {
+async function handleChat(body, res) {
+  if (!SALAD_API_URL || !SALAD_API_KEY) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Salad API URL or key is not configured.' }));
+    return;
+  }
+
+  const payload = JSON.parse(body || '{}');
+  const messages = withImages(normalizeMessages(payload.messages, payload.systemPrompt), payload.images);
+  if (messages.length === 0) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'prompt is required' }));
+    res.end(JSON.stringify({ error: 'At least one chat message is required.' }));
     return;
   }
-  const inference = await callInferenceEndpoint(
-    IMAGE_BASE_URL,
-    { protected: IMAGE_GENERATE_PATH, public: IMAGE_GENERATE_PATH },
-    prompt,
-    image,
-  );
-  if (!inference.ok) {
-    res.writeHead(inference.status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: inference.error }));
-    return;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SALAD_TIMEOUT_MS);
+  try {
+    const upstream = await fetch(SALAD_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Salad-Api-Key': SALAD_API_KEY,
+      },
+      body: JSON.stringify({
+        model: payload.model || SALAD_MODEL,
+        messages,
+        stream: payload.stream !== false,
+        max_tokens: payload.max_tokens || SALAD_MAX_TOKENS,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!upstream.ok) {
+      const errorText = await upstream.text().catch(() => '');
+      res.writeHead(upstream.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: errorText || `Salad API error: ${upstream.status}` }));
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': upstream.headers.get('Content-Type') || 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    await writeUpstreamBody(upstream, res);
+  } catch (err) {
+    clearTimeout(timeout);
+    const message = err.name === 'AbortError' ? `Salad API timeout after ${SALAD_TIMEOUT_MS}ms` : err.message;
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: message }));
   }
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({
-    success: true,
-    inference_type: inference.payload.inference_type,
-    model: inference.payload.model,
-    result: inference.payload.result,
-    execution_time_ms: inference.payload.execution_time_ms,
-    provider: 'custom-vision-endpoint',
-  }));
 }
 
 function parseRSS(xml) {
@@ -323,7 +314,6 @@ const server = http.createServer(async (req, res) => {
   req.on('end', async () => {
     try {
       if (req.url === '/api/chat') { await handleChat(body, res); return; }
-      if (req.url === '/api/image') { await handleImage(body, res); return; }
 
       let result;
       if (req.url === '/api/scrape') result = await handleScrape(body);

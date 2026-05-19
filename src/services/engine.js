@@ -42,6 +42,11 @@ const COMPLEXITY_SIGNALS = {
   image: [
     /\b(generate|create|draw|paint|design|make)\b.*\b(image|picture|photo|illustration|art|logo|icon|poster|wallpaper|banner)\b/i,
     /\b(image|picture|photo|illustration)\b.*\b(of|with|showing|depicting)\b/i,
+    /\b(draw|paint|illustrate|sketch|render)\b\s+(?!.*\b(code|html|css|javascript|react|component|website|webpage)\b).{3,}/i,
+    /\b(create|generate|make|design)\b.*\b(visual|artwork|cinematic|scene|character|concept art|product visual|thumbnail|cover art|album cover|sticker|mascot)\b/i,
+    /\b(turn|transform|convert)\b.*\b(into|to)\b.*\b(image|picture|photo|illustration|artwork|poster|logo)\b/i,
+    /\b(edit|modify|retouch|enhance|upscale|change|replace|remove|add)\b.*\b(image|picture|photo|background|object|person|logo)\b/i,
+    /\b(image|picture|photo|illustration|artwork|poster|logo|wallpaper|banner|thumbnail)\s+of\b/i,
   ],
 };
 
@@ -121,13 +126,17 @@ function classifyQuery(text) {
   return { intent: dominated, complexity };
 }
 
+export function isImageGenerationRequest(text = '') {
+  const classification = classifyQuery(text);
+  return classification.intent === 'image';
+}
+
 // ── Model routing ──────────────────────────────────────────────
 function pickModel({ intent, complexity }, hasImages) {
-  if (intent === 'image') return '__image__';
-
-  // This deployment now uses a single custom multimodal model endpoint.
-  if (hasImages || complexity || intent) return 'vision-multimodal';
-  return 'vision-multimodal';
+  void intent;
+  void complexity;
+  void hasImages;
+  return 'llama3.2-vision';
 }
 
 // ── Prompt enhancement ─────────────────────────────────────────
@@ -173,39 +182,6 @@ function enhanceSystemPrompt(basePrompt, classification, needsSearch = false) {
   const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   enhanced += `\n\nCURRENT DATE & TIME: ${dateStr}, ${timeStr}`;
-
-  // Inject user identity & preferences
-  try {
-    const prefs = JSON.parse(localStorage.getItem('mira_preferences') || '{}');
-    const profile = JSON.parse(localStorage.getItem('mira_profile') || '{}');
-    const storedUser = JSON.parse(localStorage.getItem('mira_user') || '{}');
-
-    const userName = profile.displayName || storedUser.displayName || storedUser.name || '';
-    const userEmail = storedUser.email || '';
-
-    if (userName || userEmail) {
-      enhanced += `\n\nUSER IDENTITY:`;
-      if (userName) enhanced += `\nName: ${userName}`;
-      if (userEmail) enhanced += `\nEmail: ${userEmail}`;
-    }
-
-    if (profile.bio) {
-      enhanced += `\nBio: ${profile.bio}`;
-    }
-
-    if (prefs.responseStyle === 'concise') {
-      enhanced += '\n\nUSER PREFERENCE: Keep responses short and direct. Avoid unnecessary elaboration.';
-    } else if (prefs.responseStyle === 'detailed') {
-      enhanced += '\n\nUSER PREFERENCE: Provide thorough, in-depth responses with comprehensive explanations.';
-    }
-
-    // Inject user memories for personalized context
-    const memories = JSON.parse(localStorage.getItem('mira_memories') || '[]');
-    if (memories.length > 0) {
-      enhanced += '\n\nUSER MEMORIES (things the user wants you to remember):';
-      memories.forEach((m) => { enhanced += `\n- ${m}`; });
-    }
-  } catch {}
 
   // Inject task-specific directives
   if (TASK_DIRECTIVES[classification.intent]) {

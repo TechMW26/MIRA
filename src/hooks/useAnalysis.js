@@ -4,7 +4,7 @@
  */
 
 import { useState, useCallback } from 'react';
-import { analyzeText, analyzeTextPublic, analyzeTextProtected } from '../services/textAnalysis.js';
+import { analyzeText } from '../services/textAnalysis.js';
 import { analyzeImage } from '../services/imageAnalysis.js';
 
 export function useAnalysis() {
@@ -13,19 +13,16 @@ export function useAnalysis() {
   const [result, setResult] = useState(null);
 
   /**
-   * Analyze text
-   * @param {string} prompt - Text to analyze
-   * @param {boolean} usePublic - Force public endpoint
+  * Analyze text
+  * @param {string} prompt - Text to analyze
    */
-  const analyzeTextAsync = useCallback(async (prompt, usePublic = false) => {
+  const analyzeTextAsync = useCallback(async (prompt) => {
     setLoading(true);
     setError(null);
     setResult(null);
 
     try {
-      const response = usePublic
-        ? await analyzeTextPublic(prompt)
-        : await analyzeText(prompt);
+      const response = await analyzeText(prompt);
       
       setResult(response.result);
       return response;

@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useChatContext } from '../../contexts/ChatContext';
 import useChat from '../../hooks/useChat';
-import useMemory from '../../hooks/useMemory';
 import MessageBubble from './MessageBubble';
 import WelcomeScreen from './WelcomeScreen';
 import ChatInput from './ChatInput';
@@ -78,13 +77,13 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
 export default function ChatWindow() {
   const { currentConversationId, isGenerating } = useChatContext();
   const { messages, streamingContent, thinkingContent, sendMessage, stopGenerating } = useChat();
-  const { getMemoryContext, processAndSave } = useMemory();
 
   const [webSearch, setWebSearch] = useState(false);
   const [panel, setPanel] = useState(null); // 'browser' | 'canvas' | 'tasks' | 'tools' | 'prompts'
   const [showShare, setShowShare] = useState(false);
   const [chatFontSize, setChatFontSize] = useState(getStoredFontSize);
-  const bottomRef = useRef(null);
+  const scrollAreaRef = useRef(null);
+  const autoScrollRef = useRef(true);
 
   const displayMessages = useMemo(() => {
     if (!isGenerating || messages.length === 0) return messages;
@@ -92,11 +91,24 @@ export default function ChatWindow() {
     if (lastMsg.role !== 'assistant') return messages;
     return [
       ...messages.slice(0, -1),
-      { ...lastMsg, content: streamingContent || lastMsg.content, thinkingContent: thinkingContent || undefined, isThinkingActive: !!thinkingContent && !streamingContent },
+      { ...lastMsg, content: streamingContent || lastMsg.content, thinkingContent: thinkingContent || undefined, isThinkingActive: !!thinkingContent && !streamingContent, isStreaming: true },
     ];
   }, [messages, streamingContent, thinkingContent, isGenerating]);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, streamingContent, thinkingContent]);
+  const handleScroll = useCallback(() => {
+    const el = scrollAreaRef.current;
+    if (!el) return;
+    autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
+
+  useEffect(() => {
+    if (!autoScrollRef.current) return undefined;
+    const frame = requestAnimationFrame(() => {
+      const el = scrollAreaRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [displayMessages.length, streamingContent, thinkingContent]);
 
   useEffect(() => {
     const handler = () => setChatFontSize(getStoredFontSize());
@@ -104,24 +116,14 @@ export default function ChatWindow() {
     return () => window.removeEventListener('mira-preferences-changed', handler);
   }, []);
 
-  useEffect(() => {
-    if (messages.length < 2) return;
-    const last = messages[messages.length - 1];
-    const prev = messages[messages.length - 2];
-    if (last.role === 'assistant' && prev.role === 'user') {
-      processAndSave(prev.content, last.content);
-    }
-  }, [messages, processAndSave]);
-
-  const sendWithMemory = useCallback((content, attachments, ws) => {
-    const memCtx = getMemoryContext();
-    sendMessage(content, attachments, ws, { memoryContext: memCtx });
-  }, [sendMessage, getMemoryContext]);
+  const sendToChat = useCallback((content, attachments, ws) => {
+    sendMessage(content, attachments, ws);
+  }, [sendMessage]);
 
   const requestCanvas = useCallback((prompt) => {
     if (!prompt?.trim()) return;
-    sendWithMemory(prompt, [], false);
-  }, [sendWithMemory]);
+    sendToChat(prompt, [], false);
+  }, [sendToChat]);
 
   const togglePanel = (name) => setPanel(p => p === name ? null : name);
 
@@ -130,21 +132,20 @@ export default function ChatWindow() {
       {showShare && <ShareModal messages={messages} title={messages[0]?.content?.slice(0, 50)} onClose={() => setShowShare(false)} />}
 
       <div className="flex flex-col flex-1 min-w-0 min-h-0">
-        <div className="flex-1 overflow-y-auto overflow-x-hidden" style={{ fontSize: chatFontSize }}>
+        <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden" style={{ fontSize: chatFontSize }}>
           <div className="max-w-3xl mx-auto flex flex-col justify-end min-h-full py-4 gap-5 px-3 w-full min-w-0">
             {displayMessages.length === 0 ? (
-              <WelcomeScreen onSend={(p) => sendWithMemory(p, [], webSearch)} />
+              <WelcomeScreen onSend={(p) => sendToChat(p, [], webSearch)} />
             ) : (
               displayMessages.map((msg, i) => (
                 <MessageBubble key={msg.id || i} message={msg} isLast={i === displayMessages.length - 1} />
               ))
             )}
-            <div ref={bottomRef} />
           </div>
         </div>
 
         <ChatInput
-          onSend={(text, attachments) => sendWithMemory(text, attachments, webSearch)}
+          onSend={(text, attachments) => sendToChat(text, attachments, webSearch)}
           onStop={stopGenerating}
           isGenerating={isGenerating}
           webSearch={webSearch}
@@ -158,7 +159,7 @@ export default function ChatWindow() {
 
       {panel === 'browser' && (
         <RightPanel id="browser" defaultWidth={500} minWidth={340} maxWidth={900}>
-          <BrowserPanel onSendToChat={(c) => sendWithMemory(c, [], false)} onClose={() => setPanel(null)} />
+          <BrowserPanel onSendToChat={(c) => sendToChat(c, [], false)} onClose={() => setPanel(null)} />
         </RightPanel>
       )}
       {panel === 'canvas' && (
@@ -168,7 +169,7 @@ export default function ChatWindow() {
       )}
       {panel === 'tasks' && (
         <RightPanel id="tasks" defaultWidth={360} minWidth={280} maxWidth={720}>
-          <TaskRunner onSendMessage={(c) => sendWithMemory(c, [], false)} onClose={() => setPanel(null)} />
+          <TaskRunner onSendMessage={(c) => sendToChat(c, [], false)} onClose={() => setPanel(null)} />
         </RightPanel>
       )}
       {panel === 'tools' && (
@@ -178,7 +179,7 @@ export default function ChatWindow() {
       )}
       {panel === 'prompts' && (
         <RightPanel id="prompts" defaultWidth={340} minWidth={280} maxWidth={680}>
-          <PromptLibrary onUsePrompt={(p) => { sendWithMemory(p, [], webSearch); setPanel(null); }} onClose={() => setPanel(null)} />
+          <PromptLibrary onUsePrompt={(p) => { sendToChat(p, [], webSearch); setPanel(null); }} onClose={() => setPanel(null)} />
         </RightPanel>
       )}
     </div>

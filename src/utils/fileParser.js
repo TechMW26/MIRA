@@ -1,5 +1,13 @@
 // Lazy-load heavy parsers only when needed
 
+function cleanExtractedText(text) {
+  return String(text || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 async function extractPDF(file) {
   const pdfjsLib = await import('pdfjs-dist');
   pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -22,10 +30,86 @@ async function extractPDF(file) {
 }
 
 async function extractDOCX(file) {
-  const mammoth = await import('mammoth/mammoth.browser');
+  const mammothModule = await import('mammoth/mammoth.browser');
+  const mammoth = mammothModule.default || mammothModule;
   const arrayBuffer = await file.arrayBuffer();
-  const result = await mammoth.extractRawText({ arrayBuffer });
-  return result.value;
+  let rawText = '';
+
+  try {
+    const result = await mammoth.extractRawText({ arrayBuffer });
+    rawText = result.value || '';
+  } catch (error) {
+    console.warn('Mammoth DOCX extraction failed:', error);
+  }
+
+  const xmlText = await extractDOCXXmlText(arrayBuffer);
+  const bestText = xmlText.length > rawText.length ? xmlText : rawText;
+  return cleanExtractedText(bestText);
+}
+
+async function extractDOCXXmlText(arrayBuffer) {
+  try {
+    const JSZipModule = await import('jszip');
+    const JSZip = JSZipModule.default || JSZipModule;
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    const xmlPaths = Object.keys(zip.files)
+      .filter((path) => /^word\/(document|footnotes|endnotes|comments|header\d+|footer\d+)\.xml$/.test(path))
+      .sort((a, b) => {
+        if (a === 'word/document.xml') return -1;
+        if (b === 'word/document.xml') return 1;
+        return a.localeCompare(b);
+      });
+
+    const sections = [];
+    for (const path of xmlPaths) {
+      const fileEntry = zip.file(path);
+      if (!fileEntry) continue;
+      const xml = await fileEntry.async('text');
+      const text = cleanExtractedText(wordXmlToText(xml));
+      if (text) sections.push(text);
+    }
+    return cleanExtractedText(sections.join('\n\n'));
+  } catch (error) {
+    console.warn('DOCX XML fallback extraction failed:', error);
+    return '';
+  }
+}
+
+function wordXmlToText(xml) {
+  if (!xml || typeof DOMParser === 'undefined') return '';
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  const parserError = doc.getElementsByTagName('parsererror')[0];
+  if (parserError) return '';
+
+  const parts = [];
+
+  function walk(node) {
+    if (!node || node.nodeType !== 1) return;
+    const name = node.localName;
+
+    if (name === 't') {
+      parts.push(node.textContent || '');
+      return;
+    }
+
+    if (name === 'tab') {
+      parts.push('\t');
+      return;
+    }
+
+    if (name === 'br' || name === 'cr') {
+      parts.push('\n');
+      return;
+    }
+
+    Array.from(node.childNodes || []).forEach(walk);
+
+    if (name === 'tc') parts.push('\t');
+    if (name === 'p' || name === 'tr') parts.push('\n');
+  }
+
+  walk(doc.documentElement);
+  return cleanExtractedText(parts.join(''));
 }
 
 const TEXT_EXTS = ['txt','md','csv','log','json','xml','yaml','yml','js','jsx','ts','tsx','py','java','c','cpp','h','hpp','html','css','scss','svg','sh','bash','rs','go','rb','php','sql','toml','ini','env'];

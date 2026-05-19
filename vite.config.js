@@ -7,7 +7,6 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api/chat': { target: 'http://localhost:3002', changeOrigin: true },
-      '/api/image': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/scrape': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search': { target: 'http://localhost:3002', changeOrigin: true },
     },

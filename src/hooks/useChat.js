@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { sendChatMessage, generateImage, SYSTEM_PROMPT } from '../services/api';
+import { sendChatMessage, SYSTEM_PROMPT } from '../services/api';
 import { processQuery } from '../services/engine';
 import {
   createConversation,
@@ -13,7 +13,57 @@ import { useAuth } from '../contexts/AuthContext';
 import { useChatContext } from '../contexts/ChatContext';
 import { generateSmartTitle } from '../utils/helpers';
 import { detectDocumentRequest, exportDocument } from '../utils/documentExport';
-import { generateImageFromMiraServer, detectImageRequest } from '../services/imageGen';
+
+const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
+const HISTORY_ATTACHMENT_CHAR_LIMIT = 16000;
+const IMAGE_GEN_PATTERN = /\[IMAGE_GEN:\s*([\s\S]*?)\]/i;
+
+function cleanImagePrompt(text = '') {
+  return String(text || '')
+    .replace(/\[IMAGE_GEN:\s*/gi, '')
+    .replace(/\]$/g, '')
+    .replace(/^(sure|okay|absolutely|here'?s|here is|i can|i will)[\s,:-]+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeImageGenerationOutput(modelText, userText) {
+  const markerPrompt = modelText?.match(IMAGE_GEN_PATTERN)?.[1]?.trim();
+  const prompt = cleanImagePrompt(markerPrompt || modelText || userText);
+  const fallback = cleanImagePrompt(userText) || 'A high-quality, detailed image based on the user request';
+  return `[IMAGE_GEN: ${prompt || fallback}]`;
+}
+
+function getFileExtension(name = '') {
+  return name.split('.').pop().toLowerCase();
+}
+
+function getDocumentLabel(name = '') {
+  const ext = getFileExtension(name);
+  if (ext === 'pdf') return 'PDF Document';
+  if (ext === 'docx' || ext === 'doc') return 'Word Document';
+  return 'File';
+}
+
+function cleanAttachmentText(text = '') {
+  return String(text || '').replace(/\u0000/g, '').trim();
+}
+
+function formatAttachmentForPrompt(attachment, charLimit) {
+  const label = getDocumentLabel(attachment.name);
+  const fullText = cleanAttachmentText(attachment.text || attachment.parsedText || '');
+  const body = fullText
+    ? fullText.slice(0, charLimit)
+    : `[No text could be extracted from this file${attachment.parseError ? `: ${attachment.parseError}` : ''}]`;
+  const truncNote = fullText.length > charLimit
+    ? `\n[...content truncated at ${charLimit} chars, total: ${fullText.length}]`
+    : '';
+  return `=== ${label}: "${attachment.name}" ===\n${body}${truncNote}\n=== End of "${attachment.name}" ===`;
+}
+
+function buildAttachmentPrompt(attachments, charLimit) {
+  return attachments.map((attachment) => formatAttachmentForPrompt(attachment, charLimit)).join('\n\n');
+}
 
 export default function useChat() {
   const { user } = useAuth();
@@ -94,9 +144,8 @@ export default function useChat() {
   }, [setIsGenerating]);
 
   const sendMessage = useCallback(
-    async (content, attachments = [], webSearch = false, options = {}) => {
+    async (content, attachments = [], webSearch = false) => {
       if ((!content.trim() && attachments.length === 0) || isGenerating || !user) return;
-      const memoryContext = options.memoryContext || '';
 
       abortRef.current = false;
       setIsGenerating(true);
@@ -123,14 +172,24 @@ export default function useChat() {
           ? `${displayContent}\n\n[Attached: ${fileList}]`
           : `[Attached: ${fileList}]`;
         for (const att of textAttachments) {
-          attachmentData.push({ name: att.name, type: att.type, isImage: false, parsedText: att.text || '' });
+          attachmentData.push({ name: att.name, type: att.type, isImage: false, parsedText: att.text || '', parseError: att.parseError || '' });
         }
       }
 
       const hasImages = imageAttachments.length > 0;
       const engineResult = processQuery(content, hasImages);
       const chosenModel = engineResult.model;
-      const enhancedSystemPrompt = engineResult.enhanceSystemPrompt(SYSTEM_PROMPT);
+      const wantsImageGeneration = engineResult.classification.intent === 'image';
+      const requestedDocumentFormat = wantsImageGeneration
+        ? null
+        : detectDocumentRequest(content, textAttachments.length > 0);
+      let enhancedSystemPrompt = engineResult.enhanceSystemPrompt(SYSTEM_PROMPT);
+      if (wantsImageGeneration) {
+        enhancedSystemPrompt += '\n\nIMAGE GENERATION ROUTE: The user is asking for an actual generated image. Respond with exactly one [IMAGE_GEN: ...] block and no prose, markdown, bullet points, or explanations.';
+      }
+      if (requestedDocumentFormat) {
+        enhancedSystemPrompt += `\n\nDOCUMENT EXPORT ROUTE: The user wants a downloadable ${requestedDocumentFormat.toUpperCase()} file. Generate only the polished document body as clean markdown. Do not include fake download buttons, placeholder links, Google Drive notes, or instructions about downloading. The app will handle the actual file export.`;
+      }
 
       try {
         let isNewChat = false;
@@ -151,74 +210,21 @@ export default function useChat() {
           ...(attachmentData.length > 0 ? { attachments: attachmentData } : {}),
         });
 
-        if (chosenModel === '__image__') {
-          // Immediate text-to-image generation using ONLY our Mira image server
-          const assistantMsgId = await addMessage(convId, {
-            role: 'assistant',
-            content: '',
-            type: 'image_loading',
-          });
+        const assistantMsgId = await addMessage(convId, {
+          role: 'assistant',
+          content: '',
+          type: 'text',
+        });
 
-          try {
-            // If user provided images, we ignore them for now since your /generate is text-only spec.
-            // Use the user content as prompt. (This avoids depending on the model to emit [IMAGE_GEN: ...].)
-            const imgPrompt = content?.trim();
-            if (!imgPrompt) {
-              throw new Error('Empty prompt provided for image generation.');
-            }
-
-            const raw = await generateImageFromMiraServer(imgPrompt);
-
-            const base64 = (() => {
-              if (typeof raw !== 'string') return '';
-              // Trim and remove all whitespace/newlines that would break markdown link/image parsing
-              const cleaned = raw.trim().replace(/\s+/g, '');
-              if (!cleaned) return '';
-
-              // Ensure data URL form
-              if (cleaned.startsWith('data:image/')) return cleaned;
-              if (cleaned.startsWith('data:')) return cleaned;
-
-              // Fallback: assume raw base64 PNG
-              return `data:image/png;base64,${cleaned}`;
-            })();
-
-            if (!base64) throw new Error('Image generation returned an empty/invalid base64 payload.');
-
-            await updateMessage(convId, assistantMsgId, {
-              content: `Here's your generated image:`,
-              type: 'image',
-              image: base64,
-            });
-
-            // Generate smart title for image generation chats
-            if (isNewChat) {
-              generateSmartTitle(content, 'Image generated successfully.').then((title) => {
-                updateConversation(user.uid, convId, { title });
-              });
-            }
-          } catch (err) {
-            await updateMessage(convId, assistantMsgId, {
-              content: `Sorry, I couldn't generate that image: ${err.message}`,
-              type: 'text',
-            });
-          }
-        } else {
-          // Build history — re-inject parsed file text from previous messages so context is never lost
-          const history = messages.map((m) => {
+        {
+          // Re-inject parsed file text from previous messages so context is never lost.
+          const historySource = isNewChat ? [] : messages;
+          const history = historySource.map((m) => {
             let msgContent = m.content;
             if (m.role === 'user' && m.attachments?.length) {
-              const fileAttachments = m.attachments.filter(a => !a.isImage && a.parsedText);
+              const fileAttachments = m.attachments.filter(a => !a.isImage && (a.parsedText || a.parseError));
               if (fileAttachments.length) {
-                const injected = fileAttachments
-                  .map((a) => {
-                    const ext = a.name.split('.').pop().toLowerCase();
-                    const label = ext === 'pdf' ? 'PDF Document' : ['docx','doc'].includes(ext) ? 'Word Document' : 'File';
-                    const text = a.parsedText.slice(0, 12000);
-                    const truncNote = a.parsedText.length > 12000 ? `\n[...truncated, total: ${a.parsedText.length} chars]` : '';
-                    return `=== ${label}: "${a.name}" ===\n${text}${truncNote}\n=== End of "${a.name}" ===`;
-                  })
-                  .join('\n\n');
+                const injected = buildAttachmentPrompt(fileAttachments, HISTORY_ATTACHMENT_CHAR_LIMIT);
                 msgContent = `${msgContent}\n\n[Previously attached file(s) — still in context]:\n\n${injected}`;
               }
             }
@@ -240,7 +246,7 @@ export default function useChat() {
                 const snippets = searchData.results
                   .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}${r.url ? '\nSource: ' + r.url : ''}`)
                   .join('\n\n');
-                userContent = `${content}\n\n===REAL-TIME WEB SEARCH DATA (fetched ${new Date().toUTCString()})===\n${snippets}\n===END SEARCH DATA===\n\nIMPORTANT: The above search results are LIVE data fetched right now from the internet. Your training cutoff does NOT apply here. You MUST base your answer on these search results, not your training data. Cite the sources. Answer:`;
+                userContent = `${content}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${new Date().toUTCString()}) ===\n${snippets}\n=== END SEARCH DATA ===\n\nIMPORTANT: The above search results are LIVE data fetched right now from the internet. Your training cutoff does NOT apply here. You MUST base your answer on these search results, not your training data. Cite the sources. Answer:`;
               } else {
                 userContent = `${content}\n\n[Web search returned no results. Answer from your knowledge but note your cutoff date.]`;
               }
@@ -250,37 +256,18 @@ export default function useChat() {
           }
 
           if (textAttachments.length > 0) {
-            const fileContents = textAttachments
-              .map((a) => {
-                const ext = a.name.split('.').pop().toLowerCase();
-                const label = ext === 'pdf' ? 'PDF Document' : ['docx','doc'].includes(ext) ? 'Word Document' : 'File';
-                const text = a.text ? a.text.slice(0, 12000) : '[No text could be extracted from this file]';
-                const truncNote = a.text && a.text.length > 12000 ? `\n[...content truncated at 12000 chars, total: ${a.text.length}]` : '';
-                return `=== ${label}: "${a.name}" ===\n${text}${truncNote}\n=== End of "${a.name}" ===`;
-              })
-              .join('\n\n');
+            const fileContents = buildAttachmentPrompt(textAttachments, CURRENT_ATTACHMENT_CHAR_LIMIT);
             userContent = userContent
-              ? `${userContent}\n\n[The following file(s) have been fully parsed and attached. You can read and answer questions about their content]:\n\n${fileContents}`
+              ? `${userContent}\n\nIMPORTANT: The uploaded file content is included below as plain text. Read it and answer the user's request directly from this content. If the user asks to analyze, summarize, or break down the document, do that now.\n\n${fileContents}`
               : `Please analyze the following file(s):\n\n${fileContents}`;
           }
 
-          if (memoryContext) {
-            userContent = `${userContent}${memoryContext}`;
+          if (requestedDocumentFormat) {
+            userContent = `${userContent}\n\nDOCUMENT EXPORT REQUEST: Create the complete ${requestedDocumentFormat.toUpperCase()} document content now. Use the uploaded file content if provided. Return only the document content in well-structured markdown. Do not add any fake download button, fake URL, placeholder link, or download instructions.`;
           }
 
-          if (textAttachments.length > 0) {
-            const fileContents = textAttachments
-              .map((a) => {
-                const ext = a.name.split('.').pop().toLowerCase();
-                const label = ext === 'pdf' ? 'PDF Document' : ['docx','doc'].includes(ext) ? 'Word Document' : 'File';
-                const text = a.text ? a.text.slice(0, 12000) : '[No text could be extracted from this file]';
-                const truncNote = a.text && a.text.length > 12000 ? `\n[...content truncated at 12000 chars, total: ${a.text.length}]` : '';
-                return `=== ${label}: "${a.name}" ===\n${text}${truncNote}\n=== End of "${a.name}" ===`;
-              })
-              .join('\n\n');
-            userContent = userContent
-              ? `${userContent}\n\n[The following file(s) have been fully parsed and attached. You can read and answer questions about their content]:\n\n${fileContents}`
-              : `Please analyze the following file(s):\n\n${fileContents}`;
+          if (wantsImageGeneration) {
+            userContent = `${userContent}\n\nIMAGE GENERATION REQUEST: Create a concise but highly detailed visual prompt for this request. Respond only as [IMAGE_GEN: subject, environment, composition, camera, lighting, style, mood, colors, quality].`;
           }
           history.push({ role: 'user', content: userContent });
 
@@ -289,13 +276,8 @@ export default function useChat() {
             images.push(await normalizeImageForUpload(img));
           }
 
-          const assistantMsgId = await addMessage(convId, {
-            role: 'assistant',
-            content: '',
-            type: 'text',
-          });
-
           let fullText = '';
+          let requestFailed = false;
           try {
             await sendChatMessage(
               history,
@@ -315,52 +297,32 @@ export default function useChat() {
               },
             );
           } catch (err) {
+            requestFailed = true;
             fullText = fullText || `Sorry, something went wrong: ${err.message}`;
           }
 
-          if (fullText) {
-            // Check for image generation response (support multiple tag formats)
-            const imgMatch =
-              fullText.match(/\[IMAGE_GEN:\s*([^\]]+)\]/) ||
-              fullText.match(/IMAGE_GEN:\s*([^\n\r]+)$/m) ||
-              fullText.match(/\[IMAGE GENERATION:\s*([^\]]+)\]/) ||
-              fullText.match(/IMAGE GENERATION:\s*([^\n\r]+)$/m) ||
-              fullText.match(/\[IMAGE:\s*([^\]]+)\]/);
+          if (wantsImageGeneration && !requestFailed) {
+            fullText = normalizeImageGenerationOutput(fullText, content);
+          }
 
-            if (imgMatch) {
-              const imgPrompt = (imgMatch[1] || '').trim();
-              if (!imgPrompt) {
-                await updateMessage(convId, assistantMsgId, {
-                  content: 'Sorry, image generation failed: empty prompt extracted from model output.',
-                  type: 'text',
-                });
-              } else {
-                await updateMessage(convId, assistantMsgId, { content: '🎨 Generating image...', type: 'text' });
-                try {
-                  const base64 = await generateImageFromMiraServer(imgPrompt);
-                  await updateMessage(convId, assistantMsgId, {
-                    content: `Here's your generated image:`,
-                    type: 'image',
-                    image: base64,
-                  });
-                } catch (imgErr) {
-                  await updateMessage(convId, assistantMsgId, { content: `Sorry, image generation failed: ${imgErr.message}`, type: 'text' });
-                }
+          if (fullText) {
+            const requestedFormat = requestedDocumentFormat;
+            if (requestedFormat) {
+              const documentUpdate = {
+                content: fullText,
+                exportFormat: requestedFormat,
+                exportStatus: 'ready',
+              };
+              try {
+                const filename = `mira-${requestedFormat}-${Date.now()}.${requestedFormat}`;
+                await exportDocument(fullText, requestedFormat, filename);
+              } catch (exportErr) {
+                documentUpdate.exportStatus = 'failed';
+                documentUpdate.exportError = exportErr?.message || 'Export failed';
               }
+              await updateMessage(convId, assistantMsgId, documentUpdate);
             } else {
-              const requestedFormat = detectDocumentRequest(content, textAttachments.length > 0);
-              if (requestedFormat) {
-                try {
-                  const filename = `mira-${requestedFormat}-${Date.now()}.${requestedFormat}`;
-                  await exportDocument(fullText, requestedFormat, filename);
-                  const shortMessage = `✅ Your ${requestedFormat.toUpperCase()} document has been generated and downloaded!\n\n${fullText.split('\n').filter(l => l.startsWith('#')).slice(0, 5).join('\n')}`;
-                  await updateMessage(convId, assistantMsgId, { content: shortMessage });
-                } catch (exportErr) {
-                  await updateMessage(convId, assistantMsgId, { content: `Failed to generate ${requestedFormat.toUpperCase()}: ${exportErr.message}` });
-                }
-              } else {
-                await updateMessage(convId, assistantMsgId, { content: fullText });
-              }
+              await updateMessage(convId, assistantMsgId, { content: fullText });
             }
 
             if (isNewChat) {
