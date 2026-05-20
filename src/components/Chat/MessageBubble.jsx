@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Check, Volume2, User, FileText, FileCode, File, X, ExternalLink, Download, RefreshCw, Pencil, Globe } from 'lucide-react';
+import { Copy, Check, Volume2, FileText, FileCode, File, X, ExternalLink, Download, RefreshCw, Pencil, Globe } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
@@ -8,6 +8,7 @@ import MindMap from './MindMap';
 import Chart from './Chart';
 import ParticleText from './ParticleText';
 import RelatedMedia from './RelatedMedia';
+import UserAvatar from '../common/UserAvatar';
 import { exportDocument, sanitizeDocumentContent } from '../../utils/documentExport';
 import { cleanSpeechText, createSpeechUtterance, pickPreferredVoice, findVoiceById, getPreferredVoiceId } from '../../utils/tts';
 
@@ -616,7 +617,7 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
   );
 }
 
-function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, isSearching = false }) {
+function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, isSearching = false, userProfile = null }) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const [speaking, setSpeaking] = useState(false);
@@ -733,7 +734,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
             const msg = document.createElement('div');
             msg.className = 'text-sm py-3 px-4 rounded-xl my-2';
             msg.style.cssText = 'background: var(--glass-bg); color: var(--text-tertiary);';
-            msg.textContent = 'Image failed to load — check the generated data URL.';
+            msg.textContent = 'Image failed to load.';
             el.parentNode.insertBefore(msg, el.nextSibling);
           }}
         />
@@ -941,9 +942,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
       {/* User avatar */}
       {isUser && (
         <div className="flex-shrink-0 mt-1">
-          <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'var(--avatar-bg)', color: 'var(--btn-primary-text)' }}>
-            <User size={14} />
-          </div>
+          <UserAvatar profile={userProfile} size={32} className="shadow-sm" title="You" />
         </div>
       )}
     </div>

@@ -26,8 +26,9 @@ async function normalizeImage(image, mimeType) {
     };
   }
   if (image.base64 || image.data || image.url) {
+    const raw = image.base64 || image.data || image.url;
     return {
-      base64: image.base64 || image.data || image.url,
+      base64: typeof raw === 'string' && raw.includes(',') ? raw.split(',')[1] : raw,
       mimeType: image.mimeType || image.type || mimeType,
     };
   }

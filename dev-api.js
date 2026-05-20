@@ -27,6 +27,141 @@ import path from 'path';
 })();
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+const ANCHOR_STOP = new Set(['the','a','an','of','to','for','in','on','with','and','or','but','is','are','was','were','what','how','why','when','where','this','that','it','its','they','them','about','more','can','you','tell','please','show','give','find','search','get','some','image','images','photo','picture','video','videos','media','device','product','object','thing','system','technology']);
+
+function normalizeSearchText(value = '') {
+  return String(value || '').toLowerCase()
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/["'`“”‘’]/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function searchTokens(value = '') {
+  return normalizeSearchText(value).split(' ').filter((word) => word.length >= 3 && !ANCHOR_STOP.has(word));
+}
+
+function extractAnchorPhrase(value = '') {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  const quoted = text.match(/["“]([^"”]{2,80})["”]/)?.[1]?.trim();
+  if (quoted) return quoted;
+  const title = text.match(/\b[A-Z][A-Za-z0-9&+.-]*(?:\s+[A-Z][A-Za-z0-9&+.-]*){1,5}\b/)?.[0]?.trim();
+  if (title) return title.replace(/^(?:the|a|an)\s+/i, '');
+  return text.split(/[,;|:()]/)[0].trim().split(/\s+/).slice(0, 4).join(' ');
+}
+
+function buildAnchorScope(anchor = '') {
+  const phrase = extractAnchorPhrase(anchor);
+  const terms = Array.from(new Set(searchTokens(phrase || anchor))).slice(0, 6);
+  return { phrase, phraseNorm: normalizeSearchText(phrase), terms };
+}
+
+function anchorThreshold(scope) {
+  return scope?.terms?.length >= 2 ? 2 : 1;
+}
+
+function scoreAgainstAnchor(text = '', scope) {
+  if (!scope?.terms?.length) return 0;
+  const haystack = normalizeSearchText(text);
+  if (!haystack) return 0;
+  let score = scope.phraseNorm && haystack.includes(scope.phraseNorm) ? 10 : 0;
+  for (const term of scope.terms) {
+    if (haystack.includes(term)) score += 1;
+  }
+  return score;
+}
+
+function filterByAnchor(items, scope, getText, strict = false) {
+  if (!Array.isArray(items) || !items.length || !scope?.terms?.length) return items || [];
+  const scored = items.map((item) => ({ item, score: scoreAgainstAnchor(getText(item), scope) }));
+  const exact = scored.filter((entry) => scope.phraseNorm && entry.score >= 10);
+  if (exact.length) return exact.map((entry) => entry.item);
+  if (!strict) return items;
+  return scored.filter((entry) => entry.score >= anchorThreshold(scope)).map((entry) => entry.item);
+}
+
+function decodeHtmlEntities(value = '') {
+  return String(value || '')
+    .replace(/&quot;|&#34;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function cleanImageText(value = '') {
+  return decodeHtmlEntities(value)
+    .replace(/[\uE000-\uF8FF]/g, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseBingImageMetadata(html = '', query = '', anchorScope = null, strictAnchor = false) {
+  const items = [];
+  const seen = new Set();
+  const tags = html.match(/<a\b(?=[^>]*\biusc\b)[^>]*>/gi) || [];
+  for (const tag of tags) {
+    const attr = tag.match(/\bm=(['"])(.*?)\1/i)?.[2];
+    if (!attr) continue;
+    let meta;
+    try {
+      meta = JSON.parse(decodeHtmlEntities(attr));
+    } catch {
+      continue;
+    }
+    const original = meta.murl || '';
+    const thumbnail = meta.turl || original;
+    const source = meta.purl || `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`;
+    const title = cleanImageText(meta.t || meta.desc || '');
+    const desc = cleanImageText(meta.desc || '');
+    const key = original || thumbnail;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    items.push({
+      url: original || thumbnail,
+      thumbnail,
+      title,
+      source,
+      _score: scoreAgainstAnchor(`${title} ${desc} ${source} ${original}`, anchorScope),
+    });
+  }
+
+  const filtered = strictAnchor
+    ? filterByAnchor(items, anchorScope, (im) => `${im.title || ''} ${im.source || ''} ${im.url || ''}`, true)
+    : items;
+
+  return filtered.map(({ _score, ...item }) => item);
+}
+
+function imageQueryVariants(query = '', anchorScope = null) {
+  const unquoted = String(query || '').replace(/["“”]/g, '').trim();
+  const phrase = anchorScope?.phrase || '';
+  return Array.from(new Set([
+    unquoted,
+    query,
+    phrase,
+    phrase ? `${phrase} photo` : '',
+    phrase ? `${phrase} images` : '',
+  ].filter(Boolean)));
+}
+
+function buildResultAnchoredImageQuery(results = [], anchorScope = null, fallback = '') {
+  if (!anchorScope?.terms?.length) return fallback;
+  const hit = (results || []).find((result) => scoreAgainstAnchor(`${result.title || ''} ${result.snippet || ''}`, anchorScope) >= 10)
+    || (results || []).find((result) => scoreAgainstAnchor(`${result.title || ''} ${result.snippet || ''}`, anchorScope) >= anchorThreshold(anchorScope));
+  if (!hit?.title) return fallback;
+  const cleaned = cleanImageText(hit.title)
+    .replace(/\s+[-|–—]\s+[^-|–—]{2,40}$/g, '')
+    .replace(/["“”]/g, '')
+    .split(/\s+/)
+    .slice(0, 10)
+    .join(' ')
+    .trim();
+  return cleaned || fallback;
+}
 
 // === Salad chat configuration ===
 const SALAD_API_URL = process.env.SALAD_API_URL || process.env.API_URL;
@@ -246,8 +381,11 @@ async function handleScrape(body) {
 }
 
 async function handleSearch(body) {
-  const { query, includeMedia = true } = JSON.parse(body);
+  const { query, includeMedia = true, mediaQuery, anchor, strictAnchor = false } = JSON.parse(body);
   if (!query?.trim()) return { error: 'Query required', results: [], media: { videos: [], images: [] } };
+  const searchQuery = query.trim();
+  const mediaSearchQuery = String(mediaQuery || searchQuery).trim();
+  const anchorScope = buildAnchorScope(anchor || (strictAnchor ? mediaSearchQuery : ''));
   const shouldFetchMedia = includeMedia !== false;
 
   const BRAVE_KEY = process.env.BRAVE_SEARCH_API_KEY || '';
@@ -266,9 +404,9 @@ async function handleSearch(body) {
   const youtubePromise = (async () => {
     if (!shouldFetchMedia) return null;
     try {
-      const wantsFresh = /\b(latest|current|new|recent|today|this\s+year|202[5-9])\b/i.test(query);
+      const wantsFresh = /\b(latest|current|new|recent|today|this\s+year|202[5-9])\b/i.test(mediaSearchQuery);
       const currentYear = new Date().getUTCFullYear();
-      const r = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&sp=CAMSAhAB`, {
+      const r = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(mediaSearchQuery)}&sp=CAMSAhAB`, {
         headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' }, signal: AbortSignal.timeout(8000),
       });
       if (!r.ok) return null;
@@ -300,9 +438,13 @@ async function handleSearch(body) {
         seen.add(id);
         collected.push({ id, title, published });
       }
-      const kw = ytQueryKeywords(query);
+      const kw = ytQueryKeywords(mediaSearchQuery);
       let filtered = collected;
-      if (kw.length) {
+      if (strictAnchor && anchorScope?.terms?.length) {
+        const scored = collected.map((v) => ({ ...v, score: scoreAgainstAnchor(v.title, anchorScope) }));
+        const exact = scored.filter((v) => anchorScope.phraseNorm && v.score >= 10);
+        filtered = exact.length ? exact : scored.filter((v) => v.score >= anchorThreshold(anchorScope));
+      } else if (kw.length) {
         const weak = new Set(['know', 'which', 'latest', 'current', 'recent', 'video', 'videos', 'media', 'image', 'images']);
         const meaningful = kw.filter((w) => !weak.has(w));
         const required = meaningful.length >= 2 ? 2 : 1;
@@ -324,7 +466,7 @@ async function handleSearch(body) {
   const instagramPromise = (async () => {
     if (!shouldFetchMedia) return null;
     try {
-      const r = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(`site:instagram.com ${query}`)}`, {
+      const r = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(`site:instagram.com ${mediaSearchQuery}`)}`, {
         headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' }, signal: AbortSignal.timeout(8000),
       });
       if (!r.ok) return null;
@@ -355,44 +497,51 @@ async function handleSearch(body) {
   const bingImagesPromise = (async () => {
     if (!shouldFetchMedia) return null;
     try {
-      const r = await fetch(`https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2&first=1`, {
-        headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' }, signal: AbortSignal.timeout(8000),
-      });
-      if (!r.ok) return null;
-      const html = await r.text();
+      const variants = imageQueryVariants(mediaSearchQuery, anchorScope);
       const re = /https:\/\/tse\d\.mm\.bing\.net\/th\/id\/[A-Za-z0-9._-]+(?:\?[^"'\s)<>]+)?/g;
-      const seen = new Set();
-      const out = [];
-      for (const m of html.matchAll(re)) {
-        const url = m[0];
-        if (seen.has(url)) continue;
-        seen.add(url);
-        out.push({ url, thumbnail: url, title: '', source: `https://www.bing.com/images/search?q=${encodeURIComponent(query)}` });
-        if (out.length >= 6) break;
+      for (const variant of variants) {
+        const r = await fetch(`https://www.bing.com/images/search?q=${encodeURIComponent(variant)}&form=HDRSC2&first=1`, {
+          headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' }, signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) continue;
+        const html = await r.text();
+        const metadataImages = parseBingImageMetadata(html, variant, anchorScope, strictAnchor);
+        if (metadataImages.length) return metadataImages.slice(0, 6);
+        if (strictAnchor) continue;
+        const seen = new Set();
+        const out = [];
+        for (const m of html.matchAll(re)) {
+          const url = m[0];
+          if (seen.has(url)) continue;
+          seen.add(url);
+          out.push({ url, thumbnail: url, title: '', source: `https://www.bing.com/images/search?q=${encodeURIComponent(variant)}` });
+          if (out.length >= 6) break;
+        }
+        if (out.length) return out;
       }
-      return out.length ? out : null;
+      return null;
     } catch { return null; }
   })();
 
   const [braveRes, googleRes, bingRes, gnewsRes, ddgRes, videosRes, imagesRes, instagramRes] = await Promise.allSettled([
-    BRAVE_KEY ? fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=6`, {
+    BRAVE_KEY ? fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(searchQuery)}&count=6`, {
       headers: { 'Accept': 'application/json', 'X-Subscription-Token': BRAVE_KEY },
       signal: AbortSignal.timeout(8000),
     }).then(r => r.ok ? r.json() : null) : Promise.resolve(null),
 
-    (GOOGLE_KEY && GOOGLE_CX) ? fetch(`https://www.googleapis.com/customsearch/v1?key=${GOOGLE_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(query)}&num=6`, {
+    (GOOGLE_KEY && GOOGLE_CX) ? fetch(`https://www.googleapis.com/customsearch/v1?key=${GOOGLE_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(searchQuery)}&num=6`, {
       signal: AbortSignal.timeout(8000),
     }).then(r => r.ok ? r.json() : null) : Promise.resolve(null),
 
-    fetch(`https://www.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss`, {
+    fetch(`https://www.bing.com/news/search?q=${encodeURIComponent(searchQuery)}&format=rss`, {
       headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000),
     }).then(r => r.ok ? r.text() : null),
 
-    fetch(`https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`, {
+    fetch(`https://news.google.com/rss/search?q=${encodeURIComponent(searchQuery)}&hl=en-US&gl=US&ceid=US:en`, {
       headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000),
     }).then(r => r.ok ? r.text() : null),
 
-    fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`, {
+    fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(searchQuery)}&format=json&no_html=1&skip_disambig=1`, {
       signal: AbortSignal.timeout(5000),
     }).then(r => r.ok ? r.json() : null),
 
@@ -474,7 +623,7 @@ async function handleSearch(body) {
     const ddgData = ddgRes.value;
     const ddg = [];
     if (ddgData?.Answer) ddg.push({ title: 'Direct Answer', snippet: ddgData.Answer, url: '' });
-    if (ddgData?.AbstractText) ddg.push({ title: ddgData.Heading || query, snippet: ddgData.AbstractText, url: ddgData.AbstractURL || '' });
+    if (ddgData?.AbstractText) ddg.push({ title: ddgData.Heading || searchQuery, snippet: ddgData.AbstractText, url: ddgData.AbstractURL || '' });
     const merged = [...ddg, ...bing, ...gnews];
     const seen = new Set();
     results = merged.filter(r => {
@@ -484,6 +633,10 @@ async function handleSearch(body) {
       return true;
     }).slice(0, 6);
     source = results.length ? 'news-rss' : 'none';
+  }
+
+  if (strictAnchor) {
+    results = filterByAnchor(results, anchorScope, (r) => `${r.title || ''} ${r.snippet || ''} ${r.url || ''}`, true);
   }
 
   // Validate URLs: drop dead/404 article links before they reach the model or UI.
@@ -504,11 +657,35 @@ async function handleSearch(body) {
     results = checks.filter(Boolean);
   }
 
+  let resolvedBingImages = imagesRes.value || [];
+  if (shouldFetchMedia && strictAnchor) {
+    const resultImageQuery = buildResultAnchoredImageQuery(results, anchorScope, mediaSearchQuery);
+    if (resultImageQuery && resultImageQuery !== mediaSearchQuery) {
+      const resultAnchoredImages = await (async () => {
+        try {
+          const variants = imageQueryVariants(resultImageQuery, anchorScope);
+          for (const variant of variants) {
+            const r = await fetch(`https://www.bing.com/images/search?q=${encodeURIComponent(variant)}&form=HDRSC2&first=1`, {
+              headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' }, signal: AbortSignal.timeout(8000),
+            });
+            if (!r.ok) continue;
+            const metadataImages = parseBingImageMetadata(await r.text(), variant, anchorScope, true);
+            if (metadataImages.length) return metadataImages.slice(0, 6);
+          }
+        } catch {}
+        return null;
+      })();
+      if (Array.isArray(resultAnchoredImages) && resultAnchoredImages.length) {
+        resolvedBingImages = resultAnchoredImages;
+      }
+    }
+  }
+
   const og = await enrichFromArticles(results);
 
   // Image ordering: article og:image (most relevant) → Bing CDN thumbs (filler).
   const ytVideos = videosRes.value || [];
-  const bingImgs = imagesRes.value || [];
+  const bingImgs = resolvedBingImages;
   const igVideos = instagramRes.value || [];
 
   const seenImg = new Set();
@@ -638,31 +815,21 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-function tryListen(startPort, attempts = 20) {
+function tryListen(startPort) {
   const portEnv = process.env.PORT;
   const port = portEnv ? Number(portEnv) : startPort;
 
-  let currentPort = port;
-  let tries = 0;
+  server.once('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(`Dev API port ${port} is already in use. Stop the old dev server and run npm run dev again; Vite proxies /api/* to this exact port.`);
+      process.exit(1);
+    }
+    throw err;
+  });
 
-  const attempt = () => {
-    tries += 1;
-    server.once('error', (err) => {
-      if (err && err.code === 'EADDRINUSE' && tries < attempts) {
-        currentPort += 1;
-        console.log(`Dev API port ${currentPort - 1} in use, trying ${currentPort}...`);
-        attempt();
-        return;
-      }
-      throw err;
-    });
-
-    server.listen(currentPort, () => {
-      console.log(`Dev API server running on http://localhost:${currentPort}`);
-    });
-  };
-
-  attempt();
+  server.listen(port, () => {
+    console.log(`Dev API server running on http://localhost:${port}`);
+  });
 }
 
 tryListen(3002);

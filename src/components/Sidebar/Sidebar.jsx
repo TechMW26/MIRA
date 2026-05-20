@@ -23,6 +23,8 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import { useChatContext } from '../../contexts/ChatContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import UserAvatar from '../common/UserAvatar';
+import useUserProfile from '../../hooks/useUserProfile';
 import {
   subscribeConversations,
   deleteConversation,
@@ -37,6 +39,7 @@ import { groupConversationsByDate } from '../../utils/helpers';
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
+  const userProfile = useUserProfile();
   const {
     currentConversationId, setCurrentConversationId,
     startNewChat, sidebarOpen, setSidebarOpen, setShowSettings,
@@ -455,12 +458,10 @@ export default function Sidebar() {
               onClick={(e) => { e.stopPropagation(); setShowUserMenu(!showUserMenu); }}
               className="flex items-center gap-3 w-full px-2 py-2 rounded-xl transition-all duration-200"
             >
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold" style={{ background: 'var(--avatar-bg)', color: 'var(--btn-primary-text)' }}>
-                {user?.displayName?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || '?'}
-              </div>
+              <UserAvatar profile={userProfile} size={36} />
               <div className="flex-1 text-left min-w-0">
-                <div className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{user?.displayName || 'User'}</div>
-                <div className="text-[11px] truncate" style={{ color: 'var(--text-tertiary)' }}>{user?.email}</div>
+                <div className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{userProfile.displayName || 'User'}</div>
+                <div className="text-[11px] truncate" style={{ color: 'var(--text-tertiary)' }}>{userProfile.email}</div>
               </div>
             </button>
             {showUserMenu && (

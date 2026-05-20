@@ -28,6 +28,14 @@ export async function getUserProfile(uid) {
   return snap.exists() ? snap.val() : null;
 }
 
+export function subscribeUserProfile(uid, callback) {
+  const profileRef = ref(db, `users/${uid}`);
+  onValue(profileRef, (snap) => {
+    callback(snap.exists() ? snap.val() : null);
+  });
+  return () => off(profileRef);
+}
+
 // ── Conversations ──────────────────────────────────────
 export async function createConversation(uid, title = 'New Chat') {
   const convRef = push(ref(db, `conversations/${uid}`));

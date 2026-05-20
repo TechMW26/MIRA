@@ -99,7 +99,7 @@ export function AuthProvider({ children }) {
         if (token) {
           const payload = await verifyJWT(token);
           if (payload) {
-            setUser({ uid: payload.uid, email: payload.email, displayName: payload.displayName });
+            setUser({ uid: payload.uid, email: payload.email, displayName: payload.displayName, photoURL: payload.photoURL || '' });
           } else {
             localStorage.removeItem(TOKEN_KEY);
           }
@@ -128,6 +128,7 @@ export function AuthProvider({ children }) {
         uid: u.uid,
         email: u.email,
         displayName: u.displayName,
+        photoURL: u.photoURL || '',
         iat: Date.now(),
         exp: Date.now() + TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
       });
@@ -163,7 +164,7 @@ export function AuthProvider({ children }) {
       snap.forEach((child) => {
         const val = child.val();
         if (val.email === email.toLowerCase().trim() && val.password === hashedPw) {
-          foundUser = { uid: child.key, email: val.email, displayName: val.displayName };
+          foundUser = { uid: child.key, email: val.email, displayName: val.displayName, photoURL: val.photoURL || '' };
         }
       });
 
@@ -218,7 +219,7 @@ export function AuthProvider({ children }) {
         createdAt: Date.now(),
       });
 
-      const newUser = { uid, email: normalizedEmail, displayName };
+      const newUser = { uid, email: normalizedEmail, displayName, photoURL: '' };
       await persistUser(newUser);
       return newUser;
     } catch (err) {

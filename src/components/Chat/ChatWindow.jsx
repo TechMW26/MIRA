@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useChatContext } from '../../contexts/ChatContext';
 import useChat from '../../hooks/useChat';
+import useUserProfile from '../../hooks/useUserProfile';
 import MessageBubble from './MessageBubble';
 import WelcomeScreen from './WelcomeScreen';
 import ChatInput from './ChatInput';
@@ -77,6 +78,7 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
 export default function ChatWindow() {
   const { currentConversationId, isGenerating, isSearching } = useChatContext();
   const { messages, streamingContent, thinkingContent, sendMessage, stopGenerating, retryMessage, editMessage } = useChat();
+  const userProfile = useUserProfile();
 
   const [webSearch, setWebSearch] = useState(false);
   const [panel, setPanel] = useState(null); // 'browser' | 'canvas' | 'tasks' | 'tools' | 'prompts'
@@ -158,6 +160,7 @@ export default function ChatWindow() {
                   webSearch={webSearch}
                   isGenerating={isGenerating}
                   isSearching={isSearching}
+                  userProfile={userProfile}
                 />
               ))
             )}
