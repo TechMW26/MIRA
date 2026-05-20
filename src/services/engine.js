@@ -66,12 +66,20 @@ const SEARCH_SIGNALS = [
   /\b(202[4-9]|203\d)\b/i,
   /\b(live|real[- ]time|up[- ]to[- ]date|this morning|tonight|yesterday)\b/i,
   /\b(availability|in stock|sold out|shipping|delivery)\b/i,
+  /\b(who\s+(makes|manufactures|produces|produced|created|built|developed|owns|founded)|which\s+company|what\s+company|manufacturer|producer|maker|company\s+behind|brand\s+behind|official\s+website)\b/i,
+  /\b(in[-\s]?depth|deep\s+dive|full\s+information|complete\s+information|let\s+me\s+know\s+about|details?\s+about|background\s+on)\b/i,
   // Follow-up curiosity triggers — almost always want fresh info.
   /\b(tell me more|more about|more info|explain (the|that|this)|details about|deep dive|elaborate on|background on|what (does|do) .+ (do|mean))\b/i,
 ];
 
-function detectSearchNeed(text) {
-  return SEARCH_SIGNALS.some(rx => rx.test(text));
+const IMAGE_GROUNDED_SEARCH_SIGNALS = [
+  /\b(tell\s+me(?:\s+(?:something|more))?|details?|information|info|background|research|explain|what\s+is|what's|identify|recognize|verify|look\s+up|find\s+out|search|check)\b[^.!?]{0,110}\b(image|photo|picture|device|product|object|item|thing|prototype|machine|system|this|that|it)\b/i,
+  /\b(image|photo|picture|device|product|object|item|thing|prototype|machine|system|this|that|it)\b[^.!?]{0,110}\b(tell\s+me(?:\s+(?:something|more))?|details?|information|info|background|research|explain|what\s+is|what's|identify|recognize|verify|look\s+up|find\s+out|search|check)\b/i,
+];
+
+function detectSearchNeed(text, hasImages = false) {
+  if (SEARCH_SIGNALS.some(rx => rx.test(text))) return true;
+  return hasImages && IMAGE_GROUNDED_SEARCH_SIGNALS.some(rx => rx.test(text));
 }
 
 // Signals that the user wants code output, not actual image generation.
@@ -241,7 +249,7 @@ export function processQuery(userText, hasImages = false) {
   const interpretation = interpretUserPrompt(userText, hasImages);
   const classification = interpretation.classification;
   const model = pickModel(classification, hasImages);
-  const searchNeeded = detectSearchNeed(userText);
+  const searchNeeded = detectSearchNeed(userText, hasImages);
 
   return {
     classification,

@@ -30,15 +30,19 @@ function normalizeUrl(input) {
 }
 
 const QUICK_LINKS = [
-  { label: 'Google', url: 'https://www.google.com/search?q=', icon: '🔍' },
-  { label: 'Wikipedia', url: 'https://en.wikipedia.org', icon: '📖' },
-  { label: 'GitHub', url: 'https://github.com', icon: '💻' },
-  { label: 'Stack Overflow', url: 'https://stackoverflow.com', icon: '🧩' },
-  { label: 'Hacker News', url: 'https://news.ycombinator.com', icon: '📰' },
-  { label: 'arXiv', url: 'https://arxiv.org', icon: '🔬' },
-  { label: 'Reddit', url: 'https://www.reddit.com', icon: '💬' },
-  { label: 'MDN', url: 'https://developer.mozilla.org', icon: '📚' },
+  { label: 'Google', url: 'https://www.google.com/search?q=', domain: 'google.com' },
+  { label: 'Wikipedia', url: 'https://en.wikipedia.org', domain: 'wikipedia.org' },
+  { label: 'GitHub', url: 'https://github.com', domain: 'github.com' },
+  { label: 'Stack Overflow', url: 'https://stackoverflow.com', domain: 'stackoverflow.com' },
+  { label: 'Hacker News', url: 'https://news.ycombinator.com', domain: 'news.ycombinator.com' },
+  { label: 'arXiv', url: 'https://arxiv.org', domain: 'arxiv.org' },
+  { label: 'Reddit', url: 'https://www.reddit.com', domain: 'reddit.com' },
+  { label: 'MDN', url: 'https://developer.mozilla.org', domain: 'developer.mozilla.org' },
 ];
+
+function faviconForDomain(domain) {
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
+}
 
 let tabId = 1;
 const mkTab = () => ({ id: tabId++, url: '', title: 'New Tab', page: null, loading: false, error: '', history: [], histIdx: -1 });
@@ -266,11 +270,24 @@ export default function BrowserPanel({ onSendToChat, onClose }) {
               <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>New Tab</p>
               <p className="text-[11px] mb-4" style={{ color: 'var(--text-tertiary)' }}>Enter a URL or search above</p>
               <div className="grid grid-cols-2 gap-2">
-                {QUICK_LINKS.map(({ label, url, icon }) => (
+                {QUICK_LINKS.map(({ label, url, domain }) => (
                   <button key={label} onClick={() => fetchPage(url)}
                     className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium text-left transition-all hover:opacity-80 active:scale-95"
                     style={{ background: 'var(--glass-bg)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
-                    <span className="text-base leading-none">{icon}</span>{label}
+                    <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center overflow-hidden rounded-md bg-white/80">
+                      <img
+                        src={faviconForDomain(domain)}
+                        alt=""
+                        className="h-4 w-4 object-contain"
+                        loading="lazy"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                          e.currentTarget.nextElementSibling?.classList.remove('hidden');
+                        }}
+                      />
+                      <Globe size={13} className="hidden" style={{ color: 'var(--accent)' }} />
+                    </span>
+                    {label}
                   </button>
                 ))}
               </div>

@@ -199,6 +199,46 @@ function dataUrlToUint8Array(dataUrl) {
   }
 }
 
+function dataUrlForPptx(dataUrl) {
+  if (!dataUrl || typeof dataUrl !== 'string') return null;
+  return dataUrl.replace(/^data:/i, '');
+}
+
+async function getImageDimensions(dataUrl) {
+  if (!dataUrl) return null;
+  try {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    await new Promise((resolve) => {
+      img.onload = resolve;
+      img.onerror = resolve;
+      img.src = dataUrl;
+    });
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
+    if (!width || !height) return null;
+    return { width, height, ratio: height / width };
+  } catch {
+    return null;
+  }
+}
+
+function fitMediaBox({ x, y, w, h }, dimensions, mode = 'contain') {
+  if (!dimensions?.width || !dimensions?.height) return { x, y, w, h };
+  const mediaRatio = dimensions.width / dimensions.height;
+  const boxRatio = w / h;
+
+  if (mode === 'cover') {
+    const coverW = mediaRatio > boxRatio ? h * mediaRatio : w;
+    const coverH = mediaRatio > boxRatio ? h : w / mediaRatio;
+    return { x: x + (w - coverW) / 2, y: y + (h - coverH) / 2, w: coverW, h: coverH };
+  }
+
+  const fittedW = mediaRatio > boxRatio ? w : h * mediaRatio;
+  const fittedH = mediaRatio > boxRatio ? w / mediaRatio : h;
+  return { x: x + (w - fittedW) / 2, y: y + (h - fittedH) / 2, w: fittedW, h: fittedH };
+}
+
 function docxImageType(dataUrl) {
   const fmt = imageFormatFromDataUrl(dataUrl).toLowerCase();
   if (fmt === 'jpeg') return 'jpg';
@@ -464,6 +504,117 @@ function getRenderableSections(sections, meta) {
   });
 }
 
+function countWords(text = '') {
+  const cleaned = cleanInlineText(text);
+  return cleaned ? cleaned.split(/\s+/).length : 0;
+}
+
+function getDocumentProfile(sections) {
+  const stats = {
+    headings: 0,
+    paragraphs: 0,
+    lists: 0,
+    tables: 0,
+    code: 0,
+    visuals: 0,
+    words: 0,
+  };
+
+  for (const section of sections) {
+    if (/^heading/.test(section.type)) stats.headings += 1;
+    if (section.type === 'paragraph' || section.type === 'blockquote') stats.paragraphs += 1;
+    if (section.type === 'bullet-list' || section.type === 'ordered-list') {
+      stats.lists += 1;
+      stats.words += section.items.reduce((sum, item) => sum + countWords(item.text), 0);
+    }
+    if (section.type === 'table') {
+      stats.tables += 1;
+      stats.words += [...section.header, ...section.rows.flat()].reduce((sum, cell) => sum + countWords(cell), 0);
+    }
+    if (section.type === 'code') stats.code += 1;
+    if (section.type === 'image' || section.type === 'mermaid') stats.visuals += 1;
+    if (section.content) stats.words += countWords(section.content);
+  }
+
+  let kind = 'editorial';
+  if (stats.code >= 2 || (stats.code >= 1 && stats.words < 900)) kind = 'technical';
+  else if (stats.tables >= 2 || (stats.tables >= 1 && stats.lists >= 2)) kind = 'analytical';
+  else if (stats.visuals >= 2 || (stats.visuals >= 1 && stats.paragraphs <= 3)) kind = 'visual';
+  else if (stats.lists >= 3 && stats.paragraphs <= stats.lists + 1) kind = 'briefing';
+  else if (stats.headings >= 5 || stats.words > 1100) kind = 'report';
+
+  const density = stats.words > 1200 ? 'longform' : stats.words > 520 ? 'standard' : 'compact';
+  return { kind, density, stats };
+}
+
+function getDocumentRecipe(profile, style) {
+  const primary = rgbToHex(style.primary);
+  const accent = rgbToHex(style.accent);
+  const recipes = {
+    technical: {
+      cover: 'technical',
+      section: 'terminal',
+      slide: 'split',
+      titleSize: 36,
+      primary,
+      accent,
+      dark: '0F172A',
+      soft: 'F1F5F9',
+    },
+    analytical: {
+      cover: 'data',
+      section: 'ruled',
+      slide: 'dashboard',
+      titleSize: 38,
+      primary,
+      accent,
+      dark: '111827',
+      soft: 'F8FAFC',
+    },
+    visual: {
+      cover: 'gallery',
+      section: 'gallery',
+      slide: 'canvas',
+      titleSize: 40,
+      primary,
+      accent,
+      dark: '111827',
+      soft: 'F8FAFC',
+    },
+    briefing: {
+      cover: 'briefing',
+      section: 'cards',
+      slide: 'cards',
+      titleSize: 38,
+      primary,
+      accent,
+      dark: '0F172A',
+      soft: 'F8FAFC',
+    },
+    report: {
+      cover: 'report',
+      section: 'chapter',
+      slide: 'report',
+      titleSize: 36,
+      primary,
+      accent,
+      dark: '0F172A',
+      soft: 'F8FAFC',
+    },
+    editorial: {
+      cover: 'editorial',
+      section: 'editorial',
+      slide: 'editorial',
+      titleSize: 40,
+      primary,
+      accent,
+      dark: '0F172A',
+      soft: 'F8FAFC',
+    },
+  };
+  return recipes[profile.kind] || recipes.editorial;
+}
+
 // ==================== PROFESSIONAL PDF GENERATION ====================
 export async function generatePDF(content, filename = 'document.pdf') {
   const doc = new jsPDF({
@@ -482,6 +633,8 @@ export async function generatePDF(content, filename = 'document.pdf') {
   const meta = getDocumentMeta(sections, filename);
   const renderSections = getRenderableSections(sections, meta);
   const generatedDate = getGeneratedDate();
+  const profile = getDocumentProfile(renderSections);
+  const recipe = getDocumentRecipe(profile, style);
   let y = 34;
 
   doc.setProperties({
@@ -494,28 +647,139 @@ export async function generatePDF(content, filename = 'document.pdf') {
   const setText = (rgb) => doc.setTextColor(rgb[0], rgb[1], rgb[2]);
 
   const drawCover = () => {
-    // Editorial-style cover: clean white with a single accent rule
     doc.setFillColor(255, 255, 255);
     doc.rect(0, 0, pageWidth, pageHeight, 'F');
 
-    // Thin top accent band
+    if (recipe.cover === 'technical') {
+      doc.setFillColor(15, 23, 42);
+      doc.rect(0, 0, pageWidth, pageHeight, 'F');
+      doc.setDrawColor(30, 41, 59);
+      doc.setLineWidth(0.15);
+      for (let gx = 0; gx <= pageWidth; gx += 14) doc.line(gx, 0, gx, pageHeight);
+      for (let gy = 0; gy <= pageHeight; gy += 14) doc.line(0, gy, pageWidth, gy);
+      setFill(style.accent);
+      doc.roundedRect(margin, 44, 28, 3, 1.5, 1.5, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(32);
+      doc.setTextColor(248, 250, 252);
+      const titleLines = doc.splitTextToSize(meta.title, contentWidth - 10);
+      doc.text(titleLines, margin, 86);
+      if (meta.subtitle) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(12.5);
+        doc.setTextColor(203, 213, 225);
+        doc.text(doc.splitTextToSize(meta.subtitle, contentWidth - 20), margin, 86 + titleLines.length * 11 + 8);
+      }
+      doc.setFontSize(9);
+      doc.setTextColor(148, 163, 184);
+      doc.text(`${profile.stats.code} code block${profile.stats.code === 1 ? '' : 's'}  /  ${profile.stats.words} words`, margin, pageHeight - 23);
+      doc.text(generatedDate, margin, pageHeight - 15);
+      return;
+    }
+
+    if (recipe.cover === 'data') {
+      setFill(style.primary);
+      doc.rect(0, 0, pageWidth, 42, 'F');
+      setFill(style.accent);
+      doc.rect(0, 42, pageWidth, 2.5, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(30);
+      doc.setTextColor(15, 23, 42);
+      doc.text(doc.splitTextToSize(meta.title, contentWidth), margin, 83);
+      if (meta.subtitle) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(12);
+        doc.setTextColor(71, 85, 105);
+        doc.text(doc.splitTextToSize(meta.subtitle, contentWidth), margin, 108);
+      }
+      const metrics = [
+        ['Sections', profile.stats.headings || 1],
+        ['Tables', profile.stats.tables],
+        ['Visuals', profile.stats.visuals],
+      ];
+      metrics.forEach(([label, value], idx) => {
+        const x = margin + idx * 50;
+        doc.setFillColor(248, 250, 252);
+        doc.roundedRect(x, 148, 42, 26, 3, 3, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(18);
+        setText(style.primary);
+        doc.text(String(value), x + 5, 161);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text(label, x + 5, 169);
+      });
+      doc.setFontSize(9);
+      doc.setTextColor(148, 163, 184);
+      doc.text(generatedDate, margin, pageHeight - 14);
+      return;
+    }
+
+    if (recipe.cover === 'gallery') {
+      doc.setFillColor(248, 250, 252);
+      doc.rect(0, 0, pageWidth, pageHeight, 'F');
+      setFill(style.primary);
+      doc.roundedRect(pageWidth - 68, 28, 48, 82, 8, 8, 'F');
+      setFill(style.accent);
+      doc.roundedRect(pageWidth - 96, 78, 62, 88, 8, 8, 'F');
+      doc.setFillColor(255, 255, 255);
+      doc.roundedRect(pageWidth - 78, 116, 44, 62, 8, 8, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(34);
+      doc.setTextColor(15, 23, 42);
+      doc.text(doc.splitTextToSize(meta.title, contentWidth - 34), margin, 72);
+      if (meta.subtitle) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(12.5);
+        doc.setTextColor(71, 85, 105);
+        doc.text(doc.splitTextToSize(meta.subtitle, contentWidth - 48), margin, 112);
+      }
+      doc.setFontSize(9);
+      doc.setTextColor(148, 163, 184);
+      doc.text(generatedDate, margin, pageHeight - 14);
+      return;
+    }
+
+    if (recipe.cover === 'briefing') {
+      setFill(style.accent);
+      doc.rect(0, 0, 8, pageHeight, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(38);
+      doc.setTextColor(15, 23, 42);
+      doc.text(doc.splitTextToSize(meta.title, contentWidth - 10), margin, 82);
+      if (meta.subtitle) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(13);
+        doc.setTextColor(71, 85, 105);
+        doc.text(doc.splitTextToSize(meta.subtitle, contentWidth - 10), margin, 124);
+      }
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(margin, 164, contentWidth, 30, 4, 4, 'F');
+      setText(style.primary);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.text('BRIEFING DOCUMENT', margin + 7, 176);
+      doc.setTextColor(100, 116, 139);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${profile.stats.lists} list groups  /  ${profile.stats.headings || 1} sections`, margin + 7, 186);
+      doc.setFontSize(9);
+      doc.setTextColor(148, 163, 184);
+      doc.text(generatedDate, margin, pageHeight - 14);
+      return;
+    }
+
     setFill(style.primary);
-    doc.rect(0, 0, pageWidth, 3, 'F');
-
-    // Vertical accent rule along left margin
+    doc.rect(0, 0, pageWidth, recipe.cover === 'report' ? 9 : 3, 'F');
     setFill(style.accent);
-    doc.rect(margin, pageHeight / 2 - 40, 1.2, 80, 'F');
-
-    // Title block (vertically centered to feel intentional, not corporate)
+    doc.rect(margin, pageHeight / 2 - 40, recipe.cover === 'report' ? 2.4 : 1.2, 80, 'F');
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(34);
+    doc.setFontSize(recipe.cover === 'report' ? 30 : 34);
     doc.setTextColor(15, 23, 42);
     const titleLines = doc.splitTextToSize(meta.title, contentWidth - 14);
     const titleY = pageHeight / 2 - 24;
     doc.text(titleLines, margin + 8, titleY);
-
     let cursorY = titleY + titleLines.length * 11 + 6;
-
     if (meta.subtitle) {
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(13);
@@ -524,8 +788,7 @@ export async function generatePDF(content, filename = 'document.pdf') {
       doc.text(subtitleLines, margin + 8, cursorY);
       cursorY += subtitleLines.length * 6.5;
     }
-
-    // Minimal date footer — no branding
+    void cursorY;
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
     doc.setTextColor(148, 163, 184);
@@ -576,20 +839,71 @@ export async function generatePDF(content, filename = 'document.pdf') {
     renderSections.push({ type: 'paragraph', content: 'No document content was available to export.' });
   }
 
+  let chapterNumber = 0;
+
   for (const section of renderSections) {
 
     if (section.type === 'heading1') {
+      chapterNumber += 1;
       checkPageBreak(24);
-      doc.setFillColor(248, 250, 252);
-      doc.roundedRect(margin, y - 8, contentWidth, 20, 3, 3, 'F');
-      setFill(style.accent);
-      doc.roundedRect(margin, y - 8, 4, 20, 2, 2, 'F');
-      doc.setFontSize(17);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(30, 41, 59);
-      const lines = doc.splitTextToSize(section.content, contentWidth - 14);
-      doc.text(lines, margin + 10, y + 4);
-      y += Math.max(24, lines.length * 8 + 14);
+      const lines = doc.splitTextToSize(section.content, contentWidth - 18);
+
+      if (recipe.section === 'terminal') {
+        const boxHeight = Math.max(24, lines.length * 8 + 16);
+        doc.setFillColor(15, 23, 42);
+        doc.roundedRect(margin, y - 8, contentWidth, boxHeight, 3, 3, 'F');
+        setFill(style.accent);
+        doc.circle(margin + 8, y, 1.6, 'F');
+        doc.setFontSize(16);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(248, 250, 252);
+        doc.text(lines, margin + 16, y + 3);
+        y += boxHeight + 8;
+      } else if (recipe.section === 'ruled') {
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        setText(style.primary);
+        doc.text(String(chapterNumber).padStart(2, '0'), margin, y - 2);
+        setDraw(style.accent);
+        doc.setLineWidth(0.8);
+        doc.line(margin + 12, y - 4, pageWidth - margin, y - 4);
+        doc.setFontSize(18);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(17, 24, 39);
+        doc.text(lines, margin, y + 8);
+        y += Math.max(24, lines.length * 8 + 12);
+      } else if (recipe.section === 'gallery') {
+        doc.setFillColor(248, 250, 252);
+        doc.roundedRect(margin, y - 8, contentWidth, 26, 5, 5, 'F');
+        setFill(style.primary);
+        doc.roundedRect(pageWidth - margin - 36, y - 8, 36, 26, 5, 5, 'F');
+        doc.setFontSize(17);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(15, 23, 42);
+        doc.text(lines, margin + 8, y + 5);
+        y += Math.max(30, lines.length * 8 + 16);
+      } else if (recipe.section === 'cards') {
+        setFill(style.accent);
+        doc.roundedRect(margin, y - 7, 9, 9, 2, 2, 'F');
+        doc.setFontSize(7);
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.text(String(chapterNumber), margin + 4.5, y - 0.8, { align: 'center' });
+        doc.setFontSize(18);
+        doc.setTextColor(15, 23, 42);
+        doc.text(lines, margin + 14, y);
+        y += Math.max(22, lines.length * 8 + 10);
+      } else {
+        doc.setFillColor(248, 250, 252);
+        doc.roundedRect(margin, y - 8, contentWidth, 20, 3, 3, 'F');
+        setFill(style.accent);
+        doc.roundedRect(margin, y - 8, 4, 20, 2, 2, 'F');
+        doc.setFontSize(17);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(30, 41, 59);
+        doc.text(lines, margin + 10, y + 4);
+        y += Math.max(24, lines.length * 8 + 14);
+      }
 
     } else if (section.type === 'heading2') {
       checkPageBreak(17);
@@ -801,26 +1115,52 @@ export async function generateDOCX(content, filename = 'document.docx') {
   const primary = rgbToHex(style.primary);
   const accent = rgbToHex(style.accent);
   const generatedDate = getGeneratedDate();
+  const profile = getDocumentProfile(renderSections);
+  const recipe = getDocumentRecipe(profile, style);
   const children = [];
 
-  children.push(
+  const darkCover = recipe.cover === 'technical';
+  const coverParagraphs = [
     new Paragraph({
-      children: [new TextRun({ text: meta.title, bold: true, color: '0F172A', size: 52 })],
-      spacing: { before: 480, after: 200 },
+      children: [new TextRun({ text: meta.title, bold: true, color: darkCover ? 'FFFFFF' : '0F172A', size: recipe.cover === 'report' ? 48 : 52 })],
+      shading: darkCover ? { type: ShadingType.SOLID, fill: '0F172A' } : undefined,
+      border: darkCover
+        ? { left: { color: accent, space: 1, style: BorderStyle.SINGLE, size: 36 } }
+        : { top: { color: accent, space: 1, style: BorderStyle.SINGLE, size: 12 } },
+      indent: darkCover ? { left: 240 } : undefined,
+      spacing: { before: darkCover ? 360 : 480, after: 200 },
     }),
     new Paragraph({
-      children: [new TextRun({ text: meta.subtitle || '', color: '475569', size: 26 })],
+      children: [new TextRun({ text: meta.subtitle || '', color: darkCover ? 'CBD5E1' : '475569', size: 26 })],
+      shading: darkCover ? { type: ShadingType.SOLID, fill: '0F172A' } : undefined,
+      indent: darkCover ? { left: 240 } : undefined,
       spacing: { after: 360 },
     }),
     new Paragraph({
-      children: [new TextRun({ text: generatedDate, color: '94A3B8', size: 20 })],
+      children: [new TextRun({ text: generatedDate, color: darkCover ? '94A3B8' : '94A3B8', size: 20 })],
+      shading: darkCover ? { type: ShadingType.SOLID, fill: '0F172A' } : undefined,
       border: {
         top: { style: BorderStyle.SINGLE, size: 6, color: accent },
       },
       spacing: { before: 120, after: 900 },
     }),
-    new Paragraph({ children: [new PageBreak()] })
-  );
+  ];
+
+  if (recipe.cover === 'data' || recipe.cover === 'briefing') {
+    coverParagraphs.push(
+      new Paragraph({
+        children: [
+          new TextRun({ text: `${profile.stats.headings || 1} sections`, bold: true, color: primary, size: 22 }),
+          new TextRun({ text: `   ${profile.stats.tables} tables   ${profile.stats.visuals} visuals   ${profile.stats.lists} list groups`, color: '64748B', size: 22 }),
+        ],
+        shading: { type: ShadingType.SOLID, fill: 'F8FAFC' },
+        spacing: { before: 120, after: 480 },
+      })
+    );
+  }
+
+  coverParagraphs.push(new Paragraph({ children: [new PageBreak()] }));
+  children.push(...coverParagraphs);
 
   const contentSections = renderSections.length
     ? renderSections
@@ -1004,20 +1344,17 @@ export async function generateDOCX(content, filename = 'document.docx') {
       if (dataUrl && bytes) {
         let width = 520;
         let height = 320;
-        try {
-          const probe = new Image();
-          await new Promise((resolve) => {
-            probe.onload = resolve;
-            probe.onerror = resolve;
-            probe.src = dataUrl;
-          });
-          if (probe.naturalWidth && probe.naturalHeight) {
-            const maxW = 560;
-            const ratio = probe.naturalHeight / probe.naturalWidth;
-            width = Math.min(maxW, probe.naturalWidth);
-            height = Math.round(width * ratio);
+        const dimensions = await getImageDimensions(dataUrl);
+        if (dimensions) {
+          const maxW = 560;
+          const maxH = 360;
+          width = Math.min(maxW, dimensions.width);
+          height = Math.round(width * dimensions.ratio);
+          if (height > maxH) {
+            height = maxH;
+            width = Math.round(height / dimensions.ratio);
           }
-        } catch {}
+        }
         try {
           children.push(
             new Paragraph({
@@ -1130,54 +1467,135 @@ export async function generatePPTX(content, filename = 'presentation.pptx') {
   const primaryHex = rgbToHex(style.primary);
   const accentHex = rgbToHex(style.accent);
   const generatedDate = getGeneratedDate();
+  const profile = getDocumentProfile(renderSections);
+  const recipe = getDocumentRecipe(profile, style);
 
   pptx.layout = 'LAYOUT_16x9';
   pptx.title = meta.title;
   pptx.subject = meta.subtitle || meta.title;
 
-  // Title Slide — minimal deck cover with real title (no placeholders, no branding)
   const titleSlide = pptx.addSlide();
-  titleSlide.background = { color: 'FFFFFF' };
-  titleSlide.addShape(pptx.ShapeType.rect, { x: 0, y: 2.45, w: 0.18, h: 1.6, fill: { color: accentHex }, line: { color: accentHex } });
+  const darkTitle = recipe.cover === 'technical';
+  titleSlide.background = { color: darkTitle ? '0F172A' : 'FFFFFF' };
+  if (recipe.cover === 'technical') {
+    for (let x = 0; x <= 13.4; x += 0.6) titleSlide.addShape(pptx.ShapeType.line, { x, y: 0, w: 0, h: 7.5, line: { color: '1E293B', transparency: 40, width: 0.4 } });
+    for (let yLine = 0; yLine <= 7.5; yLine += 0.6) titleSlide.addShape(pptx.ShapeType.line, { x: 0, y: yLine, w: 13.4, h: 0, line: { color: '1E293B', transparency: 40, width: 0.4 } });
+    titleSlide.addShape(pptx.ShapeType.rect, { x: 0.65, y: 1.0, w: 0.9, h: 0.08, fill: { color: accentHex }, line: { color: accentHex } });
+  } else if (recipe.cover === 'data') {
+    titleSlide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.34, h: 1.0, fill: { color: primaryHex }, line: { color: primaryHex } });
+    titleSlide.addShape(pptx.ShapeType.rect, { x: 0, y: 1.0, w: 13.34, h: 0.08, fill: { color: accentHex }, line: { color: accentHex } });
+  } else if (recipe.cover === 'gallery') {
+    titleSlide.addShape(pptx.ShapeType.rect, { x: 9.3, y: 0.7, w: 2.3, h: 4.7, fill: { color: primaryHex }, line: { color: primaryHex, transparency: 100 } });
+    titleSlide.addShape(pptx.ShapeType.rect, { x: 10.4, y: 1.6, w: 2.1, h: 4.4, fill: { color: accentHex }, line: { color: accentHex, transparency: 100 } });
+  } else if (recipe.cover === 'briefing') {
+    titleSlide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 0.28, h: 7.5, fill: { color: accentHex }, line: { color: accentHex } });
+  } else {
+    titleSlide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.34, h: recipe.cover === 'report' ? 0.22 : 0.08, fill: { color: primaryHex }, line: { color: primaryHex } });
+  }
+
   titleSlide.addText(meta.title, {
-    x: 0.7, y: 2.4, w: 8.6, h: 1.0,
-    fontSize: 40, bold: true, color: '0F172A', valign: 'middle',
+    x: 0.7, y: recipe.cover === 'data' ? 1.8 : 2.25, w: 8.9, h: 1.25,
+    fontSize: recipe.titleSize, bold: true, color: darkTitle ? 'F8FAFC' : '0F172A', fit: 'shrink', valign: 'mid',
+    margin: 0,
   });
   if (meta.subtitle) {
     titleSlide.addText(meta.subtitle, {
-      x: 0.7, y: 3.5, w: 8.6, h: 0.6,
-      fontSize: 18, color: '475569', valign: 'top',
+      x: 0.7, y: recipe.cover === 'data' ? 3.05 : 3.45, w: 8.7, h: 0.65,
+      fontSize: 17, color: darkTitle ? 'CBD5E1' : '475569', fit: 'shrink', valign: 'top',
+      margin: 0,
+    });
+  }
+  if (recipe.cover === 'data' || recipe.cover === 'briefing') {
+    const metrics = [
+      ['Sections', profile.stats.headings || 1],
+      ['Tables', profile.stats.tables],
+      ['Visuals', profile.stats.visuals],
+    ];
+    metrics.forEach(([label, value], idx) => {
+      titleSlide.addShape(pptx.ShapeType.rect, { x: 0.7 + idx * 1.7, y: 4.65, w: 1.35, h: 0.58, fill: { color: 'F8FAFC' }, line: { color: 'E2E8F0' } });
+      titleSlide.addText(String(value), { x: 0.86 + idx * 1.7, y: 4.74, w: 0.35, h: 0.18, fontSize: 16, bold: true, color: primaryHex, margin: 0 });
+      titleSlide.addText(label, { x: 1.18 + idx * 1.7, y: 4.78, w: 0.62, h: 0.15, fontSize: 7.5, color: '64748B', margin: 0 });
     });
   }
   titleSlide.addText(generatedDate, {
-    x: 0.7, y: 5.1, w: 8.6, h: 0.3,
-    fontSize: 10, color: '94A3B8',
+    x: 0.7, y: 5.95, w: 8.6, h: 0.25,
+    fontSize: 9.5, color: darkTitle ? '94A3B8' : '94A3B8',
+    margin: 0,
   });
 
   // Structured content items per slide: { type, text, isBullet, isNumbered, isSubheading }
   let currentSlide = null;
   let slideItems = [];
   let slideTitle = '';
-  const MAX_ITEMS_PER_SLIDE = 7;
+  let contentSlideCount = 0;
+  const MAX_ITEMS_PER_SLIDE = recipe.slide === 'cards' ? 5 : 7;
 
   const addSlideHeader = (slide, title, fontSize = 24) => {
-    // Clean minimal slide header: title + thin accent underline. No filled banner.
+    if (recipe.slide === 'split' || recipe.slide === 'report') {
+      slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 0.16, h: 7.5, fill: { color: accentHex }, line: { color: accentHex } });
+    }
+    if (recipe.slide === 'dashboard') {
+      slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.34, h: 0.18, fill: { color: primaryHex }, line: { color: primaryHex } });
+    }
     slide.addText(title, {
-      x: 0.5, y: 0.35, w: 9, h: 0.7,
-      fontSize, bold: true, color: '0F172A', valign: 'middle',
+      x: 0.55, y: 0.33, w: 11.5, h: 0.62,
+      fontSize, bold: true, color: '0F172A', valign: 'middle', fit: 'shrink', margin: 0,
     });
     slide.addShape(pptx.ShapeType.rect, {
-      x: 0.5, y: 1.05, w: 0.6, h: 0.05,
+      x: 0.55, y: 1.05, w: recipe.slide === 'dashboard' ? 1.15 : 0.65, h: 0.05,
       fill: { color: accentHex }, line: { color: accentHex },
     });
+  };
+
+  const ensureContentSlide = (title = 'Overview') => {
+    if (currentSlide) return;
+    currentSlide = pptx.addSlide();
+    currentSlide.background = { color: 'FFFFFF' };
+    addSlideHeader(currentSlide, title, 26);
+    slideTitle = title;
+    slideItems = [];
+  };
+
+  const textOptionsForItem = (item, compact = false) => {
+    if (item.isSubheading) return { bold: true, fontSize: compact ? 13 : 17, color: '1E293B', breakLine: true };
+    if (item.isBullet) return { bullet: { indent: compact ? 10 : 15 }, fontSize: compact ? 12 : 15, color: '334155', breakLine: true };
+    if (item.isNumbered) return { bullet: { type: 'number', indent: compact ? 10 : 15 }, fontSize: compact ? 12 : 15, color: '334155', breakLine: true };
+    return { fontSize: compact ? 12.5 : 15, color: '334155', breakLine: true };
+  };
+
+  const renderTextBlock = (slide, chunk, box, compact = false) => {
+    if (!chunk.length) return;
+    const textArr = chunk.map(item => ({ text: item.text, options: textOptionsForItem(item, compact) }));
+    slide.addText(textArr, { ...box, valign: 'top', paraSpaceAfter: compact ? 4 : 7, fit: 'shrink', margin: 0.08, breakLine: false });
+  };
+
+  const renderCards = (slide, chunk) => {
+    const columns = chunk.length > 3 ? 2 : 1;
+    const cardW = columns === 2 ? 5.7 : 11.2;
+    const cardH = columns === 2 ? 0.76 : 0.86;
+    chunk.forEach((item, idx) => {
+      const col = idx % columns;
+      const row = Math.floor(idx / columns);
+      const x = 0.7 + col * 6.0;
+      const y = 1.45 + row * (cardH + 0.18);
+      slide.addShape(pptx.ShapeType.rect, { x, y, w: cardW, h: cardH, fill: { color: 'F8FAFC' }, line: { color: 'E2E8F0', width: 1 } });
+      slide.addShape(pptx.ShapeType.rect, { x, y, w: 0.08, h: cardH, fill: { color: item.isSubheading ? primaryHex : accentHex }, line: { color: item.isSubheading ? primaryHex : accentHex } });
+      slide.addText(item.text, { x: x + 0.22, y: y + 0.12, w: cardW - 0.38, h: cardH - 0.18, fontSize: item.isSubheading ? 13.5 : 12.5, bold: item.isSubheading, color: '334155', fit: 'shrink', margin: 0 });
+    });
+  };
+
+  const renderStatement = (slide, chunk) => {
+    const text = chunk.map(item => item.text).join('\n');
+    slide.addShape(pptx.ShapeType.rect, { x: 0.7, y: 1.55, w: 0.12, h: 3.2, fill: { color: accentHex }, line: { color: accentHex } });
+    slide.addText(text, { x: 1.0, y: 1.65, w: 10.6, h: 3.0, fontSize: 23, bold: false, color: '1E293B', fit: 'shrink', breakLine: false, margin: 0 });
   };
 
   const flushSlide = () => {
     if (!currentSlide || slideItems.length === 0) return;
 
-    // Split into chunks of MAX_ITEMS_PER_SLIDE
     for (let i = 0; i < slideItems.length; i += MAX_ITEMS_PER_SLIDE) {
       const chunk = slideItems.slice(i, i + MAX_ITEMS_PER_SLIDE);
+      contentSlideCount += 1;
       const slide = i === 0 ? currentSlide : (() => {
         const s = pptx.addSlide();
         s.background = { color: 'FFFFFF' };
@@ -1185,18 +1603,26 @@ export async function generatePPTX(content, filename = 'presentation.pptx') {
         return s;
       })();
 
-      const textArr = chunk.map(item => {
-        if (item.isSubheading) return { text: item.text, options: { bold: true, fontSize: 18, color: '1E293B', breakLine: true } };
-        if (item.isBullet) return { text: item.text, options: { bullet: { indent: 15 }, fontSize: 16, color: '334155', breakLine: true } };
-        if (item.isNumbered) return { text: item.text, options: { bullet: { type: 'number', indent: 15 }, fontSize: 16, color: '334155', breakLine: true } };
-        return { text: item.text, options: { fontSize: 16, color: '334155', breakLine: true } };
-      });
-
-      slide.addText(textArr, { x: 0.5, y: 1.4, w: 9, h: 4.3, valign: 'top', paraSpaceAfter: 6 });
+      const totalWords = chunk.reduce((sum, item) => sum + countWords(item.text), 0);
+      const bulletCount = chunk.filter(item => item.isBullet || item.isNumbered).length;
+      if (chunk.length <= 2 && totalWords <= 55 && recipe.slide !== 'dashboard') {
+        renderStatement(slide, chunk);
+      } else if (recipe.slide === 'cards' || bulletCount >= 4) {
+        renderCards(slide, chunk);
+      } else if (recipe.slide === 'dashboard' || contentSlideCount % 2 === 0) {
+        renderTextBlock(slide, chunk.slice(0, Math.ceil(chunk.length / 2)), { x: 0.65, y: 1.42, w: 5.55, h: 4.6 }, true);
+        renderTextBlock(slide, chunk.slice(Math.ceil(chunk.length / 2)), { x: 6.7, y: 1.42, w: 5.55, h: 4.6 }, true);
+      } else {
+        renderTextBlock(slide, chunk, { x: 0.72, y: 1.4, w: 11.1, h: 4.65 });
+      }
     }
   };
 
-  for (const section of renderSections) {
+  const deckSections = renderSections.length
+    ? renderSections
+    : [{ type: 'paragraph', content: 'No document content was available to export.' }];
+
+  for (const section of deckSections) {
     if (section.type === 'heading1' || section.type === 'heading2') {
       flushSlide();
       currentSlide = pptx.addSlide();
@@ -1206,15 +1632,19 @@ export async function generatePPTX(content, filename = 'presentation.pptx') {
       slideItems = [];
 
     } else if (section.type === 'heading3') {
+      ensureContentSlide(slideTitle || 'Overview');
       slideItems.push({ text: section.content, isSubheading: true });
 
     } else if (section.type === 'paragraph') {
+      ensureContentSlide(slideTitle || 'Overview');
       slideItems.push({ text: section.content });
 
     } else if (section.type === 'bullet-list') {
+      ensureContentSlide(slideTitle || 'Overview');
       section.items.forEach(item => slideItems.push({ text: item.text, isBullet: true }));
 
     } else if (section.type === 'ordered-list') {
+      ensureContentSlide(slideTitle || 'Overview');
       section.items.forEach((item, idx) => slideItems.push({ text: `${idx + 1}. ${item.text}`, isNumbered: true }));
 
     } else if (section.type === 'code') {
@@ -1223,9 +1653,9 @@ export async function generatePPTX(content, filename = 'presentation.pptx') {
       codeSlide.background = { color: 'FFFFFF' };
       addSlideHeader(codeSlide, section.language ? section.language.toUpperCase() + ' Code' : 'Code');
       codeSlide.addText(section.content.substring(0, 800), {
-        x: 0.5, y: 1.4, w: 9, h: 4.3,
-        fontSize: 13, fontFace: 'Courier New', color: '1E293B',
-        fill: { color: 'F1F5F9' }, valign: 'top',
+        x: 0.65, y: 1.35, w: 12.05, h: 4.9,
+        fontSize: 12.5, fontFace: 'Courier New', color: recipe.cover === 'technical' ? 'E2E8F0' : '1E293B',
+        fill: { color: recipe.cover === 'technical' ? '0F172A' : 'F1F5F9' }, valign: 'top', fit: 'shrink', margin: 0.12,
       });
       currentSlide = null;
       slideItems = [];
@@ -1241,11 +1671,11 @@ export async function generatePPTX(content, filename = 'presentation.pptx') {
         ...section.rows.map(row => row.map(cell => ({ text: cell, options: { color: '334155' } }))),
       ];
       tableSlide.addTable(tableData, {
-        x: 0.5, y: 1.5, w: 9,
-        fontSize: 14,
+        x: 0.55, y: 1.35, w: 12.2,
+        fontSize: 11.5,
         border: { pt: 1, color: 'E2E8F0' },
         fill: { color: 'FFFFFF' },
-        rowH: 0.4,
+        rowH: 0.38,
       });
       currentSlide = null;
       slideItems = [];
@@ -1257,15 +1687,40 @@ export async function generatePPTX(content, filename = 'presentation.pptx') {
       mediaSlide.background = { color: 'FFFFFF' };
       const captionTitle = section.alt || (section.type === 'mermaid' ? 'Diagram' : 'Image');
       addSlideHeader(mediaSlide, captionTitle);
-      if (dataUrl) {
-        mediaSlide.addImage({
-          data: dataUrl,
-          x: 1.0, y: 1.4, w: 8.0, h: 4.2,
-          sizing: { type: 'contain', w: 8.0, h: 4.2 },
+      const pptxImageData = dataUrlForPptx(dataUrl);
+      if (pptxImageData) {
+        const frame = recipe.slide === 'canvas'
+          ? { x: 0.75, y: 1.28, w: 11.85, h: 4.95 }
+          : { x: 1.0, y: 1.35, w: 11.1, h: 4.65 };
+        const dimensions = await getImageDimensions(dataUrl);
+        const fitted = fitMediaBox(frame, dimensions, 'contain');
+        mediaSlide.addShape(pptx.ShapeType.rect, {
+          ...frame,
+          fill: { color: 'F8FAFC' },
+          line: { color: 'E2E8F0', width: 1 },
         });
+        try {
+          mediaSlide.addImage({
+            data: pptxImageData,
+            ...fitted,
+            altText: captionTitle,
+          });
+          if (section.title || section.alt) {
+            mediaSlide.addText(section.title || section.alt, {
+              x: frame.x, y: frame.y + frame.h + 0.12, w: frame.w, h: 0.28,
+              fontSize: 9.5, italic: true, color: '64748B', align: 'center', fit: 'shrink', margin: 0,
+            });
+          }
+        } catch (err) {
+          console.warn('PPTX image embed failed:', err);
+          mediaSlide.addText(section.type === 'mermaid' ? 'Diagram could not be embedded.' : 'Image could not be embedded.', {
+            x: 0.5, y: 2.7, w: 12.2, h: 0.5,
+            fontSize: 14, italic: true, color: '94A3B8', align: 'center',
+          });
+        }
       } else {
         mediaSlide.addText(section.type === 'mermaid' ? 'Diagram could not be rendered.' : 'Image unavailable.', {
-          x: 0.5, y: 2.5, w: 9, h: 0.5,
+          x: 0.5, y: 2.5, w: 12.2, h: 0.5,
           fontSize: 14, italic: true, color: '94A3B8', align: 'center',
         });
       }
