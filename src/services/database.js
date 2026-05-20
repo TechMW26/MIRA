@@ -81,6 +81,10 @@ export async function updateMessage(convId, msgId, data) {
   await update(ref(db, `messages/${convId}/${msgId}`), data);
 }
 
+export async function deleteMessage(convId, msgId) {
+  await remove(ref(db, `messages/${convId}/${msgId}`));
+}
+
 export function subscribeMessages(convId, callback) {
   const msgRef = query(ref(db, `messages/${convId}`), orderByChild('timestamp'));
   onValue(msgRef, (snap) => {

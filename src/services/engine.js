@@ -66,6 +66,8 @@ const SEARCH_SIGNALS = [
   /\b(202[4-9]|203\d)\b/i,
   /\b(live|real[- ]time|up[- ]to[- ]date|this morning|tonight|yesterday)\b/i,
   /\b(availability|in stock|sold out|shipping|delivery)\b/i,
+  // Follow-up curiosity triggers — almost always want fresh info.
+  /\b(tell me more|more about|more info|explain (the|that|this)|details about|deep dive|elaborate on|background on|what (does|do) .+ (do|mean))\b/i,
 ];
 
 function detectSearchNeed(text) {
@@ -85,7 +87,23 @@ const IMAGE_NEGATIVE_SIGNALS = [
   /\b(function|class|module|import|export|const|let|var|return)\b/i,
 ];
 
+const CODE_INTENT_SIGNALS = [
+  /\b(code|coding|source\s*code|implementation|implement|build|develop|program|script|component|page|website|webpage|web\s*app|landing\s*page|template)\b/i,
+  /\b(html|css|javascript|js|typescript|ts|jsx|tsx|react|vue|angular|svelte|next\.?js|tailwind|bootstrap|node|python|java|php|ruby|swift|kotlin|sql)\b/i,
+  /\b(production[-\s]*ready|end[-\s]*to[-\s]*end|full\s*(?:code|implementation)|complete\s*(?:code|app|website|page))\b/i,
+  /\b(navbar|footer|hero|section|layout|responsive|button|form|modal|canvas|dom|api|frontend|backend)\b/i,
+];
+
+function detectCodeIntent(text = '') {
+  return CODE_INTENT_SIGNALS.some(rx => rx.test(text));
+}
+
 function classifyQuery(text) {
+  if (detectCodeIntent(text)) {
+    const complexity = /\b(production[-\s]*ready|end[-\s]*to[-\s]*end|complete|full|app|website|architecture)\b/i.test(text) ? 'high' : 'medium';
+    return { intent: 'code', complexity };
+  }
+
   // Check image patterns first
   let isImageMatch = false;
   for (const rx of COMPLEXITY_SIGNALS.image) {
@@ -129,6 +147,20 @@ function classifyQuery(text) {
 export function isImageGenerationRequest(text = '') {
   const classification = classifyQuery(text);
   return classification.intent === 'image';
+}
+
+export function interpretUserPrompt(text = '', hasImages = false) {
+  const classification = classifyQuery(text);
+  const codeIntent = detectCodeIntent(text);
+  const imageIntent = classification.intent === 'image' && !codeIntent;
+  return {
+    intent: codeIntent ? 'code' : classification.intent,
+    classification: codeIntent ? { ...classification, intent: 'code' } : classification,
+    codeIntent,
+    imageIntent,
+    hasImages,
+    route: codeIntent ? 'code' : imageIntent ? 'image' : 'chat',
+  };
 }
 
 // ── Model routing ──────────────────────────────────────────────
@@ -206,12 +238,14 @@ function enhanceSystemPrompt(basePrompt, classification, needsSearch = false) {
 
 // ── Public API ─────────────────────────────────────────────────
 export function processQuery(userText, hasImages = false) {
-  const classification = classifyQuery(userText);
+  const interpretation = interpretUserPrompt(userText, hasImages);
+  const classification = interpretation.classification;
   const model = pickModel(classification, hasImages);
   const searchNeeded = detectSearchNeed(userText);
 
   return {
     classification,
+    interpretation,
     model,
     needsSearch: searchNeeded,
     enhanceSystemPrompt: (base) => enhanceSystemPrompt(base, classification, searchNeeded),

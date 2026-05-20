@@ -15,46 +15,43 @@ const MAX_TOKENS_CAP = 8192;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
 
 function imageToDataUrl(image) {
+  // Kept for potential future OpenAI-style multimodal use; not used by the
+  // Ollama vision path below.
   const raw = image?.base64 || image?.data || image?.url || '';
   if (!raw) return null;
   if (raw.startsWith('data:') || raw.startsWith('http://') || raw.startsWith('https://')) return raw;
   return `data:${image?.mimeType || image?.type || 'image/jpeg'};base64,${raw}`;
 }
+void imageToDataUrl;
 
-function contentToParts(content) {
-  if (Array.isArray(content)) return [...content];
-  if (content == null) return [];
-  return [{ type: 'text', text: String(content) }];
+// Ollama/llama3.2-vision expects per-message `images: [base64, ...]` with the
+// raw base64 only (no `data:image/...;base64,` prefix). Normalize anything we
+// receive (data URL, raw base64, http(s) URL won't work for Ollama — skip).
+function imageToOllamaBase64(image) {
+  const raw = image?.base64 || image?.data || image?.url || '';
+  if (!raw || typeof raw !== 'string') return null;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return null;
+  if (raw.startsWith('data:')) {
+    const comma = raw.indexOf(',');
+    return comma >= 0 ? raw.slice(comma + 1) : null;
+  }
+  return raw;
 }
 
-function withImages(messages, images = []) {
-  const imageParts = images
-    .map(imageToDataUrl)
-    .filter(Boolean)
-    .map((url) => ({ type: 'image_url', image_url: { url } }));
-
-  if (imageParts.length === 0) return messages;
-
-  const nextMessages = [...messages];
-  let userIndex = -1;
-  for (let index = nextMessages.length - 1; index >= 0; index -= 1) {
-    if (nextMessages[index]?.role === 'user') {
-      userIndex = index;
-      break;
+function attachImagesToLastUserMessage(messages, images) {
+  if (!Array.isArray(images) || images.length === 0) return messages;
+  const base64List = images.map(imageToOllamaBase64).filter(Boolean);
+  if (base64List.length === 0) return messages;
+  const copy = messages.map((m) => ({ ...m }));
+  for (let i = copy.length - 1; i >= 0; i--) {
+    if (copy[i].role === 'user') {
+      copy[i] = { ...copy[i], images: base64List };
+      return copy;
     }
   }
-
-  if (userIndex === -1) {
-    nextMessages.push({ role: 'user', content: imageParts });
-    return nextMessages;
-  }
-
-  const target = nextMessages[userIndex];
-  nextMessages[userIndex] = {
-    ...target,
-    content: [...contentToParts(target.content), ...imageParts],
-  };
-  return nextMessages;
+  // No user message found — append one carrying the images.
+  copy.push({ role: 'user', content: '', images: base64List });
+  return copy;
 }
 
 function normalizeMessages(messages = [], systemPrompt) {
@@ -63,21 +60,9 @@ function normalizeMessages(messages = [], systemPrompt) {
     .filter((message) => message?.role && message.content != null)
     .map((message) => {
       const role = ALLOWED_ROLES.has(message.role) ? message.role : 'user';
-      let content = message.content;
-      // Cap text length to defend against pathological payloads.
-      if (typeof content === 'string') {
-        content = content.slice(0, MAX_TEXT_CONTENT_CHARS);
-      } else if (Array.isArray(content)) {
-        let remaining = MAX_TEXT_CONTENT_CHARS;
-        content = content.slice(0, 32).map((part) => {
-          if (part?.type === 'text' && typeof part.text === 'string') {
-            const text = part.text.slice(0, Math.max(0, remaining));
-            remaining -= text.length;
-            return { type: 'text', text };
-          }
-          return part;
-        });
-      }
+      const content = typeof message.content === 'string'
+        ? message.content.slice(0, MAX_TEXT_CONTENT_CHARS)
+        : String(message.content || '').slice(0, MAX_TEXT_CONTENT_CHARS);
       return { role, content };
     });
 
@@ -111,7 +96,8 @@ export async function POST(req) {
 
     const body = await req.json();
     const imageList = Array.isArray(body.images) ? body.images.slice(0, MAX_IMAGES) : [];
-    const messages = withImages(normalizeMessages(body.messages, body.systemPrompt), imageList);
+    const baseMessages = normalizeMessages(body.messages, body.systemPrompt);
+    const messages = attachImagesToLastUserMessage(baseMessages, imageList);
 
     if (messages.length === 0) {
       return jsonResponse({ error: 'At least one chat message is required.' }, 400);
@@ -119,6 +105,12 @@ export async function POST(req) {
 
     const requestedMax = Number(body.max_tokens) || SALAD_MAX_TOKENS;
     const safeMax = Math.max(1, Math.min(requestedMax, MAX_TOKENS_CAP));
+
+    // Force the vision model whenever images are present, regardless of the
+    // model requested by the client.
+    const hasImages = messages.some((m) => Array.isArray(m.images) && m.images.length > 0);
+    const requestedModel = typeof body.model === 'string' ? body.model : SALAD_MODEL;
+    const effectiveModel = hasImages ? 'llama3.2-vision' : requestedModel;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), SALAD_TIMEOUT_MS);
@@ -129,7 +121,7 @@ export async function POST(req) {
         'Salad-Api-Key': SALAD_API_KEY,
       },
       body: JSON.stringify({
-        model: typeof body.model === 'string' ? body.model : SALAD_MODEL,
+        model: effectiveModel,
         messages,
         stream: body.stream !== false,
         max_tokens: safeMax,

@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle, PageBreak, Header, Footer, PageNumber, ShadingType } from 'docx';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle, PageBreak, Header, Footer, PageNumber, ShadingType, ImageRun } from 'docx';
 import PptxGenJS from 'pptxgenjs';
 import { marked } from 'marked';
 
@@ -38,6 +38,7 @@ function cleanInlineText(text) {
   if (!text) return '';
   return String(text)
     .replace(/<[^>]*>/g, '')
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .replace(/[`*_~]/g, '')
     .replace(/&nbsp;/g, ' ')
@@ -46,6 +47,173 @@ function cleanInlineText(text) {
     .replace(/&gt;/g, '>')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// ──────────────────────────────────────────────
+// Image / Diagram helpers (shared by PDF/DOCX/PPTX)
+// ──────────────────────────────────────────────
+
+let _mermaidLibPromise = null;
+async function loadMermaid() {
+  if (!_mermaidLibPromise) {
+    _mermaidLibPromise = import('mermaid').then((mod) => {
+      const m = mod.default || mod;
+      try {
+        m.initialize({
+          startOnLoad: false,
+          theme: 'default',
+          securityLevel: 'loose',
+          fontFamily: 'Helvetica, Arial, sans-serif',
+        });
+      } catch {}
+      return m;
+    });
+  }
+  return _mermaidLibPromise;
+}
+
+export async function loadImageAsDataUrl(src) {
+  if (!src) return null;
+  if (typeof src !== 'string') return null;
+  if (src.startsWith('data:image/')) return src;
+
+  const readBlob = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+
+  // 1. Try direct browser fetch (works for permissive CORS hosts).
+  try {
+    const res = await fetch(src, { mode: 'cors', cache: 'no-store', credentials: 'omit' });
+    if (res.ok) {
+      const blob = await res.blob();
+      if (blob.type.startsWith('image/')) return await readBlob(blob);
+    }
+  } catch {}
+
+  // 2. Fall back to our server-side image proxy (bypasses CORS).
+  try {
+    const proxied = `/api/image?url=${encodeURIComponent(src)}`;
+    const res = await fetch(proxied, { cache: 'no-store' });
+    if (res.ok) {
+      const blob = await res.blob();
+      if (blob.type.startsWith('image/')) return await readBlob(blob);
+    }
+  } catch {}
+
+  return null;
+}
+
+async function rasterizeSvgToPng(svgString, scale = 2) {
+  let svg = svgString;
+  if (!/xmlns="http:\/\/www\.w3\.org\/2000\/svg"/.test(svg)) {
+    svg = svg.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+  // Mermaid often emits SVGs with only viewBox + style "max-width". Browsers
+  // then load the <img> with 0x0 intrinsic size, causing rasterization to fail.
+  // Force explicit width/height attributes derived from the viewBox.
+  const viewBoxMatch = svg.match(/viewBox="([\d.\-\s]+)"/);
+  let vbW = 0, vbH = 0;
+  if (viewBoxMatch) {
+    const parts = viewBoxMatch[1].trim().split(/\s+/).map(Number);
+    if (parts.length === 4 && parts.every((n) => Number.isFinite(n))) {
+      vbW = Math.max(1, parts[2]);
+      vbH = Math.max(1, parts[3]);
+    }
+  }
+  if (vbW && vbH) {
+    // Replace any existing width/height to remove "100%" / "max-width" styles.
+    svg = svg.replace(/\s(width|height)="[^"]*"/g, '');
+    svg = svg.replace(/<svg/, `<svg width="${Math.round(vbW)}" height="${Math.round(vbH)}"`);
+    // Strip max-width style that some mermaid themes inject inline.
+    svg = svg.replace(/style="[^"]*max-width:\s*[^;"]*;?[^"]*"/g, (m) =>
+      m.replace(/max-width:\s*[^;"]*;?/g, '')
+    );
+  }
+
+  const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+    img.src = url;
+  });
+  const baseW = img.width || img.naturalWidth || vbW || 800;
+  const baseH = img.height || img.naturalHeight || vbH || 600;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.floor(baseW * scale));
+  canvas.height = Math.max(1, Math.floor(baseH * scale));
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/png');
+}
+
+export async function renderMermaidToDataUrl(code) {
+  if (!code || !code.trim()) return null;
+  const cleaned = code.trim();
+  try {
+    const mermaid = await loadMermaid();
+    if (typeof mermaid.parse === 'function') {
+      try { await mermaid.parse(cleaned); }
+      catch (parseErr) {
+        console.warn('Mermaid parse error:', parseErr?.message || parseErr, '\nSource:\n', cleaned);
+        return null;
+      }
+    }
+    const id = `mira-mmd-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const result = await mermaid.render(id, cleaned);
+    const svg = typeof result === 'string' ? result : result?.svg;
+    if (!svg) return null;
+    return await rasterizeSvgToPng(svg, 2);
+  } catch (err) {
+    console.warn('Mermaid render failed:', err?.message || err, '\nSource:\n', cleaned);
+    return null;
+  }
+}
+
+function imageFormatFromDataUrl(dataUrl) {
+  const match = /^data:image\/([a-zA-Z0-9.+-]+)/.exec(dataUrl || '');
+  const raw = (match ? match[1] : 'png').toLowerCase();
+  if (raw === 'jpg' || raw === 'jpeg') return 'JPEG';
+  if (raw === 'webp') return 'WEBP';
+  if (raw === 'gif') return 'GIF';
+  return 'PNG';
+}
+
+function dataUrlToUint8Array(dataUrl) {
+  const commaIdx = dataUrl.indexOf(',');
+  if (commaIdx < 0) return null;
+  const base64 = dataUrl.slice(commaIdx + 1);
+  try {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+function docxImageType(dataUrl) {
+  const fmt = imageFormatFromDataUrl(dataUrl).toLowerCase();
+  if (fmt === 'jpeg') return 'jpg';
+  if (fmt === 'webp') return 'png'; // docx doesn't list webp; png is closest neutral
+  return fmt;
+}
+
+async function fetchMediaForSection(section) {
+  if (section.type === 'mermaid') {
+    return await renderMermaidToDataUrl(section.content);
+  }
+  if (section.type === 'image') {
+    return await loadImageAsDataUrl(section.src);
+  }
+  return null;
 }
 
 function isConversationalDocumentLine(line) {
@@ -144,9 +312,38 @@ function parseMarkdownAdvanced(content) {
         });
         break;
 
-      case 'paragraph':
+      case 'paragraph': {
+        const raw = String(token.raw || token.text || '').trim();
+        // Detect standalone image lines: ![alt](src "title")
+        const standalone = raw.match(/^!\[([^\]]*)\]\((\S+?)(?:\s+"([^"]*)")?\)\s*$/);
+        if (standalone) {
+          sections.push({
+            type: 'image',
+            src: standalone[2],
+            alt: standalone[1] || '',
+            title: standalone[3] || '',
+          });
+          break;
+        }
+        // Extract inline images and emit them as separate image sections
+        const inlineTokens = Array.isArray(token.tokens) ? token.tokens : [];
+        const inlineImages = inlineTokens.filter((t) => t && t.type === 'image');
+        if (inlineImages.length) {
+          const remaining = cleanInlineText(token.text || raw);
+          if (remaining) pushTextBlock(remaining);
+          inlineImages.forEach((img) => {
+            sections.push({
+              type: 'image',
+              src: img.href,
+              alt: img.text || '',
+              title: img.title || '',
+            });
+          });
+          break;
+        }
         pushTextBlock(token.text || token.raw || '');
         break;
+      }
 
       case 'list':
         sections.push({
@@ -158,13 +355,19 @@ function parseMarkdownAdvanced(content) {
         });
         break;
 
-      case 'code':
-        sections.push({
-          type: 'code',
-          content: token.text,
-          language: token.lang || 'text',
-        });
+      case 'code': {
+        const lang = (token.lang || '').toLowerCase();
+        if (lang === 'mermaid') {
+          sections.push({ type: 'mermaid', content: token.text || '' });
+        } else {
+          sections.push({
+            type: 'code',
+            content: token.text,
+            language: token.lang || 'text',
+          });
+        }
         break;
+      }
 
       case 'blockquote':
         sections.push({
@@ -188,6 +391,15 @@ function parseMarkdownAdvanced(content) {
 
       case 'space':
         sections.push({ type: 'space' });
+        break;
+
+      case 'image':
+        sections.push({
+          type: 'image',
+          src: token.href,
+          alt: token.text || '',
+          title: token.title || '',
+        });
         break;
     }
   }
@@ -501,6 +713,72 @@ export async function generatePDF(content, filename = 'document.pdf') {
       doc.line(margin, y, pageWidth - margin, y);
       y += 10;
 
+    } else if (section.type === 'image' || section.type === 'mermaid') {
+      const dataUrl = await fetchMediaForSection(section);
+      if (dataUrl) {
+        let imgW = contentWidth;
+        let imgH = contentWidth * 0.6;
+        try {
+          const props = doc.getImageProperties(dataUrl);
+          const pxToMm = 25.4 / 96;
+          const naturalW = props.width * pxToMm;
+          const naturalH = props.height * pxToMm;
+          const ratio = props.height / props.width;
+          imgW = Math.min(contentWidth, Math.max(60, naturalW));
+          imgH = imgW * ratio;
+          const maxH = pageHeight - 60;
+          if (imgH > maxH) {
+            imgH = maxH;
+            imgW = imgH / ratio;
+            if (imgW > contentWidth) {
+              imgW = contentWidth;
+              imgH = imgW * ratio;
+            }
+          }
+          // Ignore unused vars
+          void naturalH;
+        } catch {}
+        checkPageBreak(imgH + 14);
+        const format = imageFormatFromDataUrl(dataUrl);
+        const xPos = margin + (contentWidth - imgW) / 2;
+        try {
+          doc.addImage(dataUrl, format, xPos, y, imgW, imgH, undefined, 'FAST');
+          y += imgH + 4;
+        } catch (err) {
+          console.warn('PDF addImage failed:', err);
+          doc.setFontSize(9);
+          doc.setFont('helvetica', 'italic');
+          doc.setTextColor(148, 163, 184);
+          doc.text(section.type === 'mermaid' ? '[Diagram could not be embedded]' : '[Image could not be embedded]', margin, y);
+          y += 8;
+        }
+        const caption = section.alt || section.title;
+        if (caption) {
+          doc.setFontSize(9);
+          doc.setFont('helvetica', 'italic');
+          doc.setTextColor(100, 116, 139);
+          const capLines = doc.splitTextToSize(caption, contentWidth);
+          capLines.forEach((line) => {
+            checkPageBreak(5);
+            doc.text(line, pageWidth / 2, y + 3, { align: 'center' });
+            y += 4.5;
+          });
+          y += 4;
+        } else {
+          y += 4;
+        }
+      } else {
+        const fallback = section.type === 'mermaid'
+          ? '[Diagram could not be rendered]'
+          : `[Image unavailable${section.alt ? `: ${section.alt}` : ''}]`;
+        checkPageBreak(10);
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'italic');
+        doc.setTextColor(148, 163, 184);
+        doc.text(fallback, margin, y);
+        y += 8;
+      }
+
     } else if (section.type === 'space') {
       y += 5;
     }
@@ -719,6 +997,68 @@ export async function generateDOCX(content, filename = 'document.docx') {
           spacing: { before: 240, after: 240 },
         })
       );
+
+    } else if (section.type === 'image' || section.type === 'mermaid') {
+      const dataUrl = await fetchMediaForSection(section);
+      const bytes = dataUrl ? dataUrlToUint8Array(dataUrl) : null;
+      if (dataUrl && bytes) {
+        let width = 520;
+        let height = 320;
+        try {
+          const probe = new Image();
+          await new Promise((resolve) => {
+            probe.onload = resolve;
+            probe.onerror = resolve;
+            probe.src = dataUrl;
+          });
+          if (probe.naturalWidth && probe.naturalHeight) {
+            const maxW = 560;
+            const ratio = probe.naturalHeight / probe.naturalWidth;
+            width = Math.min(maxW, probe.naturalWidth);
+            height = Math.round(width * ratio);
+          }
+        } catch {}
+        try {
+          children.push(
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              spacing: { before: 240, after: 120 },
+              children: [
+                new ImageRun({
+                  data: bytes,
+                  transformation: { width, height },
+                  type: docxImageType(dataUrl),
+                }),
+              ],
+            })
+          );
+          const caption = section.alt || section.title;
+          if (caption) {
+            children.push(
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 240 },
+                children: [new TextRun({ text: caption, italics: true, color: '64748B', size: 20 })],
+              })
+            );
+          }
+        } catch (err) {
+          console.warn('DOCX image embed failed:', err);
+          children.push(
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [new TextRun({ text: `[Image: ${section.alt || section.src || 'diagram'}]`, italics: true, color: '94A3B8', size: 20 })],
+            })
+          );
+        }
+      } else {
+        children.push(
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [new TextRun({ text: section.type === 'mermaid' ? '[Diagram could not be rendered]' : `[Image unavailable${section.alt ? `: ${section.alt}` : ''}]`, italics: true, color: '94A3B8', size: 20 })],
+          })
+        );
+      }
     }
   }
 
@@ -907,6 +1247,28 @@ export async function generatePPTX(content, filename = 'presentation.pptx') {
         fill: { color: 'FFFFFF' },
         rowH: 0.4,
       });
+      currentSlide = null;
+      slideItems = [];
+      slideTitle = '';
+    } else if (section.type === 'image' || section.type === 'mermaid') {
+      flushSlide();
+      const dataUrl = await fetchMediaForSection(section);
+      const mediaSlide = pptx.addSlide();
+      mediaSlide.background = { color: 'FFFFFF' };
+      const captionTitle = section.alt || (section.type === 'mermaid' ? 'Diagram' : 'Image');
+      addSlideHeader(mediaSlide, captionTitle);
+      if (dataUrl) {
+        mediaSlide.addImage({
+          data: dataUrl,
+          x: 1.0, y: 1.4, w: 8.0, h: 4.2,
+          sizing: { type: 'contain', w: 8.0, h: 4.2 },
+        });
+      } else {
+        mediaSlide.addText(section.type === 'mermaid' ? 'Diagram could not be rendered.' : 'Image unavailable.', {
+          x: 0.5, y: 2.5, w: 9, h: 0.5,
+          fontSize: 14, italic: true, color: '94A3B8', align: 'center',
+        });
+      }
       currentSlide = null;
       slideItems = [];
       slideTitle = '';

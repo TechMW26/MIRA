@@ -1,13 +1,15 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Check, Volume2, VolumeX, User, FileText, FileCode, File, X, ExternalLink, Download } from 'lucide-react';
+import { Copy, Check, Volume2, User, FileText, FileCode, File, X, ExternalLink, Download, RefreshCw, Pencil, Globe } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
 import MindMap from './MindMap';
 import Chart from './Chart';
 import ParticleText from './ParticleText';
+import RelatedMedia from './RelatedMedia';
 import { exportDocument, sanitizeDocumentContent } from '../../utils/documentExport';
+import { cleanSpeechText, createSpeechUtterance, pickPreferredVoice, findVoiceById, getPreferredVoiceId } from '../../utils/tts';
 
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN:\s*([\s\S]*?)\]/i;
 
@@ -159,7 +161,12 @@ function AttachmentPreview({ attachment }) {
   const parseFailed = Boolean(attachment.parseError || (!isParsed && attachment.parsedText === ''));
   return (
     <div
-      className="mt-2 flex items-center gap-2.5 px-3 py-2.5 rounded-xl glass-subtle cursor-pointer transition-all hover:opacity-80"
+      className="mt-2 flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition-all hover:opacity-80"
+      style={{
+        background: 'color-mix(in srgb, currentColor 8%, transparent)',
+        border: '1px solid color-mix(in srgb, currentColor 14%, transparent)',
+        color: 'currentColor',
+      }}
       onClick={() => {
         if (attachment.base64) {
           const a = document.createElement('a');
@@ -169,10 +176,10 @@ function AttachmentPreview({ attachment }) {
         }
       }}
     >
-      <Icon size={16} style={{ color: 'var(--accent)' }} />
+      <Icon size={16} style={{ color: 'currentColor', opacity: 0.85 }} />
       <div className="flex-1 min-w-0">
-        <span className="text-xs font-medium truncate block" style={{ color: 'var(--text-primary)' }}>{attachment.name}</span>
-        <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{attachment.type}</span>
+        <span className="text-xs font-medium truncate block" style={{ color: 'currentColor' }}>{attachment.name}</span>
+        <span className="text-[10px]" style={{ color: 'currentColor', opacity: 0.6 }}>{attachment.type}</span>
       </div>
       {isParsed && (
         <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium" style={{ background: 'rgba(16,185,129,0.15)', color: '#10b981' }}>parsed</span>
@@ -180,7 +187,41 @@ function AttachmentPreview({ attachment }) {
       {parseFailed && (
         <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>unread</span>
       )}
-      <ExternalLink size={12} style={{ color: 'var(--text-tertiary)' }} />
+      <ExternalLink size={12} style={{ color: 'currentColor', opacity: 0.55 }} />
+    </div>
+  );
+}
+
+function hostFromUrl(url = '') {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
+}
+
+function WebPageCapsule({ page }) {
+  const [iconFailed, setIconFailed] = useState(false);
+  if (!page) return null;
+  const host = hostFromUrl(page.url);
+  return (
+    <div
+      className="mt-2 inline-flex max-w-full items-center gap-2 rounded-full px-3 py-2 text-xs"
+      style={{ background: 'rgba(255,255,255,0.58)', color: 'var(--user-bubble-text)', border: '1px solid rgba(255,255,255,0.7)' }}
+      title={page.url || page.title || ''}
+    >
+      <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/80">
+        {page.favicon && !iconFailed ? (
+          <img
+            src={page.favicon}
+            alt=""
+            className="h-4 w-4 object-contain"
+            onError={() => setIconFailed(true)}
+          />
+        ) : (
+          <Globe size={13} style={{ color: 'var(--accent)' }} />
+        )}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate font-semibold">{page.action || 'Summarize this page'}</span>
+        <span className="block truncate opacity-75">{page.title || host || page.url}</span>
+      </span>
     </div>
   );
 }
@@ -279,6 +320,33 @@ function ThinkingPlaceholder() {
   );
   return (
     <ParticleText text={phrase} active placeholder />
+  );
+}
+
+const SEARCHING_PHRASES = [
+  'Surfing the internet…',
+  'Reading fresh sources…',
+  'Cross-checking results…',
+  'Pulling the latest from the web…',
+  'Scanning trusted publications…',
+];
+
+function SearchingPlaceholder() {
+  const [idx, setIdx] = useState(() => Math.floor(Math.random() * SEARCHING_PHRASES.length));
+  useEffect(() => {
+    const t = setInterval(() => setIdx((n) => (n + 1) % SEARCHING_PHRASES.length), 2400);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div className="searching-placeholder not-prose">
+      <span className="searching-placeholder-icon" aria-hidden="true">
+        <Globe size={14} />
+      </span>
+      <span className="searching-placeholder-text">{SEARCHING_PHRASES[idx]}</span>
+      <span className="searching-placeholder-dots" aria-hidden="true">
+        <i /><i /><i />
+      </span>
+    </div>
   );
 }
 
@@ -480,13 +548,98 @@ function DocumentDownloadAction({ format, exporting, exportError, onExport }) {
   );
 }
 
-function MessageBubble({ message, isLast }) {
+function EditPromptModal({ open, initialValue, onClose, onSave }) {
+  const [value, setValue] = useState(initialValue || '');
+
+  useEffect(() => {
+    if (open) setValue(initialValue || '');
+  }, [open, initialValue]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (event) => {
+      if (event.key === 'Escape') onClose();
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') onSave(value);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onClose, onSave, value]);
+
+  if (!open) return null;
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[350] flex items-center justify-center p-4"
+      style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(6px)' }}
+      onClick={onClose}
+    >
+      <div className="w-full max-w-2xl rounded-3xl p-5 glass-strong shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>Edit message</h3>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-tertiary)' }}>Ctrl/Cmd + Enter to resend</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:opacity-80" style={{ color: 'var(--text-tertiary)' }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <textarea
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          rows={6}
+          className="w-full rounded-2xl px-4 py-3 text-sm outline-none resize-none"
+          style={{ background: 'var(--glass-bg)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+        />
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl px-4 py-2 text-sm font-medium"
+            style={{ background: 'var(--hover-bg)', color: 'var(--text-primary)' }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onSave(value)}
+            className="rounded-xl px-4 py-2 text-sm font-medium"
+            style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
+          >
+            Resend
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, isSearching = false }) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const voiceRef = useRef(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return undefined;
+
+    const refreshVoices = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const best = pickPreferredVoice(voices);
+      if (best) voiceRef.current = best;
+    };
+
+    refreshVoices();
+    window.speechSynthesis.addEventListener?.('voiceschanged', refreshVoices);
+    return () => window.speechSynthesis.removeEventListener?.('voiceschanged', refreshVoices);
+  }, []);
   const imagePrompt = !isUser ? extractImagePrompt(message.content) : '';
+  const searchingBubbleActive = !isUser && isLast && isSearching && message.content === '' && !message.thinkingContent;
   const suggestedExportFormat = !isUser && !message.isStreaming && !imagePrompt
     ? getSuggestedExportFormat(message)
     : '';
@@ -503,14 +656,9 @@ function MessageBubble({ message, isLast }) {
       setSpeaking(false);
       return;
     }
-    const cleaned = message.content
-      .replace(/```[\s\S]*?```/g, 'code block')
-      .replace(/[#*`_~>]/g, '')
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-      .trim();
-    const utter = new SpeechSynthesisUtterance(cleaned);
-    utter.rate = 1;
-    utter.pitch = 1;
+    const cleaned = cleanSpeechText(message.content);
+    const currentVoice = findVoiceById(window.speechSynthesis.getVoices(), getPreferredVoiceId()) || voiceRef.current || pickPreferredVoice(window.speechSynthesis.getVoices());
+    const utter = createSpeechUtterance(cleaned, currentVoice);
     utter.onend = () => setSpeaking(false);
     utter.onerror = () => setSpeaking(false);
     window.speechSynthesis.speak(utter);
@@ -530,6 +678,19 @@ function MessageBubble({ message, isLast }) {
       setExporting(false);
     }
   }, [message.content]);
+
+  const handleRetry = useCallback(() => {
+    if (!isUser || typeof onRetry !== 'function') return;
+    onRetry(message, webSearch);
+  }, [isUser, message, onRetry, webSearch]);
+
+  const handleEditSave = useCallback((nextValue) => {
+    if (!isUser || typeof onEdit !== 'function') return;
+    const trimmed = String(nextValue || '').trim();
+    if (!trimmed) return;
+    setShowEditModal(false);
+    onEdit(message, trimmed, webSearch);
+  }, [isUser, message, onEdit, webSearch]);
 
   const markdownComponents = useMemo(() => ({
     img({ src, alt }) {
@@ -560,13 +721,20 @@ function MessageBubble({ message, isLast }) {
           style={{ maxHeight: '512px', objectFit: 'contain' }}
           loading="lazy"
           onError={(e) => {
+            const el = e.currentTarget;
+            // For remote URLs, try the server-side image proxy once before giving up.
+            if (/^https?:\/\//i.test(finalSrc) && !el.dataset.proxied) {
+              el.dataset.proxied = '1';
+              el.src = `/api/image?url=${encodeURIComponent(finalSrc)}`;
+              return;
+            }
             // Hide broken image and show message
-            e.currentTarget.style.display = 'none';
+            el.style.display = 'none';
             const msg = document.createElement('div');
             msg.className = 'text-sm py-3 px-4 rounded-xl my-2';
             msg.style.cssText = 'background: var(--glass-bg); color: var(--text-tertiary);';
             msg.textContent = 'Image failed to load — check the generated data URL.';
-            e.currentTarget.parentNode.insertBefore(msg, e.currentTarget.nextSibling);
+            el.parentNode.insertBefore(msg, el.nextSibling);
           }}
         />
       );
@@ -637,11 +805,11 @@ function MessageBubble({ message, isLast }) {
       {/* Message body */}
       <div className={`max-w-[85%] lg:max-w-[75%] ${isUser ? '' : 'flex-1 min-w-0'}`}>
         <div
-          className={`rounded-2xl px-4 py-3 transition-all ${
+          className={`rounded-2xl px-4 py-3 transition-all relative ${
             isUser
               ? ''
               : 'glass-subtle'
-          }`}
+          }${searchingBubbleActive ? ' assistant-bubble-searching' : ''}`}
           style={isUser ? { background: 'var(--user-bubble-bg)', color: 'var(--user-bubble-text)' } : { color: 'var(--text-primary)' }}
         >
           {message.image && message.image.length > 0 && (
@@ -663,6 +831,9 @@ function MessageBubble({ message, isLast }) {
             <>
               {message.content && (
                 <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+              )}
+              {message.webPage && (
+                <WebPageCapsule page={message.webPage} />
               )}
               {message.attachments && message.attachments.length > 0 && (
                 <div className="space-y-1">
@@ -694,21 +865,34 @@ function MessageBubble({ message, isLast }) {
                   onExport={handleExport}
                 />
               )}
+              {message.media && !message.isStreaming && (
+                <RelatedMedia media={message.media} />
+              )}
               {isLast && message.content === '' && !message.thinkingContent && (
-                <ThinkingPlaceholder />
+                isSearching ? <SearchingPlaceholder /> : <ThinkingPlaceholder />
               )}
             </div>
           ) : null}
         </div>
 
         {/* Actions */}
+        {isUser && message.content && (
+          <div className="flex items-center gap-1 mt-1.5 ml-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+            <button onClick={() => setShowEditModal(true)} className="p-1.5 rounded-lg transition-all hover:scale-110" style={{ color: 'var(--text-tertiary)' }} title="Edit and resend">
+              <Pencil size={13} />
+            </button>
+            <button onClick={handleRetry} className="p-1.5 rounded-lg transition-all hover:scale-110" style={{ color: 'var(--text-tertiary)' }} title="Retry">
+              <RefreshCw size={13} />
+            </button>
+          </div>
+        )}
         {!isUser && message.content && (
           <div className="flex items-center gap-1 mt-1.5 ml-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
             <button onClick={handleCopy} className="p-1.5 rounded-lg transition-all hover:scale-110" style={{ color: copied ? '#10b981' : 'var(--text-tertiary)' }} title="Copy">
               {copied ? <Check size={13} /> : <Copy size={13} />}
             </button>
-            <button onClick={handleSpeak} className="p-1.5 rounded-lg transition-all hover:scale-110" style={{ color: speaking ? 'var(--accent)' : 'var(--text-tertiary)' }} title="Read aloud">
-              {speaking ? <VolumeX size={13} /> : <Volume2 size={13} />}
+            <button onClick={handleSpeak} className="p-1.5 rounded-lg transition-all hover:scale-110" style={{ color: speaking ? 'var(--accent)' : 'var(--text-tertiary)', background: speaking ? 'var(--hover-bg)' : 'transparent' }} title="Read aloud">
+              <Volume2 size={13} />
             </button>
             <div className="relative">
               <button 
@@ -751,6 +935,7 @@ function MessageBubble({ message, isLast }) {
             </div>
           </div>
         )}
+        <EditPromptModal open={showEditModal} initialValue={message.content} onClose={() => setShowEditModal(false)} onSave={handleEditSave} />
       </div>
 
       {/* User avatar */}

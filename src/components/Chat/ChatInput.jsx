@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Mic, MicOff, Globe, Loader, PanelRight, Code2, Zap, Wrench, BookMarked, Share2 } from 'lucide-react';
+import { Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Globe, Loader, PanelRight, Code2, Zap, Wrench, BookMarked, Share2, Volume2 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
+import { formatVoiceLabel, getVoiceKey, pickPreferredVoice, getPreferredVoiceId, setPreferredVoiceId } from '../../utils/tts';
 
 const ACCEPT_TYPES = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic,.sh,.rs,.go,.rb,.php,.sql';
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'heic']);
@@ -110,45 +111,35 @@ function getClipboardImageFiles(clipboard) {
     });
 }
 
-export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onToggleWebSearch, activePanel, onTogglePanel, onShare, messages }) {
+export default function ChatInput({ onSend, onStop, isGenerating, isSearching, webSearch, onToggleWebSearch, activePanel, onTogglePanel, onShare, messages }) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState([]);
-  const [isListening, setIsListening] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [voices, setVoices] = useState([]);
+  const [selectedVoiceId, setSelectedVoiceId] = useState(getPreferredVoiceId());
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
-  const recognitionRef = useRef(null);
   const dragCounterRef = useRef(0);
 
   useEffect(() => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
+    if (typeof window === 'undefined' || !window.speechSynthesis) return undefined;
 
-    const recognition = new SR();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = (e) => {
-      const transcript = e.results[0][0].transcript;
-      setInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
-      setIsListening(false);
+    const refreshVoices = () => {
+      const nextVoices = window.speechSynthesis.getVoices();
+      setVoices(nextVoices);
+      setSelectedVoiceId((current) => current || getPreferredVoiceId());
     };
 
-    recognition.onerror = () => {
-      setIsListening(false);
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-    };
-
-    recognitionRef.current = recognition;
-    return () => {
-      recognition.stop?.();
-    };
+    refreshVoices();
+    window.speechSynthesis.addEventListener?.('voiceschanged', refreshVoices);
+    return () => window.speechSynthesis.removeEventListener?.('voiceschanged', refreshVoices);
   }, []);
+
+  const preferredVoice = pickPreferredVoice(voices);
+  const voiceOptions = voices
+    .slice()
+    .sort((a, b) => (a.lang || '').localeCompare(b.lang || '') || (a.name || '').localeCompare(b.name || ''));
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -156,17 +147,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
       textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 180) + 'px';
     }
   }, [input]);
-
-  function toggleListening() {
-    if (!recognitionRef.current) return;
-    if (isListening) {
-      recognitionRef.current.stop();
-      setIsListening(false);
-    } else {
-      recognitionRef.current.start();
-      setIsListening(true);
-    }
-  }
 
   function handleSubmit(e) {
     e?.preventDefault();
@@ -283,16 +263,23 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   }
 
+  function handleVoiceChange(event) {
+    const nextId = event.target.value;
+    setSelectedVoiceId(nextId);
+    setPreferredVoiceId(nextId);
+  }
+
   return (
-    <div className="flex-shrink-0 px-3 lg:px-0 pb-4 pt-2">
+    <div className="flex-shrink-0 px-3 lg:px-0 pb-5 pt-3">
       <div className="max-w-3xl mx-auto">
-        <div
-          className="glass rounded-2xl overflow-hidden transition-shadow duration-200 focus-within:ring-1 focus-within:ring-[var(--border)] relative"
-          onDragEnter={onDragEnter}
-          onDragLeave={onDragLeave}
-          onDragOver={onDragOver}
-          onDrop={onDrop}
-        >
+        <div className="chat-input-wrap relative">
+          <div
+            className="glass rounded-2xl overflow-hidden relative chat-input-shell"
+            onDragEnter={onDragEnter}
+            onDragLeave={onDragLeave}
+            onDragOver={onDragOver}
+            onDrop={onDrop}
+          >
           {dragging && (
             <div className="absolute inset-0 z-20 flex flex-col items-center justify-center rounded-2xl pointer-events-none"
               style={{ background: 'var(--accent-glow)', border: '2px dashed var(--accent)', backdropFilter: 'blur(4px)' }}
@@ -362,17 +349,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
                 {parsing ? <Loader size={16} className="animate-spin" /> : <Paperclip size={16} />}
               </button>
 
-              {(window.SpeechRecognition || window.webkitSpeechRecognition) && (
-                <button
-                  onClick={toggleListening}
-                  className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
-                  style={isListening ? { color: 'var(--accent)', background: 'var(--hover-bg)' } : { color: 'var(--text-tertiary)' }}
-                  title={isListening ? 'Stop listening' : 'Voice input'}
-                >
-                  {isListening ? <MicOff size={16} /> : <Mic size={16} />}
-                </button>
-              )}
-
               <button
                 onClick={onToggleWebSearch}
                 className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
@@ -381,6 +357,29 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
               >
                 <Globe size={16} />
               </button>
+
+              {voices.length > 0 && (
+                <div className="flex items-center gap-1 rounded-xl px-2 py-1" style={{ background: 'var(--hover-bg)', border: '1px solid var(--border)' }}>
+                  <Volume2 size={14} style={{ color: 'var(--text-tertiary)' }} />
+                  <select
+                    value={selectedVoiceId || ''}
+                    onChange={handleVoiceChange}
+                    className="bg-transparent text-[11px] outline-none max-w-[160px]"
+                    style={{ color: 'var(--text-primary)' }}
+                    title={preferredVoice ? formatVoiceLabel(preferredVoice) : 'Select voice'}
+                  >
+                    <option value="">Best available</option>
+                    {voiceOptions.map((voice) => {
+                      const id = getVoiceKey(voice);
+                      return (
+                        <option key={id} value={id}>
+                          {formatVoiceLabel(voice)}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
 
               {[
                 { id: 'browser', icon: PanelRight, title: 'Browser' },
@@ -423,6 +422,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, webSearch, onT
               )}
             </div>
           </div>
+        </div>
         </div>
 
         <p className="text-center text-[10px] mt-2.5 leading-tight" style={{ color: 'var(--text-tertiary)' }}>

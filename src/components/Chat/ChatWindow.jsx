@@ -75,8 +75,8 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
 }
 
 export default function ChatWindow() {
-  const { currentConversationId, isGenerating } = useChatContext();
-  const { messages, streamingContent, thinkingContent, sendMessage, stopGenerating } = useChat();
+  const { currentConversationId, isGenerating, isSearching } = useChatContext();
+  const { messages, streamingContent, thinkingContent, sendMessage, stopGenerating, retryMessage, editMessage } = useChat();
 
   const [webSearch, setWebSearch] = useState(false);
   const [panel, setPanel] = useState(null); // 'browser' | 'canvas' | 'tasks' | 'tools' | 'prompts'
@@ -116,9 +116,20 @@ export default function ChatWindow() {
     return () => window.removeEventListener('mira-preferences-changed', handler);
   }, []);
 
-  const sendToChat = useCallback((content, attachments, ws) => {
-    sendMessage(content, attachments, ws);
+  const sendToChat = useCallback((content, attachments, ws, options = {}) => {
+    sendMessage(content, attachments, ws, options);
   }, [sendMessage]);
+
+  const sendBrowserPayloadToChat = useCallback((payload) => {
+    if (typeof payload === 'string') {
+      sendToChat(payload, [], false);
+      return;
+    }
+    sendToChat(payload.content || 'Summarize this page', [], false, {
+      promptContent: payload.promptContent,
+      webPage: payload.webPage,
+    });
+  }, [sendToChat]);
 
   const requestCanvas = useCallback((prompt) => {
     if (!prompt?.trim()) return;
@@ -128,17 +139,26 @@ export default function ChatWindow() {
   const togglePanel = (name) => setPanel(p => p === name ? null : name);
 
   return (
-    <div className="flex-1 flex min-h-0 relative overflow-hidden">
+    <div className="flex-1 flex min-h-0 relative">
       {showShare && <ShareModal messages={messages} title={messages[0]?.content?.slice(0, 50)} onClose={() => setShowShare(false)} />}
 
       <div className="flex flex-col flex-1 min-w-0 min-h-0">
         <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden" style={{ fontSize: chatFontSize }}>
           <div className="max-w-3xl mx-auto flex flex-col justify-end min-h-full py-4 gap-5 px-3 w-full min-w-0">
             {displayMessages.length === 0 ? (
-              <WelcomeScreen onSend={(p) => sendToChat(p, [], webSearch)} />
+              <WelcomeScreen onSend={(p, atts = []) => sendToChat(p, atts, webSearch)} />
             ) : (
               displayMessages.map((msg, i) => (
-                <MessageBubble key={msg.id || i} message={msg} isLast={i === displayMessages.length - 1} />
+                <MessageBubble
+                  key={msg.id || i}
+                  message={msg}
+                  isLast={i === displayMessages.length - 1}
+                  onRetry={retryMessage}
+                  onEdit={editMessage}
+                  webSearch={webSearch}
+                  isGenerating={isGenerating}
+                  isSearching={isSearching}
+                />
               ))
             )}
           </div>
@@ -148,6 +168,7 @@ export default function ChatWindow() {
           onSend={(text, attachments) => sendToChat(text, attachments, webSearch)}
           onStop={stopGenerating}
           isGenerating={isGenerating}
+          isSearching={isSearching}
           webSearch={webSearch}
           onToggleWebSearch={() => setWebSearch(v => !v)}
           activePanel={panel}
@@ -159,7 +180,7 @@ export default function ChatWindow() {
 
       {panel === 'browser' && (
         <RightPanel id="browser" defaultWidth={500} minWidth={340} maxWidth={900}>
-          <BrowserPanel onSendToChat={(c) => sendToChat(c, [], false)} onClose={() => setPanel(null)} />
+          <BrowserPanel onSendToChat={sendBrowserPayloadToChat} onClose={() => setPanel(null)} />
         </RightPanel>
       )}
       {panel === 'canvas' && (

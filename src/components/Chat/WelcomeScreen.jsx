@@ -1,5 +1,145 @@
-import { useState, useMemo } from 'react';
-import { Sparkles, Code2, Lightbulb, MessageCircle, Eye, Bug, PenLine, Calculator, Database, FlaskConical, FileText, BarChart3, Globe, Palette, Shield, Send, X } from 'lucide-react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { Sparkles, Code2, Lightbulb, MessageCircle, Eye, Bug, PenLine, Calculator, Database, FlaskConical, FileText, BarChart3, Globe, Palette, Shield, Send, X, Paperclip, Camera, RefreshCw, Image as ImageIcon, FileCode, File as FileIcon } from 'lucide-react';
+import { extractFileText, isExtractableFile } from '../../utils/fileParser';
+
+const ATTACH_ACCEPT = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic';
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'heic']);
+
+function getExt(name = '') {
+  return name.split('.').pop().toLowerCase();
+}
+
+function mimeFromName(name = '') {
+  const ext = getExt(name);
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'svg') return 'image/svg+xml';
+  if (IMAGE_EXTS.has(ext)) return `image/${ext}`;
+  return '';
+}
+
+function isImageFile(file) {
+  return file?.type?.startsWith('image/') || IMAGE_EXTS.has(getExt(file?.name || ''));
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function attachmentIcon(name) {
+  const ext = getExt(name);
+  if (IMAGE_EXTS.has(ext)) return ImageIcon;
+  if (['js','jsx','ts','tsx','py','java','c','cpp','html','css'].includes(ext)) return FileCode;
+  if (['txt','md','csv','log','json','xml','yaml','yml'].includes(ext)) return FileText;
+  return FileIcon;
+}
+
+function CameraCaptureModal({ onClose, onCapture }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const [facing, setFacing] = useState('user');
+  const [error, setError] = useState('');
+
+  const startStream = useCallback(async (facingMode) => {
+    setError('');
+    try {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => {});
+      }
+    } catch (err) {
+      setError(err?.message || 'Could not access the camera.');
+    }
+  }, []);
+
+  useEffect(() => {
+    startStream(facing);
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+    };
+  }, [facing, startStream]);
+
+  const handleSnap = () => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    onCapture({
+      name: `camera-${Date.now()}.jpg`,
+      size: Math.round((dataUrl.length * 3) / 4),
+      type: 'image/jpeg',
+      mimeType: 'image/jpeg',
+      isImage: true,
+      base64: dataUrl,
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(6px)' }} onClick={onClose}>
+      <div className="glass-strong rounded-3xl p-5 w-full max-w-lg shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Camera size={18} style={{ color: 'var(--accent)' }} />
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Camera</h3>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setFacing((f) => (f === 'user' ? 'environment' : 'user'))}
+              className="p-1.5 rounded-lg transition-all hover:scale-110"
+              style={{ color: 'var(--text-tertiary)' }}
+              title="Switch camera"
+            >
+              <RefreshCw size={16} />
+            </button>
+            <button onClick={onClose} className="p-1.5 rounded-lg transition-all hover:scale-110" style={{ color: 'var(--text-tertiary)' }}>
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-2xl overflow-hidden relative" style={{ background: '#000', aspectRatio: '4 / 3' }}>
+          <video ref={videoRef} playsInline muted className="w-full h-full object-cover" style={{ transform: facing === 'user' ? 'scaleX(-1)' : 'none' }} />
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center text-xs px-4 text-center" style={{ color: '#fff', background: 'rgba(0,0,0,0.6)' }}>
+              {error}
+            </div>
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={handleSnap}
+          disabled={!!error}
+          className="w-full mt-4 py-3 rounded-xl font-medium text-sm transition-all duration-200 hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2"
+          style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
+        >
+          <Camera size={15} />
+          Capture
+        </button>
+      </div>
+    </div>
+  );
+}
 
 const TEMPLATE_POOL = [
   {
@@ -156,12 +296,59 @@ function TemplateForm({ template, onSubmit, onClose }) {
   const [values, setValues] = useState(() =>
     Object.fromEntries(template.inputs.map((inp) => [inp.key, '']))
   );
+  const [attachments, setAttachments] = useState([]);
+  const [parsing, setParsing] = useState(false);
+  const [showCamera, setShowCamera] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const handleFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (!files.length) return;
+    setParsing(true);
+    try {
+      const next = await Promise.all(files.map(async (file) => {
+        const mimeType = file.type || mimeFromName(file.name);
+        const base64 = await readFileAsBase64(file);
+        const isImage = isImageFile(file);
+        if (isImage) {
+          return { name: file.name, size: file.size, type: mimeType, mimeType, isImage: true, base64 };
+        }
+        let text = '';
+        let parseError = '';
+        if (isExtractableFile(file)) {
+          try {
+            text = (await extractFileText(file)) || '';
+          } catch (error) {
+            parseError = error?.message || 'Could not read this file.';
+          }
+        }
+        return {
+          name: file.name,
+          size: file.size,
+          type: mimeType,
+          mimeType,
+          isImage: false,
+          base64,
+          text,
+          parsed: !!text,
+          parseError,
+        };
+      }));
+      setAttachments((prev) => [...prev, ...next]);
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const removeAttachment = (index) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     const hasContent = Object.values(values).some((v) => v.trim());
-    if (!hasContent) return;
-    onSubmit(template.buildPrompt(values));
+    if (!hasContent && attachments.length === 0) return;
+    onSubmit(template.buildPrompt(values), attachments);
   };
 
   return (
@@ -211,6 +398,58 @@ function TemplateForm({ template, onSubmit, onClose }) {
             </div>
           ))}
 
+          {/* Attachments */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {attachments.map((att, i) => {
+                if (att.isImage) {
+                  return (
+                    <div key={i} className="relative rounded-xl overflow-hidden group" style={{ width: '72px', height: '72px' }}>
+                      <img src={att.base64} alt="" className="w-full h-full object-cover" />
+                      <button type="button" onClick={() => removeAttachment(i)} className="absolute top-1 right-1 p-0.5 rounded-full transition-all opacity-0 group-hover:opacity-100" style={{ background: 'rgba(0,0,0,0.6)', color: '#fff' }}>
+                        <X size={12} />
+                      </button>
+                    </div>
+                  );
+                }
+                const Icon = attachmentIcon(att.name);
+                return (
+                  <div key={i} className="flex items-center gap-2 px-3 py-1.5 rounded-xl glass-subtle text-xs" style={{ color: 'var(--text-secondary)' }}>
+                    <Icon size={14} style={{ color: 'var(--accent)' }} />
+                    <span className="max-w-[120px] truncate">{att.name}</span>
+                    <button type="button" onClick={() => removeAttachment(i)} className="p-0.5 rounded hover:scale-110 transition-all" style={{ color: 'var(--text-tertiary)' }}>
+                      <X size={12} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Attach controls */}
+          <div className="flex items-center gap-2">
+            <input ref={fileInputRef} type="file" multiple accept={ATTACH_ACCEPT} className="hidden" onChange={(e) => { handleFiles(e.target.files); if (fileInputRef.current) fileInputRef.current.value = ''; }} />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={parsing}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-all hover:opacity-90 disabled:opacity-50"
+              style={{ background: 'var(--hover-bg)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+            >
+              <Paperclip size={14} />
+              Attach
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCamera(true)}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-all hover:opacity-90"
+              style={{ background: 'var(--hover-bg)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+            >
+              <Camera size={14} />
+              Camera
+            </button>
+          </div>
+
           <button
             type="submit"
             className="w-full py-3 rounded-xl font-medium text-sm transition-all duration-200 hover:opacity-90 flex items-center justify-center gap-2"
@@ -220,6 +459,13 @@ function TemplateForm({ template, onSubmit, onClose }) {
             Generate
           </button>
         </form>
+
+        {showCamera && (
+          <CameraCaptureModal
+            onClose={() => setShowCamera(false)}
+            onCapture={(att) => { setAttachments((prev) => [...prev, att]); setShowCamera(false); }}
+          />
+        )}
       </div>
     </div>
   );
@@ -230,9 +476,9 @@ export default function WelcomeScreen({ onSend }) {
 
   const visibleTemplates = useMemo(() => shuffle(TEMPLATE_POOL).slice(0, 6), []);
 
-  const handleTemplateSubmit = (prompt) => {
+  const handleTemplateSubmit = (prompt, attachments = []) => {
     setSelectedTemplate(null);
-    onSend(prompt);
+    onSend(prompt, attachments);
   };
 
   return (

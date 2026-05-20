@@ -42,49 +42,45 @@ function imageToDataUrl(image) {
   return `data:${image?.mimeType || image?.type || 'image/jpeg'};base64,${raw}`;
 }
 
-function contentToParts(content) {
-  if (Array.isArray(content)) return [...content];
-  if (content == null) return [];
-  return [{ type: 'text', text: String(content) }];
-}
-
-function withImages(messages, images = []) {
-  const imageParts = images
-    .map(imageToDataUrl)
-    .filter(Boolean)
-    .map((url) => ({ type: 'image_url', image_url: { url } }));
-  if (imageParts.length === 0) return messages;
-
-  const nextMessages = [...messages];
-  let userIndex = -1;
-  for (let index = nextMessages.length - 1; index >= 0; index -= 1) {
-    if (nextMessages[index]?.role === 'user') {
-      userIndex = index;
-      break;
-    }
-  }
-
-  if (userIndex === -1) {
-    nextMessages.push({ role: 'user', content: imageParts });
-    return nextMessages;
-  }
-
-  const target = nextMessages[userIndex];
-  nextMessages[userIndex] = { ...target, content: [...contentToParts(target.content), ...imageParts] };
-  return nextMessages;
-}
-
 function normalizeMessages(messages = [], systemPrompt) {
   const normalized = messages
     .filter((message) => message?.role && message.content != null)
     .map((message) => ({
       role: ['system', 'assistant', 'user'].includes(message.role) ? message.role : 'user',
-      content: message.content,
+      content: typeof message.content === 'string' ? message.content : String(message.content || ''),
     }));
   if (systemPrompt) {
     return [{ role: 'system', content: systemPrompt }, ...normalized.filter((message) => message.role !== 'system')];
   }
   return normalized;
+}
+
+// Ollama vision (llama3.2-vision) requires images attached to the user
+// message as `images: [base64, ...]` (raw base64 only).
+function imageToOllamaBase64(image) {
+  const raw = image?.base64 || image?.data || image?.url || '';
+  if (!raw || typeof raw !== 'string') return null;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return null;
+  if (raw.startsWith('data:')) {
+    const comma = raw.indexOf(',');
+    return comma >= 0 ? raw.slice(comma + 1) : null;
+  }
+  return raw;
+}
+
+function attachImagesToLastUserMessage(messages, images) {
+  if (!Array.isArray(images) || images.length === 0) return messages;
+  const base64List = images.map(imageToOllamaBase64).filter(Boolean);
+  if (base64List.length === 0) return messages;
+  const copy = messages.map((m) => ({ ...m }));
+  for (let i = copy.length - 1; i >= 0; i--) {
+    if (copy[i].role === 'user') {
+      copy[i] = { ...copy[i], images: base64List };
+      return copy;
+    }
+  }
+  copy.push({ role: 'user', content: '', images: base64List });
+  return copy;
 }
 
 async function writeUpstreamBody(upstream, res) {
@@ -110,12 +106,18 @@ async function handleChat(body, res) {
   }
 
   const payload = JSON.parse(body || '{}');
-  const messages = withImages(normalizeMessages(payload.messages, payload.systemPrompt), payload.images);
+  const imageList = Array.isArray(payload.images) ? payload.images.slice(0, 6) : [];
+  const baseMessages = normalizeMessages(payload.messages, payload.systemPrompt);
+  const messages = attachImagesToLastUserMessage(baseMessages, imageList);
   if (messages.length === 0) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'At least one chat message is required.' }));
     return;
   }
+
+  const hasImages = messages.some((m) => Array.isArray(m.images) && m.images.length > 0);
+  const requestedModel = payload.model || SALAD_MODEL;
+  const effectiveModel = hasImages ? 'llama3.2-vision' : requestedModel;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SALAD_TIMEOUT_MS);
@@ -127,7 +129,7 @@ async function handleChat(body, res) {
         'Salad-Api-Key': SALAD_API_KEY,
       },
       body: JSON.stringify({
-        model: payload.model || SALAD_MODEL,
+        model: effectiveModel,
         messages,
         stream: payload.stream !== false,
         max_tokens: payload.max_tokens || SALAD_MAX_TOKENS,
@@ -165,9 +167,10 @@ function parseRSS(xml) {
     const desc = block.match(/<description[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/description>/s)?.[1]?.replace(/<[^>]+>/g, '').trim() || '';
     const rawLink = block.match(/<link>([^<]+)<\/link>/)?.[1]?.trim()
       || block.match(/<guid[^>]*>([^<]+)<\/guid>/)?.[1]?.trim() || '';
-    let url = rawLink;
+    const cleanLink = rawLink.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    let url = cleanLink;
     try {
-      const u = new URL(rawLink);
+      const u = new URL(cleanLink);
       const real = u.searchParams.get('url') || u.searchParams.get('r');
       if (real) url = decodeURIComponent(real);
     } catch {}
@@ -243,14 +246,135 @@ async function handleScrape(body) {
 }
 
 async function handleSearch(body) {
-  const { query } = JSON.parse(body);
-  if (!query?.trim()) return { error: 'Query required', results: [] };
+  const { query, includeMedia = true } = JSON.parse(body);
+  if (!query?.trim()) return { error: 'Query required', results: [], media: { videos: [], images: [] } };
+  const shouldFetchMedia = includeMedia !== false;
 
   const BRAVE_KEY = process.env.BRAVE_SEARCH_API_KEY || '';
   const GOOGLE_KEY = process.env.GOOGLE_SEARCH_API_KEY || '';
   const GOOGLE_CX = process.env.GOOGLE_SEARCH_CX || '';
 
-  const [braveRes, googleRes, bingRes, gnewsRes, ddgRes] = await Promise.allSettled([
+  const decodeYTText = (s = '') => s.replace(/\\u0026/g, '&').replace(/\\"/g, '"').replace(/\\\//g, '/');
+
+  const YT_BLOCKLIST = new Set([
+    'dQw4w9WgXcQ', 'oHg5SJYRHA0', 'xvFZjo5PgG0', 'iik25wqIuFo',
+  ]);
+  const YT_STOP = new Set(['the','a','an','of','to','for','in','on','with','and','or','but','is','are','was','were','what','how','why','when','where','this','that','it','its','they','them','about','more','can','you','tell','me','please','show','give','find','search','get','some']);
+  const ytQueryKeywords = (q) => (q || '').toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/)
+    .filter((w) => w.length >= 4 && !YT_STOP.has(w));
+
+  const youtubePromise = (async () => {
+    if (!shouldFetchMedia) return null;
+    try {
+      const wantsFresh = /\b(latest|current|new|recent|today|this\s+year|202[5-9])\b/i.test(query);
+      const currentYear = new Date().getUTCFullYear();
+      const r = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&sp=CAMSAhAB`, {
+        headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' }, signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) return null;
+      const html = await r.text();
+      // Only parse real "videoRenderer" blocks (actual search results),
+      // skipping the recommendations sidebar that loves to surface rickrolls.
+      const blocks = html.split('"videoRenderer":').slice(1, 30);
+      const seen = new Set();
+      const collected = [];
+      for (const raw of blocks) {
+        const slice = raw.slice(0, 6000);
+        const idM = slice.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+        if (!idM) continue;
+        const id = idM[1];
+        if (seen.has(id) || YT_BLOCKLIST.has(id)) continue;
+        const tM = slice.match(/"title":\{"runs":\[\{"text":"([^"]+)"/)
+              || slice.match(/"title":\{"simpleText":"([^"]+)"/)
+              || slice.match(/"title":\{"accessibility":[\s\S]*?"simpleText":"([^"]+)"/);
+        const title = tM ? decodeYTText(tM[1]) : '';
+        const pM = slice.match(/"publishedTimeText":\{"simpleText":"([^"]+)"/)
+              || slice.match(/"publishedTimeText":\{"runs":\[\{"text":"([^"]+)"/);
+        const published = pM ? decodeYTText(pM[1]) : '';
+        if (wantsFresh) {
+          const ageText = `${title} ${published}`.toLowerCase();
+          const year = Number(ageText.match(/\b(20\d{2})\b/)?.[1] || 0);
+          const yearsAgo = Number(ageText.match(/\b(\d+)\s+years?\s+ago\b/)?.[1] || 0);
+          if ((year && year < currentYear - 1) || yearsAgo > 1) continue;
+        }
+        seen.add(id);
+        collected.push({ id, title, published });
+      }
+      const kw = ytQueryKeywords(query);
+      let filtered = collected;
+      if (kw.length) {
+        const weak = new Set(['know', 'which', 'latest', 'current', 'recent', 'video', 'videos', 'media', 'image', 'images']);
+        const meaningful = kw.filter((w) => !weak.has(w));
+        const required = meaningful.length >= 2 ? 2 : 1;
+        const score = (t) => meaningful.reduce((n, w) => n + ((t || '').toLowerCase().includes(w) ? 1 : 0), 0);
+        const strict = collected.map((v) => ({ ...v, s: score(v.title) })).filter((v) => v.s >= required);
+        if (strict.length) filtered = strict;
+      }
+      return filtered.slice(0, 6).map(({ id, title }) => ({
+        platform: 'youtube',
+        videoId: id,
+        title,
+        url: `https://www.youtube.com/watch?v=${id}`,
+        embed: `https://www.youtube.com/embed/${id}`,
+        thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+      }));
+    } catch { return null; }
+  })();
+
+  const instagramPromise = (async () => {
+    if (!shouldFetchMedia) return null;
+    try {
+      const r = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(`site:instagram.com ${query}`)}`, {
+        headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' }, signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) return null;
+      const html = await r.text();
+      const re = /instagram\.com\/(p|reel)\/([A-Za-z0-9_-]+)/g;
+      const seen = new Set();
+      const out = [];
+      let m;
+      while ((m = re.exec(html)) !== null && out.length < 3) {
+        const kind = m[1];
+        const id = m[2];
+        const key = `${kind}/${id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          platform: 'instagram',
+          videoId: id,
+          title: `Instagram ${kind === 'reel' ? 'Reel' : 'Post'}`,
+          url: `https://www.instagram.com/${kind}/${id}/`,
+          embed: `https://www.instagram.com/${kind}/${id}/embed/`,
+          thumbnail: '',
+        });
+      }
+      return out.length ? out : null;
+    } catch { return null; }
+  })();
+
+  const bingImagesPromise = (async () => {
+    if (!shouldFetchMedia) return null;
+    try {
+      const r = await fetch(`https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2&first=1`, {
+        headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' }, signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) return null;
+      const html = await r.text();
+      const re = /https:\/\/tse\d\.mm\.bing\.net\/th\/id\/[A-Za-z0-9._-]+(?:\?[^"'\s)<>]+)?/g;
+      const seen = new Set();
+      const out = [];
+      for (const m of html.matchAll(re)) {
+        const url = m[0];
+        if (seen.has(url)) continue;
+        seen.add(url);
+        out.push({ url, thumbnail: url, title: '', source: `https://www.bing.com/images/search?q=${encodeURIComponent(query)}` });
+        if (out.length >= 6) break;
+      }
+      return out.length ? out : null;
+    } catch { return null; }
+  })();
+
+  const [braveRes, googleRes, bingRes, gnewsRes, ddgRes, videosRes, imagesRes, instagramRes] = await Promise.allSettled([
     BRAVE_KEY ? fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=6`, {
       headers: { 'Accept': 'application/json', 'X-Subscription-Token': BRAVE_KEY },
       signal: AbortSignal.timeout(8000),
@@ -271,33 +395,209 @@ async function handleSearch(body) {
     fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`, {
       signal: AbortSignal.timeout(5000),
     }).then(r => r.ok ? r.json() : null),
+
+    youtubePromise,
+    bingImagesPromise,
+    instagramPromise,
   ]);
 
-  // Paid APIs first
+  // Helper: extract og:image / og:video from an article URL.
+  const extractOg = (html, baseUrl) => {
+    const pick = (re) => {
+      const m = html.match(re);
+      if (!m) return '';
+      const raw = m[1].replace(/&amp;/g, '&');
+      try { return new URL(raw, baseUrl).toString(); } catch { return ''; }
+    };
+    const image =
+      pick(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+      pick(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ||
+      pick(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i);
+    const video =
+      pick(/<meta[^>]+property=["']og:video:secure_url["'][^>]+content=["']([^"']+)["']/i) ||
+      pick(/<meta[^>]+property=["']og:video:url["'][^>]+content=["']([^"']+)["']/i) ||
+      pick(/<meta[^>]+property=["']og:video["'][^>]+content=["']([^"']+)["']/i);
+    const title = (html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] || '')
+      .replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').slice(0, 140);
+    return { image, video, title };
+  };
+
+  const enrichFromArticles = async (results) => {
+    const top = (results || []).filter((r) => r.url && /^https?:\/\//i.test(r.url)).slice(0, 4);
+    if (!top.length) return { images: [], videos: [] };
+    const fetched = await Promise.all(top.map(async (r) => {
+      try {
+        const res = await fetch(r.url, {
+          headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' },
+          signal: AbortSignal.timeout(6000),
+        });
+        if (!res.ok) return null;
+        const ct = res.headers.get('content-type') || '';
+        if (!/text\/html/i.test(ct)) return null;
+        const html = (await res.text()).slice(0, 250000);
+        return { html, source: r };
+      } catch { return null; }
+    }));
+    const images = [];
+    const videos = [];
+    const seenImg = new Set();
+    const seenVid = new Set();
+    for (const f of fetched) {
+      if (!f) continue;
+      const og = extractOg(f.html, f.source.url);
+      if (og.image && !seenImg.has(og.image)) {
+        seenImg.add(og.image);
+        images.push({ url: og.image, thumbnail: og.image, title: og.title || f.source.title || '', source: f.source.url });
+      }
+      if (og.video && !seenVid.has(og.video)) {
+        seenVid.add(og.video);
+        videos.push({ platform: 'article', url: og.video, embed: og.video, thumbnail: og.image || '', title: og.title || f.source.title || '' });
+      }
+    }
+    return { images, videos };
+  };
+
+  // Decide the primary `results` list, then enrich.
+  let results;
+  let source;
   const brave = braveRes.value?.web?.results;
-  if (brave?.length) return { results: brave.slice(0, 6).map(r => ({ title: r.title, snippet: r.description || r.title, url: r.url })), source: 'brave' };
-
   const google = googleRes.value?.items;
-  if (google?.length) return { results: google.slice(0, 6).map(r => ({ title: r.title, snippet: r.snippet || r.title, url: r.link })), source: 'google' };
+  if (brave?.length) {
+    results = brave.slice(0, 6).map(r => ({ title: r.title, snippet: r.description || r.title, url: r.url }));
+    source = 'brave';
+  } else if (google?.length) {
+    results = google.slice(0, 6).map(r => ({ title: r.title, snippet: r.snippet || r.title, url: r.link }));
+    source = 'google';
+  } else {
+    const bing = bingRes.value ? parseRSS(bingRes.value) : [];
+    const gnews = gnewsRes.value ? parseRSS(gnewsRes.value) : [];
+    const ddgData = ddgRes.value;
+    const ddg = [];
+    if (ddgData?.Answer) ddg.push({ title: 'Direct Answer', snippet: ddgData.Answer, url: '' });
+    if (ddgData?.AbstractText) ddg.push({ title: ddgData.Heading || query, snippet: ddgData.AbstractText, url: ddgData.AbstractURL || '' });
+    const merged = [...ddg, ...bing, ...gnews];
+    const seen = new Set();
+    results = merged.filter(r => {
+      const key = r.title.toLowerCase().slice(0, 40);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 6);
+    source = results.length ? 'news-rss' : 'none';
+  }
 
-  // News RSS
-  const bing = bingRes.value ? parseRSS(bingRes.value) : [];
-  const gnews = gnewsRes.value ? parseRSS(gnewsRes.value) : [];
-  const ddgData = ddgRes.value;
-  const ddg = [];
-  if (ddgData?.Answer) ddg.push({ title: 'Direct Answer', snippet: ddgData.Answer, url: '' });
-  if (ddgData?.AbstractText) ddg.push({ title: ddgData.Heading || query, snippet: ddgData.AbstractText, url: ddgData.AbstractURL || '' });
+  // Validate URLs: drop dead/404 article links before they reach the model or UI.
+  if (results?.length) {
+    const checks = await Promise.all(results.map(async (r) => {
+      if (!r?.url || !/^https?:/i.test(r.url)) return r;
+      try {
+        const resp = await fetch(r.url, {
+          method: 'HEAD',
+          redirect: 'follow',
+          headers: { 'User-Agent': UA },
+          signal: AbortSignal.timeout(3500),
+        });
+        if (resp.status === 405 || resp.status === 403) return r; // server blocks HEAD
+        return resp.status < 400 ? r : null;
+      } catch { return r; }
+    }));
+    results = checks.filter(Boolean);
+  }
 
-  const merged = [...ddg, ...bing, ...gnews];
-  const seen = new Set();
-  const results = merged.filter(r => {
-    const key = r.title.toLowerCase().slice(0, 40);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).slice(0, 6);
+  const og = await enrichFromArticles(results);
 
-  return { results, source: results.length ? 'news-rss' : 'none' };
+  // Image ordering: article og:image (most relevant) → Bing CDN thumbs (filler).
+  const ytVideos = videosRes.value || [];
+  const bingImgs = imagesRes.value || [];
+  const igVideos = instagramRes.value || [];
+
+  const seenImg = new Set();
+  const mergedImages = [];
+  for (const im of [...og.images, ...bingImgs]) {
+    if (!im.url || seenImg.has(im.url)) continue;
+    seenImg.add(im.url);
+    mergedImages.push(im);
+    if (mergedImages.length >= 8) break;
+  }
+
+  const seenVid = new Set();
+  const mergedVideos = [];
+  for (const v of [...ytVideos, ...igVideos, ...og.videos]) {
+    const key = v.url || v.embed;
+    if (!key || seenVid.has(key)) continue;
+    seenVid.add(key);
+    mergedVideos.push(v);
+    if (mergedVideos.length >= 8) break;
+  }
+
+  const media = { videos: mergedVideos, images: mergedImages };
+  return { results, media, source };
+}
+
+// === Image proxy (dev parity with api/image.js) ===
+const IMG_MAX_BYTES = 8 * 1024 * 1024;
+const IMG_ALLOWED_MIME = /^image\/(png|jpe?g|webp|gif|svg\+xml|avif)$/i;
+
+function imgIsPrivateHost(h) {
+  if (!h) return true;
+  h = h.toLowerCase();
+  if (h === 'localhost' || h.endsWith('.localhost') || h === '0.0.0.0' || h === '0') return true;
+  if (h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.lan')) return true;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = m.slice(1).map(Number);
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    if (a >= 224) return true;
+  }
+  return false;
+}
+
+async function handleImageProxy(req, res) {
+  try {
+    const parsed = new URL(req.url, 'http://localhost');
+    const target = parsed.searchParams.get('url') || '';
+    let url;
+    try { url = new URL(target.trim()); } catch {
+      res.writeHead(400); res.end(JSON.stringify({ error: 'Invalid URL' })); return;
+    }
+    if (!['http:', 'https:'].includes(url.protocol) || imgIsPrivateHost(url.hostname)) {
+      res.writeHead(400); res.end(JSON.stringify({ error: 'Disallowed URL' })); return;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const upstream = await fetch(url.toString(), {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; MIRA-ImageProxy/1.0)',
+        'Accept': 'image/avif,image/webp,image/png,image/jpeg,image/svg+xml,image/*;q=0.8,*/*;q=0.5',
+      },
+    });
+    clearTimeout(timeout);
+    if (!upstream.ok) {
+      res.writeHead(502); res.end(JSON.stringify({ error: `Upstream ${upstream.status}` })); return;
+    }
+    const ct = upstream.headers.get('content-type') || '';
+    if (!IMG_ALLOWED_MIME.test(ct.split(';')[0].trim())) {
+      res.writeHead(415); res.end(JSON.stringify({ error: `Unsupported content-type: ${ct}` })); return;
+    }
+    const buffer = Buffer.from(await upstream.arrayBuffer());
+    if (buffer.byteLength > IMG_MAX_BYTES) {
+      res.writeHead(413); res.end(JSON.stringify({ error: 'Image too large' })); return;
+    }
+    res.writeHead(200, {
+      'Content-Type': ct,
+      'Cache-Control': 'public, max-age=86400, immutable',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(buffer);
+  } catch (err) {
+    res.writeHead(504); res.end(JSON.stringify({ error: err?.message || 'Image fetch failed' }));
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -307,6 +607,13 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
 
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
+
+  // GET /api/image?url=... — image proxy for CORS-blocked sources
+  if (req.method === 'GET' && req.url?.startsWith('/api/image')) {
+    await handleImageProxy(req, res);
+    return;
+  }
+
   if (req.method !== 'POST') { res.writeHead(405); res.end('{}'); return; }
 
   let body = '';

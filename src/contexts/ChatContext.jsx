@@ -11,6 +11,7 @@ export function useChatContext() {
 export function ChatProvider({ children }) {
   const [currentConversationId, setCurrentConversationId] = useState(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState(null);
@@ -34,6 +35,8 @@ export function ChatProvider({ children }) {
     setCurrentConversationId,
     isGenerating,
     setIsGenerating,
+    isSearching,
+    setIsSearching,
     sidebarOpen,
     setSidebarOpen,
     showSettings,

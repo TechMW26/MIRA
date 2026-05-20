@@ -137,6 +137,20 @@ export default function BrowserPanel({ onSendToChat, onClose }) {
     setSelection(''); setSelPos(null); window.getSelection()?.removeAllRanges();
   }
 
+  function summarizePage() {
+    if (!tab.page) return;
+    onSendToChat({
+      content: 'Summarize this page',
+      promptContent: `Summarize this page using the scraped page content below. Give a clean, useful summary of the actual page. Do not mention DOM extraction, scraping, raw markdown, image placeholder syntax, or hidden context.\n\nTitle: ${tab.page.title}\nURL: ${tab.page.url}\n\n=== PAGE CONTENT ===\n${tab.page.content || ''}\n=== END PAGE CONTENT ===`,
+      webPage: {
+        action: 'Summarize this page',
+        title: tab.page.title || tab.page.url,
+        url: tab.page.url,
+        favicon: tab.page.favicon || '',
+      },
+    });
+  }
+
   const mdComponents = {
     a: ({ href, children }) => (
       <a href={href} onClick={(e) => { e.preventDefault(); if (href) fetchPage(href); }}
@@ -207,7 +221,7 @@ export default function BrowserPanel({ onSendToChat, onClose }) {
           <div className="flex items-center gap-2 px-3 py-1.5 flex-shrink-0" style={{ background: 'var(--accent-glow)', borderBottom: '1px solid var(--border)' }}>
             <Sparkles size={11} style={{ color: 'var(--accent)', flexShrink: 0 }} />
             <span className="text-[11px] flex-1 truncate" style={{ color: 'var(--text-secondary)' }}>{tab.page.title}</span>
-            <button onClick={() => onSendToChat(`Summarize this page:\n\nTitle: ${tab.page.title}\nURL: ${tab.page.url}\n\n${tab.page.content}`)}
+            <button onClick={summarizePage}
               className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium hover:opacity-90 flex-shrink-0"
               style={{ background: 'var(--accent)', color: '#fff' }}>
               <BookOpen size={10} /> Summarize
