@@ -39,24 +39,28 @@ function enhanceImagePrompt(prompt = '') {
 // Fallback model chain — start with the reliable `flux`, then try `turbo` as a backup.
 const IMAGE_MODEL_CHAIN = ['flux', 'turbo'];
 const MAX_TRANSIENT_RETRIES = 2; // retry same URL up to 2x before advancing chain
+const GENERATED_IMAGE_SIZE = '1024';
+const MAX_GENERATED_PROMPT_CHARS = 900;
 
-function buildPollinationsUrl(prompt, model, seed) {
-  const params = new URLSearchParams({
-    width: '1280',
-    height: '1280',
-    nologo: 'true',
-    enhance: 'true',
-    model,
-    seed: String(seed),
-  });
-  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?${params.toString()}`;
+function compactImagePrompt(prompt = '') {
+  const compact = String(prompt || '').replace(/\s+/g, ' ').trim();
+  if (compact.length <= MAX_GENERATED_PROMPT_CHARS) return compact;
+  return compact.slice(0, MAX_GENERATED_PROMPT_CHARS).replace(/\s+\S*$/, '').trim();
 }
 
-function buildGeneratedImageUrl(prompt, modelIndex = 0) {
-  const enhanced = enhanceImagePrompt(prompt);
+function buildGeneratedImageUrl(prompt, modelIndex = 0, cacheKey = '0-0') {
+  const enhanced = compactImagePrompt(enhanceImagePrompt(prompt));
   const model = IMAGE_MODEL_CHAIN[Math.min(modelIndex, IMAGE_MODEL_CHAIN.length - 1)];
   const seed = Math.abs(hashString(enhanced)) % 1000000;
-  return buildPollinationsUrl(enhanced, model, seed);
+  const params = new URLSearchParams({
+    prompt: enhanced,
+    width: GENERATED_IMAGE_SIZE,
+    height: GENERATED_IMAGE_SIZE,
+    model,
+    seed: String(seed),
+    r: cacheKey,
+  });
+  return `/api/generate-image?${params.toString()}`;
 }
 
 function hashString(value = '') {
@@ -360,7 +364,7 @@ function GeneratedImageCard({ prompt }) {
   const transientTimerRef = useRef(null);
 
   const imageUrl = useMemo(
-    () => `${buildGeneratedImageUrl(prompt, modelIndex)}&_r=${retryNonce}-${transientAttempt}`,
+    () => buildGeneratedImageUrl(prompt, modelIndex, `${retryNonce}-${transientAttempt}`),
     [prompt, modelIndex, retryNonce, transientAttempt]
   );
 
@@ -509,7 +513,7 @@ function GeneratedImageCard({ prompt }) {
               <p className="image-lightbox-prompt" title={prompt}>{prompt}</p>
               <a
                 href={imageUrl}
-                download={`generated-${Date.now()}.png`}
+                download={`generated-${Date.now()}.jpg`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="image-lightbox-download"

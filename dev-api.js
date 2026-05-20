@@ -777,9 +777,79 @@ async function handleImageProxy(req, res) {
   }
 }
 
+// === Generated image proxy ===
+const GEN_IMAGE_MODELS = new Set(['flux', 'turbo']);
+const GEN_IMAGE_MAX_PROMPT = 900;
+
+function compactGeneratedPrompt(value = '') {
+  const compact = String(value || '').replace(/\s+/g, ' ').trim();
+  if (compact.length <= GEN_IMAGE_MAX_PROMPT) return compact;
+  return compact.slice(0, GEN_IMAGE_MAX_PROMPT).replace(/\s+\S*$/, '').trim();
+}
+
+function boundedGeneratedSize(value) {
+  const size = Number(value || 1024);
+  if (!Number.isFinite(size)) return 1024;
+  return Math.max(512, Math.min(1280, Math.round(size)));
+}
+
+async function handleGeneratedImage(req, res) {
+  try {
+    const parsed = new URL(req.url, 'http://localhost');
+    const prompt = compactGeneratedPrompt(parsed.searchParams.get('prompt') || '');
+    if (!prompt) {
+      res.writeHead(400); res.end(JSON.stringify({ error: 'Missing prompt' })); return;
+    }
+    const requestedModel = String(parsed.searchParams.get('model') || 'flux').toLowerCase();
+    const model = GEN_IMAGE_MODELS.has(requestedModel) ? requestedModel : 'flux';
+    const width = boundedGeneratedSize(parsed.searchParams.get('width'));
+    const height = boundedGeneratedSize(parsed.searchParams.get('height'));
+    const seed = Number(parsed.searchParams.get('seed') || 1) || 1;
+    const params = new URLSearchParams({
+      width: String(width),
+      height: String(height),
+      nologo: 'true',
+      enhance: 'true',
+      model,
+      seed: String(seed),
+    });
+    const target = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?${params.toString()}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 55000);
+    const upstream = await fetch(target, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; MIRA-GeneratedImage/1.0)',
+        'Accept': 'image/avif,image/webp,image/png,image/jpeg,image/*;q=0.9,*/*;q=0.5',
+      },
+    });
+    clearTimeout(timeout);
+    if (!upstream.ok) {
+      res.writeHead(502); res.end(JSON.stringify({ error: `Upstream ${upstream.status}` })); return;
+    }
+    const ct = upstream.headers.get('content-type') || '';
+    if (!IMG_ALLOWED_MIME.test(ct.split(';')[0].trim())) {
+      res.writeHead(415); res.end(JSON.stringify({ error: `Unsupported content-type: ${ct}` })); return;
+    }
+    const buffer = Buffer.from(await upstream.arrayBuffer());
+    if (buffer.byteLength > 10 * 1024 * 1024) {
+      res.writeHead(413); res.end(JSON.stringify({ error: 'Image too large' })); return;
+    }
+    res.writeHead(200, {
+      'Content-Type': ct,
+      'Cache-Control': 'public, max-age=86400, immutable',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(buffer);
+  } catch (err) {
+    res.writeHead(504); res.end(JSON.stringify({ error: err?.name === 'AbortError' ? 'Image generation timed out' : (err?.message || 'Image generation failed') }));
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Content-Type', 'application/json');
 
@@ -788,6 +858,12 @@ const server = http.createServer(async (req, res) => {
   // GET /api/image?url=... — image proxy for CORS-blocked sources
   if (req.method === 'GET' && req.url?.startsWith('/api/image')) {
     await handleImageProxy(req, res);
+    return;
+  }
+
+  // GET /api/generate-image?prompt=... — generated image bytes
+  if (req.method === 'GET' && req.url?.startsWith('/api/generate-image')) {
+    await handleGeneratedImage(req, res);
     return;
   }
 
