@@ -349,6 +349,32 @@ function needsContextualWebSearch(text = '', historySource = []) {
   return getRecentContextEntities(historySource).length > 0 || getRecentContextAnchor(historySource).length > 0;
 }
 
+// Phrases MIRA emits when its own knowledge falls short — it lacks live,
+// current, or factual data. When one of these appears in an answer AND the user
+// did not already have web search enabled, the host automatically runs a web
+// search and regenerates a grounded reply. This lets MIRA reach for the
+// internet on its own when it is unable to answer, instead of only when web
+// access is toggled on manually.
+const KNOWLEDGE_GAP_PATTERN = new RegExp([
+  /i (?:do not|don'?t) have (?:reliable|accurate|current|real[- ]?time|up[- ]?to[- ]?date|the latest|specific|detailed|enough|any)? ?(?:information|data|details|knowledge)/,
+  /i (?:do not|don'?t) have access to (?:real[- ]?time|current|live|up[- ]?to[- ]?date|the internet|the web|online)/,
+  /i(?:'?m| am) (?:not able|unable) to (?:access|browse|provide|retrieve|look up|search|fetch)/,
+  /i (?:cannot|can'?t) (?:access|browse|provide|retrieve|look up|search) (?:real[- ]?time|current|live|the internet|the web|up[- ]?to[- ]?date)/,
+  /(?:as of |up to )?my (?:last )?(?:knowledge|training)(?: data)? (?:cut[- ]?off|update)/,
+  /my training data (?:only )?(?:goes|extends|includes|ends|stops)/,
+  /knowledge cut[- ]?off/,
+  /beyond my (?:knowledge|training|current)/,
+  /i(?:'?m| am) not (?:sure|certain|aware) (?:about|of) the (?:latest|current|most recent|exact)/,
+  /(?:please|you (?:may|might|can|could)(?: want to)?) (?:check|refer to|visit|consult) (?:the )?(?:official|their|its)? ?(?:website|sources?) for (?:the )?(?:latest|current|most recent|up[- ]?to[- ]?date)/,
+  /i recommend (?:checking|visiting|consulting) (?:the )?(?:official|their|its|a)? ?(?:website|latest|sources?|news)/,
+].map((part) => part.source).join('|'), 'i');
+
+function indicatesKnowledgeGap(text = '') {
+  const value = String(text || '');
+  if (value.length < 12) return false;
+  return KNOWLEDGE_GAP_PATTERN.test(value);
+}
+
 function cleanImagePrompt(text = '') {
   return String(text || '')
     .replace(/\[IMAGE_GEN:\s*/gi, '')
@@ -1019,6 +1045,79 @@ Place every image and every mermaid block on its own line with a blank line abov
 
           if (wantsImageGeneration && !requestFailed) {
             fullText = normalizeImageGenerationOutput(fullText, content);
+          }
+
+          // ── Model-driven fallback web search ──
+          // If MIRA answered that it lacks current/factual knowledge AND we did
+          // not already search the web, automatically run a web search and
+          // regenerate a grounded answer. This is what lets MIRA resort to the
+          // internet on its own when it is unable to answer — not only when the
+          // user toggles web access on.
+          const autoSearchEligible =
+            !requestFailed &&
+            !abortRef.current &&
+            !effectiveWebSearch &&
+            !wantsImageGeneration &&
+            !requestedDocumentFormat &&
+            !hasImages &&
+            content.trim().length > 0 &&
+            indicatesKnowledgeGap(fullText);
+
+          if (autoSearchEligible) {
+            setIsSearching(true);
+            setStreamingContent('');
+            setThinkingContent('');
+            try {
+              const fallbackQuery = buildContextualSearchQuery(content);
+              const fallbackRes = await fetch('/api/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: fallbackQuery, includeMedia: false }),
+              });
+              const fallbackData = await fallbackRes.json();
+              const fallbackResults = Array.isArray(fallbackData.results) ? fallbackData.results : [];
+
+              if (fallbackResults.length && !abortRef.current) {
+                const snippets = fallbackResults
+                  .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}${r.url ? '\nSource: ' + r.url : ''}`)
+                  .join('\n\n');
+                const groundedUserContent = `${content}${recentConversationContextBlock}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${new Date().toUTCString()}) ===\nSearch query used: "${fallbackQuery}"\n\n${snippets}\n=== END SEARCH DATA ===\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.\n- You previously could not answer this from your own knowledge; now answer the user's question directly using these results.\n- Cite the sources you use by their [number].\n- Do not repeat that you lack current information — you now have it above.\n- Never invent URLs, citations, numbers, or facts beyond these results. If the results still do not cover it, say what is missing.`;
+                history[history.length - 1] = { role: 'user', content: groundedUserContent };
+
+                let retryText = '';
+                try {
+                  await sendChatMessage(
+                    history,
+                    chosenModel,
+                    (accumulated) => {
+                      if (abortRef.current) return;
+                      if (accumulated) setIsSearching(false);
+                      retryText = accumulated;
+                      setStreamingContent(accumulated);
+                    },
+                    images,
+                    enhancedSystemPrompt,
+                    {
+                      onThinking: (accumulated) => {
+                        if (abortRef.current) return;
+                        setThinkingContent(accumulated);
+                      },
+                    },
+                  );
+                } catch (retryErr) {
+                  console.warn('Auto web-search retry failed:', retryErr?.message);
+                  retryText = '';
+                }
+
+                if (retryText && retryText.trim() && !abortRef.current) {
+                  fullText = retryText;
+                }
+              }
+            } catch (autoErr) {
+              console.warn('Auto fallback web search failed:', autoErr?.message);
+            } finally {
+              setIsSearching(false);
+            }
           }
 
           if (fullText) {

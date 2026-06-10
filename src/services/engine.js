@@ -235,10 +235,10 @@ function enhanceSystemPrompt(basePrompt, classification, needsSearch = false) {
   }
 
   // Web access directive
-  enhanced += '\n\nWEB ACCESS: You have access to Google Search for real-time information. Automatically search the web when questions involve current events, recent developments, prices, weather, live scores, release dates, or any factual claims that may need verification with up-to-date data.';
+  enhanced += '\n\nWEB ACCESS: You are connected to a live web-search system the host runs for you automatically — the user does not have to enable it. When a question needs current events, recent developments, prices, weather, live scores, release dates, or any factual claim you are not confident is accurate and up to date, and no web-search data is already provided, give what you reliably know and then clearly state the specific thing you lack current information on. The host detects that and will automatically fetch live results for you to answer with. Never claim you cannot browse the internet, and never invent facts to avoid admitting a gap.';
 
   if (needsSearch) {
-    enhanced += '\nIMPORTANT: This query likely requires up-to-date information from the internet. Use Google Search to find the most current and accurate data before responding.';
+    enhanced += '\nIMPORTANT: This query likely requires up-to-date information from the internet. Use the provided live search results when present; if none are provided, state plainly what current information you are missing so the host can fetch it automatically.';
   }
 
   return enhanced;

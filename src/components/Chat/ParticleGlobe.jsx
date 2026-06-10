@@ -154,8 +154,8 @@ export default function ParticleGlobe({
       // Depth-sort back-to-front so the sphere reads as a solid volume.
       order.sort((a, b) => projZ[a] - projZ[b]);
 
-      // ── Particle shell (additive so overlaps bloom into light) ──
-      ctx.globalCompositeOperation = 'lighter';
+      // ── Particle shell (normal blending — crisp dots, no bloom) ──
+      ctx.globalCompositeOperation = 'source-over';
       const shimmer = pulse * 0.5;
       for (let k = 0; k < n; k++) {
         const i = order[k];
@@ -171,7 +171,7 @@ export default function ParticleGlobe({
         // us at the middle stay small, growing toward the largest size at the
         // outer edges of the sphere. A higher base keeps the centre dots from
         // reading as near-invisible specks next to the large rim particles.
-        const dot = (0.9 + rim * rim * 2.4 + ripple * 0.4) * (0.82 + 0.3 * band);
+        const dot = (0.9 + rim * rim * 1.5 + ripple * 0.4) * (0.82 + 0.3 * band);
         const light = 52 + depth * 26 + rim * 8;
         const sat = 80 - depth * 20;                      // near side reads whiter
 
@@ -179,14 +179,6 @@ export default function ParticleGlobe({
         ctx.beginPath();
         ctx.arc(projX[i], projY[i], dot, 0, Math.PI * 2);
         ctx.fill();
-
-        // Bright rim sparks on the near silhouette for an energy-shell glint.
-        if (depth > 0.78 && rim > 0.6 && (i % 6) === 0) {
-          ctx.fillStyle = `hsla(${hue[i]}, 90%, 82%, ${alpha * 0.22})`;
-          ctx.beginPath();
-          ctx.arc(projX[i], projY[i], dot * 2.6, 0, Math.PI * 2);
-          ctx.fill();
-        }
       }
       ctx.globalCompositeOperation = 'source-over';
 

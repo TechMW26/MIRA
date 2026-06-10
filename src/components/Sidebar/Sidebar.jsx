@@ -12,8 +12,6 @@ import {
   ChevronDown,
   ChevronRight,
   X,
-  Sun,
-  Moon,
   Settings,
   FolderInput,
   Lock,
@@ -22,7 +20,6 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useChatContext } from '../../contexts/ChatContext';
-import { useTheme } from '../../contexts/ThemeContext';
 import UserAvatar from '../common/UserAvatar';
 import useUserProfile from '../../hooks/useUserProfile';
 import {
@@ -46,7 +43,6 @@ export default function Sidebar() {
     activeProjectId, setActiveProjectId,
     unlockProject, isProjectUnlocked,
   } = useChatContext();
-  const { isDark, toggleTheme } = useTheme();
 
   // Auto-hide: once the sidebar is open, close it after 2s of the pointer not
   // hovering over it. Entering the sidebar cancels the countdown.
@@ -335,14 +331,6 @@ export default function Sidebar() {
               </div>
             </div>
             <div className="flex items-center gap-0.5">
-              <button
-                onClick={toggleTheme}
-                className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
-                style={{ color: 'var(--text-secondary)' }}
-                title={isDark ? 'Light mode' : 'Dark mode'}
-              >
-                {isDark ? <Sun size={15} /> : <Moon size={15} />}
-              </button>
               <button
                 onClick={() => { startNewChat(); }}
                 className="p-2 rounded-xl transition-all duration-200 hover:scale-105"

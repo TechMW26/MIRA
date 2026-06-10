@@ -4,8 +4,6 @@ import {
   User,
   Mail,
   Phone,
-  Sun,
-  Moon,
   Trash2,
   Save,
   Loader2,
@@ -16,13 +14,11 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { useTheme } from '../../contexts/ThemeContext';
 import { useChatContext } from '../../contexts/ChatContext';
 import { getUserProfile, updateUserProfile } from '../../services/database';
 
 export default function SettingsModal({ onClose }) {
   const { user, logout } = useAuth();
-  const { theme, toggleTheme, isDark } = useTheme();
 
   const [profile, setProfile] = useState({
     displayName: '',
@@ -263,14 +259,6 @@ export default function SettingsModal({ onClose }) {
         {/* Appearance section */}
         {activeSection === 'appearance' && (
           <div className="space-y-6 animate-fade-in">
-            <div className="glass-subtle rounded-2xl p-5 space-y-5">
-              <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Theme</h3>
-              <div className="grid grid-cols-2 gap-3">
-                <ThemeCard label="Dark" icon={Moon} active={isDark} onClick={() => { if (!isDark) toggleTheme(); }} />
-                <ThemeCard label="Light" icon={Sun} active={!isDark} onClick={() => { if (isDark) toggleTheme(); }} />
-              </div>
-            </div>
-
             <div className="glass-subtle rounded-2xl p-5 space-y-4">
               <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Text Size</h3>
               <div className="flex gap-2">
@@ -396,19 +384,6 @@ function FormField({ icon: Icon, label, value, onChange, placeholder, type = 'te
       </div>
       {note && <span className="text-[11px] mt-1 block" style={{ color: 'var(--text-tertiary)' }}>{note}</span>}
     </div>
-  );
-}
-
-function ThemeCard({ label, icon: Icon, active, onClick }) {
-  return (
-    <button
-      onClick={onClick}
-      className="flex flex-col items-center gap-3 p-5 rounded-2xl transition-all duration-200"
-      style={{ background: active ? 'var(--btn-primary-bg)' : 'var(--glass-bg)', color: active ? 'var(--btn-primary-text)' : undefined, border: '1px solid var(--glass-border)' }}
-    >
-      <Icon size={24} style={{ color: active ? 'var(--btn-primary-text)' : 'var(--text-tertiary)' }} />
-      <span className="text-sm font-medium" style={{ color: active ? 'var(--btn-primary-text)' : 'var(--text-secondary)' }}>{label}</span>
-    </button>
   );
 }
 
