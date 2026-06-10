@@ -56,7 +56,7 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
 
   return (
     <div
-      className="flex-shrink-0 flex h-full py-3 pr-3 pl-0 animate-fade-in"
+      className="fixed top-0 right-0 bottom-0 z-40 flex animate-fade-in"
       style={{ width: width + 14 }}
     >
       <div
@@ -68,7 +68,7 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
         }}
         title="Drag to resize"
       />
-      <div className="flex-1 min-w-0 rounded-2xl overflow-hidden glass-strong">
+      <div className="flex-1 min-w-0 h-full overflow-hidden glass-strong" style={{ borderLeft: '1px solid var(--hud-cyan-dim)' }}>
         {children}
       </div>
     </div>
@@ -140,14 +140,16 @@ export default function ChatWindow() {
 
   const togglePanel = (name) => setPanel(p => p === name ? null : name);
 
+  const showingWelcome = messages.length === 0;
+
   return (
     <div className="flex-1 flex min-h-0 relative">
       {showShare && <ShareModal messages={messages} title={messages[0]?.content?.slice(0, 50)} onClose={() => setShowShare(false)} />}
 
-      <div className="flex flex-col flex-1 min-w-0 min-h-0">
-        <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden" style={{ fontSize: chatFontSize }}>
-          <div className="max-w-3xl mx-auto flex flex-col justify-end min-h-full py-4 gap-5 px-3 w-full min-w-0">
-            {displayMessages.length === 0 ? (
+      <div className="flex flex-col flex-1 min-w-0 min-h-0 relative">
+        <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden hud-scroll-area" style={{ fontSize: chatFontSize }}>
+          <div className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 pb-44 gap-6 px-4 w-full min-w-0`}>
+            {showingWelcome ? (
               <WelcomeScreen onSend={(p, atts = []) => sendToChat(p, atts, webSearch)} />
             ) : (
               displayMessages.map((msg, i) => (

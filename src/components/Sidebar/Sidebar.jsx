@@ -48,6 +48,24 @@ export default function Sidebar() {
   } = useChatContext();
   const { isDark, toggleTheme } = useTheme();
 
+  // Auto-hide: once the sidebar is open, close it after 2s of the pointer not
+  // hovering over it. Entering the sidebar cancels the countdown.
+  const hideTimer = useRef(null);
+  const cancelHide = useCallback(() => {
+    if (hideTimer.current) {
+      clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+  }, []);
+  const scheduleHide = useCallback(() => {
+    cancelHide();
+    hideTimer.current = setTimeout(() => setSidebarOpen(false), 2000);
+  }, [cancelHide, setSidebarOpen]);
+  useEffect(() => {
+    if (sidebarOpen) scheduleHide();
+    return cancelHide;
+  }, [sidebarOpen, scheduleHide, cancelHide]);
+
   const [conversations, setConversations] = useState([]);
   const [projects, setProjects] = useState([]);
   const [search, setSearch] = useState('');
@@ -229,8 +247,6 @@ export default function Sidebar() {
     setActiveMenu(null);
   }
 
-  if (!sidebarOpen) return null;
-
   // ── Render chat list (reused in main & project views) ──
   function renderChatList(groupedData, showDrag = true) {
     const entries = Object.entries(groupedData);
@@ -279,13 +295,19 @@ export default function Sidebar() {
   return (
     <>
       {/* Mobile overlay */}
-      <div
-        className="fixed inset-0 backdrop-blur-sm z-40 lg:hidden animate-fade-in"
-        style={{ background: 'var(--overlay-bg)' }}
-        onClick={() => setSidebarOpen(false)}
-      />
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 backdrop-blur-sm z-40 lg:hidden animate-fade-in"
+          style={{ background: 'var(--overlay-bg)' }}
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
 
-      <aside className="fixed lg:relative inset-y-0 left-0 z-50 w-[280px] lg:w-[280px] p-0 lg:p-3 flex flex-col animate-slide-in-left h-full">
+      <aside
+        onMouseEnter={cancelHide}
+        onMouseLeave={scheduleHide}
+        className={`mira-sidebar ${sidebarOpen ? 'open' : ''} fixed inset-y-0 left-0 z-50 w-[280px] p-0 lg:p-3 flex flex-col h-full`}
+      >
         <div className="flex flex-col h-full lg:rounded-2xl overflow-hidden glass-strong">
 
           {/* Header */}
@@ -331,8 +353,9 @@ export default function Sidebar() {
               </button>
               <button
                 onClick={() => setSidebarOpen(false)}
-                className="p-2 rounded-xl lg:hidden"
+                className="p-2 rounded-md transition-all duration-200 hover:scale-105"
                 style={{ color: 'var(--text-secondary)' }}
+                title="Close sidebar"
               >
                 <X size={15} />
               </button>

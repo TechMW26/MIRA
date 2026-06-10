@@ -1,7 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Globe, Loader, PanelRight, Code2, Zap, Wrench, BookMarked, Share2, Volume2 } from 'lucide-react';
+import {
+  Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Loader, Mic,
+  Globe, PanelRight, Code2, Zap, Wrench, BookMarked, Share2, Volume2,
+} from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 import { formatVoiceLabel, getVoiceKey, pickPreferredVoice, getPreferredVoiceId, setPreferredVoiceId } from '../../utils/tts';
+import VoiceMode from './VoiceMode';
 
 const ACCEPT_TYPES = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic,.sh,.rs,.go,.rb,.php,.sql';
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'heic']);
@@ -116,24 +120,24 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   const [attachments, setAttachments] = useState([]);
   const [parsing, setParsing] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [voiceOpen, setVoiceOpen] = useState(false);
   const [voices, setVoices] = useState([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState(getPreferredVoiceId());
+  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const dragCounterRef = useRef(0);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.speechSynthesis) return undefined;
-
-    const refreshVoices = () => {
-      const nextVoices = window.speechSynthesis.getVoices();
-      setVoices(nextVoices);
-      setSelectedVoiceId((current) => current || getPreferredVoiceId());
+    const refresh = () => {
+      const next = window.speechSynthesis.getVoices();
+      setVoices(next);
+      setSelectedVoiceId((cur) => cur || getPreferredVoiceId());
     };
-
-    refreshVoices();
-    window.speechSynthesis.addEventListener?.('voiceschanged', refreshVoices);
-    return () => window.speechSynthesis.removeEventListener?.('voiceschanged', refreshVoices);
+    refresh();
+    window.speechSynthesis.addEventListener?.('voiceschanged', refresh);
+    return () => window.speechSynthesis.removeEventListener?.('voiceschanged', refresh);
   }, []);
 
   const preferredVoice = pickPreferredVoice(voices);
@@ -263,110 +267,67 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   }
 
+  function handleVoiceTranscript(text) {
+    if (!text) return;
+    setVoiceOpen(false);
+    onSend(text, []);
+  }
+
   function handleVoiceChange(event) {
     const nextId = event.target.value;
     setSelectedVoiceId(nextId);
     setPreferredVoiceId(nextId);
   }
 
+  const toolStrip = [
+    { id: 'web',      icon: Globe,       title: 'Web search', active: webSearch, onClick: onToggleWebSearch },
+    { id: 'browser',  icon: PanelRight,  title: 'Browser',    active: activePanel === 'browser', onClick: () => onTogglePanel('browser') },
+    { id: 'canvas',   icon: Code2,       title: 'Canvas',     active: activePanel === 'canvas',  onClick: () => onTogglePanel('canvas') },
+    { id: 'tasks',    icon: Zap,         title: 'Tasks',      active: activePanel === 'tasks',   onClick: () => onTogglePanel('tasks') },
+    { id: 'tools',    icon: Wrench,      title: 'Tools',      active: activePanel === 'tools',   onClick: () => onTogglePanel('tools') },
+    { id: 'prompts',  icon: BookMarked,  title: 'Prompts',    active: activePanel === 'prompts', onClick: () => onTogglePanel('prompts') },
+  ];
+
+  const hasShare = messages?.length > 0;
+
   return (
-    <div className="flex-shrink-0 px-3 lg:px-0 pb-5 pt-3">
-      <div className="max-w-3xl mx-auto">
-        <div className="chat-input-wrap relative">
-          <div
-            className="glass rounded-2xl overflow-hidden relative chat-input-shell"
-            onDragEnter={onDragEnter}
-            onDragLeave={onDragLeave}
-            onDragOver={onDragOver}
-            onDrop={onDrop}
-          >
-          {dragging && (
-            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center rounded-2xl pointer-events-none"
-              style={{ background: 'var(--accent-glow)', border: '2px dashed var(--accent)', backdropFilter: 'blur(4px)' }}
+    <div className="hud-composer-dock px-[180px] pb-5 pt-8 relative z-20">
+      <div className="max-w-2xl mx-auto">
+        {/* HUD tool strip — sits above the composer pill */}
+        <div className="hud-tool-strip">
+          {toolStrip.map(({ id, icon: Icon, title, active, onClick }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={onClick}
+              className="hud-tool"
+              data-active={active || undefined}
+              title={title}
             >
-              <Paperclip size={24} style={{ color: 'var(--accent)' }} />
-              <p className="text-sm font-medium mt-2" style={{ color: 'var(--accent)' }}>Drop files here</p>
-            </div>
-          )}
-          {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-2 px-4 pt-3">
-              {attachments.map((att, i) => {
-                if (att.isImage) {
-                  return (
-                    <div key={i} className="relative rounded-xl overflow-hidden animate-fade-in group" style={{ width: '80px', height: '80px' }}>
-                      <img src={att.base64} alt="" className="w-full h-full object-cover" />
-                      <button
-                        onClick={() => removeAttachment(i)}
-                        className="absolute top-1 right-1 p-0.5 rounded-full transition-all opacity-0 group-hover:opacity-100"
-                        style={{ background: 'rgba(0,0,0,0.6)', color: '#fff' }}
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  );
-                }
-                const Icon = getFileIcon(att.name);
-                return (
-                  <div
-                    key={i}
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-xl glass-subtle text-xs animate-fade-in"
-                    style={{ color: 'var(--text-secondary)' }}
-                  >
-                    <Icon size={14} style={{ color: 'var(--accent)' }} />
-                    <span className="max-w-[120px] truncate">{att.name}</span>
-                    <span className="opacity-50">{formatFileSize(att.size)}</span>
-                    <button onClick={() => removeAttachment(i)} className="p-0.5 rounded hover:scale-110 transition-all" style={{ color: 'var(--text-tertiary)' }}>
-                      <X size={12} />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+              <Icon size={15} />
+              <span className="hud-tool-tip">{title}</span>
+            </button>
+          ))}
 
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Message MIRA..."
-            rows={1}
-            className="w-full resize-none px-5 pt-4 pb-2 text-sm leading-relaxed bg-transparent outline-none placeholder:text-[var(--text-tertiary)]"
-            style={{ color: 'var(--text-primary)' }}
-          />
-
-          <input ref={fileInputRef} type="file" multiple accept={ACCEPT_TYPES} onChange={handleFiles} className="hidden" />
-
-          <div className="flex items-center justify-between px-3 pb-3">
-            <div className="flex items-center gap-1">
+          {voices.length > 0 && (
+            <div className="relative">
               <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={parsing}
-                className="p-2 rounded-xl transition-all duration-200 hover:scale-105 disabled:opacity-50"
-                style={{ color: parsing ? 'var(--accent)' : 'var(--text-tertiary)' }}
-                title="Attach files"
+                type="button"
+                onClick={() => setVoicePickerOpen((v) => !v)}
+                className="hud-tool"
+                data-active={voicePickerOpen || undefined}
+                title={preferredVoice ? formatVoiceLabel(preferredVoice) : 'Voice'}
               >
-                {parsing ? <Loader size={16} className="animate-spin" /> : <Paperclip size={16} />}
+                <Volume2 size={15} />
+                <span className="hud-tool-tip">Voice</span>
               </button>
-
-              <button
-                onClick={onToggleWebSearch}
-                className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
-                style={webSearch ? { color: 'var(--accent)', background: 'var(--hover-bg)' } : { color: 'var(--text-tertiary)' }}
-                title={webSearch ? 'Web search ON' : 'Web search OFF'}
-              >
-                <Globe size={16} />
-              </button>
-
-              {voices.length > 0 && (
-                <div className="flex items-center gap-1 rounded-xl px-2 py-1" style={{ background: 'var(--hover-bg)', border: '1px solid var(--border)' }}>
-                  <Volume2 size={14} style={{ color: 'var(--text-tertiary)' }} />
+              {voicePickerOpen && (
+                <div className="hud-voice-popover" onMouseLeave={() => setVoicePickerOpen(false)}>
                   <select
                     value={selectedVoiceId || ''}
                     onChange={handleVoiceChange}
-                    className="bg-transparent text-[11px] outline-none max-w-[160px]"
+                    className="bg-transparent text-[11px] outline-none w-full uppercase tracking-wider"
                     style={{ color: 'var(--text-primary)' }}
-                    title={preferredVoice ? formatVoiceLabel(preferredVoice) : 'Select voice'}
                   >
                     <option value="">Best available</option>
                     {voiceOptions.map((voice) => {
@@ -380,55 +341,150 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                   </select>
                 </div>
               )}
-
-              {[
-                { id: 'browser', icon: PanelRight, title: 'Browser' },
-                { id: 'canvas', icon: Code2, title: 'Canvas' },
-                { id: 'tasks', icon: Zap, title: 'Task Runner' },
-                { id: 'tools', icon: Wrench, title: 'Tools' },
-                { id: 'prompts', icon: BookMarked, title: 'Prompts' },
-              ].map(({ id, icon: Icon, title }) => (
-                <button key={id} onClick={() => onTogglePanel(id)}
-                  className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
-                  style={activePanel === id ? { color: 'var(--accent)', background: 'var(--hover-bg)' } : { color: 'var(--text-tertiary)' }}
-                  title={title}>
-                  <Icon size={16} />
-                </button>
-              ))}
-              {messages?.length > 0 && (
-                <button onClick={onShare} className="p-2 rounded-xl transition-all duration-200 hover:scale-105" style={{ color: 'var(--text-tertiary)' }} title="Share">
-                  <Share2 size={16} />
-                </button>
-              )}
             </div>
+          )}
 
-            <div className="flex items-center gap-1.5">
+          {hasShare && (
+            <button
+              type="button"
+              onClick={onShare}
+              className="hud-tool"
+              title="Share"
+            >
+              <Share2 size={15} />
+              <span className="hud-tool-tip">Share</span>
+            </button>
+          )}
+        </div>
+
+        <div className="chat-input-wrap relative">
+          <div
+            className="hud-composer chat-input-shell"
+            onDragEnter={onDragEnter}
+            onDragLeave={onDragLeave}
+            onDragOver={onDragOver}
+            onDrop={onDrop}
+            style={{ flexDirection: 'column', alignItems: 'stretch', padding: '4px 8px 4px 18px' }}
+          >
+            {dragging && (
+              <div
+                className="absolute inset-0 z-20 flex flex-col items-center justify-center pointer-events-none"
+                style={{
+                  background: 'rgba(94, 234, 212, 0.08)',
+                  border: '1px dashed var(--hud-cyan)',
+                  borderRadius: 6,
+                }}
+              >
+                <Paperclip size={22} style={{ color: 'var(--hud-cyan-bright)' }} />
+                <p className="text-xs font-medium mt-2 tracking-[0.18em] uppercase" style={{ color: 'var(--hud-cyan-bright)' }}>
+                  Drop files
+                </p>
+              </div>
+            )}
+
+            {attachments.length > 0 && (
+              <div className="hud-attachment-strip pt-3 pb-2">
+                {attachments.map((att, i) => {
+                  if (att.isImage) {
+                    return (
+                      <div key={i} className="relative rounded-md overflow-hidden animate-fade-in group" style={{ width: '64px', height: '64px', border: '1px solid var(--hud-cyan-dim)' }}>
+                        <img src={att.base64} alt="" className="w-full h-full object-cover" />
+                        <button
+                          onClick={() => removeAttachment(i)}
+                          className="absolute top-1 right-1 p-0.5 rounded-full transition-all opacity-0 group-hover:opacity-100"
+                          style={{ background: 'rgba(0,0,0,0.6)', color: '#fff' }}
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    );
+                  }
+                  const Icon = getFileIcon(att.name);
+                  return (
+                    <div
+                      key={i}
+                      className="flex items-center gap-2 px-3 py-1.5 text-xs animate-fade-in"
+                      style={{
+                        color: 'var(--text-secondary)',
+                        background: 'rgba(94, 234, 212, 0.05)',
+                        border: '1px solid var(--hud-cyan-dim)',
+                        borderRadius: 4,
+                      }}
+                    >
+                      <Icon size={14} style={{ color: 'var(--hud-cyan)' }} />
+                      <span className="max-w-[120px] truncate">{att.name}</span>
+                      <span className="opacity-50">{formatFileSize(att.size)}</span>
+                      <button onClick={() => removeAttachment(i)} className="p-0.5 rounded hover:scale-110 transition-all" style={{ color: 'var(--text-tertiary)' }}>
+                        <X size={12} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex items-center gap-1.5 w-full">
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Message MIRA..."
+                rows={1}
+                className="hud-composer-textarea"
+                style={{ padding: '12px 4px' }}
+              />
+
+              <input ref={fileInputRef} type="file" multiple accept={ACCEPT_TYPES} onChange={handleFiles} className="hidden" />
+
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={parsing}
+                className="composer-icon-btn"
+                title="Attach files"
+              >
+                {parsing ? <Loader size={18} className="animate-spin" /> : <Paperclip size={18} />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setVoiceOpen(true)}
+                className="composer-icon-btn"
+                title="Voice mode"
+              >
+                <Mic size={18} />
+              </button>
+
               {isGenerating ? (
                 <button
+                  type="button"
                   onClick={onStop}
-                  className="p-2.5 rounded-xl bg-red-500/20 text-red-400 transition-all duration-200 hover:scale-105 hover:bg-red-500/30"
+                  className="composer-send-btn"
+                  style={{ background: 'rgba(244, 63, 94, 0.18)', color: '#fda4af' }}
+                  title="Stop"
                 >
-                  <Square size={16} />
+                  <Square size={18} />
                 </button>
               ) : (
                 <button
+                  type="button"
                   onClick={handleSubmit}
                   disabled={!input.trim() && attachments.length === 0}
-                  className="p-2.5 rounded-xl transition-all duration-200 hover:opacity-90 disabled:opacity-30 disabled:hover:scale-100"
-                  style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
+                  className="composer-send-btn"
+                  title="Send"
                 >
-                  <Send size={16} />
+                  <Send size={18} />
                 </button>
               )}
             </div>
           </div>
         </div>
-        </div>
-
-        <p className="text-center text-[10px] mt-2.5 leading-tight" style={{ color: 'var(--text-tertiary)' }}>
-          MIRA can make mistakes. Consider checking important info.
-        </p>
       </div>
+
+      {voiceOpen && (
+        <VoiceMode onSend={handleVoiceTranscript} onClose={() => setVoiceOpen(false)} />
+      )}
     </div>
   );
 }

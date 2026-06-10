@@ -18,9 +18,9 @@
     --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
     --input-bg: rgba(255, 255, 255, 0.8);
     --hover-bg: rgba(0, 0, 0, 0.04);
-    --accent: #6d28d9;
-    --accent-light: #8b5cf6;
-    --accent-glow: rgba(109, 40, 217, 0.08);
+    --accent: #0e9d8a;
+    --accent-light: #14b8a6;
+    --accent-glow: rgba(20, 184, 166, 0.10);
     --btn-primary-bg: #111118;
     --btn-primary-text: #ffffff;
     --btn-secondary-bg: rgba(0, 0, 0, 0.06);
@@ -29,32 +29,42 @@
     --user-bubble-text: #1a1a24;
     --avatar-bg: #111118;
     --overlay-bg: rgba(255, 255, 255, 0.6);
+    --hud-cyan: #0e9d8a;
+    --hud-cyan-bright: #14b8a6;
+    --hud-cyan-soft: rgba(20, 184, 166, 0.55);
+    --hud-cyan-dim: rgba(20, 184, 166, 0.22);
+    --hud-bg: rgba(255, 255, 255, 0.85);
   }
 
   .dark {
-    --bg-primary: #050507;
-    --bg-secondary: #0a0a0f;
-    --bg-tertiary: #0f0f16;
-    --text-primary: #f5f5fa;
-    --text-secondary: #b0b0c4;
-    --text-tertiary: #6e6e88;
-    --border: rgba(255, 255, 255, 0.06);
-    --glass-bg: rgba(10, 10, 15, 0.7);
-    --glass-border: rgba(255, 255, 255, 0.06);
-    --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-    --input-bg: rgba(15, 15, 22, 0.85);
-    --hover-bg: rgba(255, 255, 255, 0.04);
-    --accent: #8b5cf6;
-    --accent-light: #a78bfa;
-    --accent-glow: rgba(139, 92, 246, 0.1);
-    --btn-primary-bg: #ffffff;
-    --btn-primary-text: #111118;
-    --btn-secondary-bg: rgba(255, 255, 255, 0.08);
-    --btn-secondary-text: #f5f5fa;
-    --user-bubble-bg: #1c1c26;
-    --user-bubble-text: #f5f5fa;
-    --avatar-bg: #ffffff;
-    --overlay-bg: rgba(0, 0, 0, 0.5);
+    --bg-primary: #000005;
+    --bg-secondary: #04060a;
+    --bg-tertiary: #06090f;
+    --text-primary: #e6fbff;
+    --text-secondary: #9bd6e6;
+    --text-tertiary: #5a8a9a;
+    --border: rgba(94, 234, 212, 0.16);
+    --glass-bg: rgba(4, 10, 16, 0.65);
+    --glass-border: rgba(94, 234, 212, 0.18);
+    --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --input-bg: rgba(6, 14, 22, 0.78);
+    --hover-bg: rgba(94, 234, 212, 0.08);
+    --accent: #5eead4;
+    --accent-light: #67e8f9;
+    --accent-glow: rgba(94, 234, 212, 0.18);
+    --btn-primary-bg: rgba(94, 234, 212, 0.18);
+    --btn-primary-text: #5eead4;
+    --btn-secondary-bg: rgba(94, 234, 212, 0.08);
+    --btn-secondary-text: #e6fbff;
+    --user-bubble-bg: rgba(94, 234, 212, 0.08);
+    --user-bubble-text: #e6fbff;
+    --avatar-bg: #5eead4;
+    --overlay-bg: rgba(0, 5, 10, 0.7);
+    --hud-cyan: #5eead4;
+    --hud-cyan-bright: #67e8f9;
+    --hud-cyan-soft: rgba(94, 234, 212, 0.55);
+    --hud-cyan-dim: rgba(94, 234, 212, 0.22);
+    --hud-bg: rgba(2, 8, 14, 0.75);
   }
 }
 
@@ -770,19 +780,19 @@ body.light .image-lightbox {
   gap: 6px;
   padding: 8px 14px;
   border-radius: 10px;
-  background: linear-gradient(135deg, var(--accent, #8b5cf6), #7c3aed);
-  color: #fff;
+  background: linear-gradient(135deg, var(--accent, #5eead4), #0891b2);
+  color: #02101a;
   font-size: 0.78rem;
-  font-weight: 600;
+  font-weight: 700;
   text-decoration: none;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 8px 24px -8px rgba(139, 92, 246, 0.6);
+  box-shadow: 0 8px 24px -8px rgba(94, 234, 212, 0.6);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
   white-space: nowrap;
 }
 .image-lightbox-download:hover {
   transform: translateY(-1px);
-  box-shadow: 0 12px 28px -8px rgba(139, 92, 246, 0.7);
+  box-shadow: 0 12px 28px -8px rgba(94, 234, 212, 0.7);
 }
 
 @media (max-width: 640px) {
@@ -985,27 +995,27 @@ body.light .image-lightbox {
 }
 
 /* ── Prose overrides (dark) ──────────────────── */
-.dark .prose { color: #f5f5fa; }
-.dark .prose p, .dark .prose li, .dark .prose td, .dark .prose span { color: #f5f5fa; }
-.dark .prose h1, .dark .prose h2, .dark .prose h3, .dark .prose h4 { color: #ffffff; }
+.dark .prose { color: #e6fbff; font-size: 1.0625rem; line-height: 1.75; }
+.dark .prose p, .dark .prose li, .dark .prose td, .dark .prose span { color: #e6fbff; }
+.dark .prose h1, .dark .prose h2, .dark .prose h3, .dark .prose h4 { color: #ffffff; letter-spacing: -0.01em; }
 .dark .prose strong { color: #ffffff; }
 .dark .prose pre {
-  background: rgba(10, 10, 15, 0.8) !important;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(2, 10, 16, 0.85) !important;
+  border: 1px solid rgba(94, 234, 212, 0.18);
   border-radius: 0.75rem;
   backdrop-filter: blur(10px);
 }
 .dark .prose code:not(pre code) {
-  background: rgba(139, 92, 246, 0.12);
+  background: rgba(94, 234, 212, 0.12);
   padding: 0.15em 0.4em;
   border-radius: 0.3rem;
-  font-size: 0.85em;
-  color: #c4b5fd;
+  font-size: 0.9em;
+  color: #67e8f9;
 }
-.dark .prose a { color: #a78bfa; }
-.dark .prose table { border-color: rgba(255,255,255,0.06); }
-.dark .prose th, .dark .prose td { border-color: rgba(255,255,255,0.06); padding: 0.5rem 0.75rem; }
-.dark .prose th { background: rgba(10,10,15,0.6); }
+.dark .prose a { color: #67e8f9; }
+.dark .prose table { border-color: rgba(94,234,212,0.16); }
+.dark .prose th, .dark .prose td { border-color: rgba(94,234,212,0.16); padding: 0.5rem 0.75rem; }
+.dark .prose th { background: rgba(2,10,16,0.6); }
 .dark .prose blockquote { border-left-color: var(--accent); color: var(--text-secondary); }
 
 /* ── Prose overrides (light) ─────────────────── */
@@ -1063,3 +1073,631 @@ body.light .image-lightbox {
 .btn-shine:hover {
   opacity: 0.9;
 }
+
+/* ─────────────────────────────────────────────
+   ✦ MIRA HUD — Next-gen interface
+   Cyan tactical UI with corner widgets, particle
+   globe, and ParticleFrame for AI responses.
+   ────────────────────────────────────────────── */
+
+/* Tactical ambient glow on the body. */
+body.mira-hud,
+body.mira-hud-active {
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(94, 234, 212, 0.05) 0%, transparent 55%),
+    radial-gradient(ellipse at 50% 100%, rgba(34, 211, 238, 0.03) 0%, transparent 60%),
+    var(--bg-primary);
+}
+
+/* (scanlines and corner radials intentionally removed — the chrome reads
+   cleaner without them, matching the reference mockups.) */
+
+/* ── Hero typography (header chrome) ── */
+.mira-hero-title {
+  font-family: 'Orbitron', 'Inter', system-ui, sans-serif;
+  letter-spacing: 0.42em;
+  font-weight: 700;
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--hud-cyan);
+  text-shadow:
+    0 0 10px rgba(94, 234, 212, 0.55),
+    0 0 24px rgba(94, 234, 212, 0.18);
+}
+.mira-hero-sub {
+  font-family: 'Orbitron', 'Inter', system-ui, sans-serif;
+  letter-spacing: 0.45em;
+  font-size: 0.5rem;
+  line-height: 1;
+  color: var(--hud-cyan-soft);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+
+/* ── HUD frame primitives (sci-fi chip) ── */
+.hud-chip {
+  position: relative;
+  height: 38px;
+  padding: 0 16px;
+  color: var(--hud-cyan);
+  font-family: 'Orbitron', 'Inter', monospace;
+  letter-spacing: 0.22em;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  background: rgba(2, 16, 22, 0.3);
+  border: 1px solid var(--hud-cyan-dim);
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 120px;
+  justify-content: center;
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+.light .hud-chip { background: rgba(255, 255, 255, 0.55); }
+
+.hud-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--hud-cyan);
+  box-shadow: 0 0 10px var(--hud-cyan), 0 0 22px rgba(94, 234, 212, 0.45);
+  animation: hud-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes hud-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.8); }
+}
+
+/* Branded center title above chat */
+.hud-brand-frame {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  height: 38px;
+  justify-content: center;
+  padding: 0 24px;
+}
+
+.hud-bracket-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.hud-bracket {
+  position: relative;
+  width: 28px;
+  height: 12px;
+  border: 1px solid var(--hud-cyan);
+  opacity: 0.85;
+  border-radius: 2px;
+}
+.hud-bracket-left  { border-right: none; }
+.hud-bracket-right { border-left:  none; }
+.hud-bracket::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 18px;
+  height: 1px;
+  background: var(--hud-cyan);
+  transform: translateY(-50%);
+  box-shadow: 0 0 6px var(--hud-cyan);
+}
+.hud-bracket-left::after  { right: -18px; }
+.hud-bracket-right::after { left:  -18px; }
+
+/* ── HUD panel (corner widget shell) ── */
+.hud-panel {
+  position: relative;
+  background: rgba(2, 12, 18, 0.28);
+  border: 1px solid var(--hud-cyan-dim);
+  color: var(--text-primary);
+  padding: 10px 18px;
+  font-family: 'Orbitron', 'Inter', monospace;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 0.62rem;
+  border-radius: 6px;
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+.light .hud-panel {
+  background: rgba(255, 255, 255, 0.6);
+}
+.hud-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+.hud-panel-label {
+  color: var(--hud-cyan-soft);
+  font-size: 0.55rem;
+  letter-spacing: 0.22em;
+}
+.hud-panel-value {
+  color: var(--hud-cyan-bright);
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  text-shadow: 0 0 8px rgba(94, 234, 212, 0.55);
+}
+.light .hud-panel-value { text-shadow: none; }
+
+/* ── HUD button (icon, rounded) ── */
+.hud-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  color: var(--hud-cyan);
+  background: rgba(2, 16, 22, 0.3);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  border: 1px solid var(--hud-cyan-dim);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s, transform 0.15s, box-shadow 0.2s;
+}
+.hud-btn:hover {
+  background: rgba(94, 234, 212, 0.14);
+  color: var(--hud-cyan-bright);
+  transform: translateY(-1px);
+}
+.hud-btn[data-active='true'] {
+  background: rgba(94, 234, 212, 0.2);
+  color: var(--hud-cyan-bright);
+  box-shadow: 0 0 18px rgba(94, 234, 212, 0.35);
+}
+.hud-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.hud-btn-primary {
+  background: linear-gradient(180deg, rgba(94, 234, 212, 0.28), rgba(20, 184, 166, 0.18));
+  color: #02151b;
+}
+.hud-btn-primary:hover {
+  background: linear-gradient(180deg, rgba(94, 234, 212, 0.4), rgba(20, 184, 166, 0.28));
+  color: #02151b;
+}
+.light .hud-btn-primary { color: #02322b; }
+
+/* ── HUD composer dock (bottom overlay) ──
+   Floats over the chat surface so messages scroll *behind* it. A frosted
+   gradient band (transparent at the top, blurred toward the bottom) keeps
+   the composer legible while letting the conversation show through. */
+.hud-composer-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    rgba(2, 10, 14, 0.72) 0%,
+    rgba(2, 10, 14, 0.55) 38%,
+    rgba(2, 10, 14, 0.22) 72%,
+    rgba(2, 10, 14, 0) 100%
+  );
+  -webkit-mask-image: linear-gradient(to top, #000 70%, transparent 100%);
+  mask-image: linear-gradient(to top, #000 70%, transparent 100%);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+.hud-composer-dock > * { pointer-events: auto; }
+.light .hud-composer-dock {
+  background: linear-gradient(
+    to top,
+    rgba(232, 244, 242, 0.78) 0%,
+    rgba(232, 244, 242, 0.55) 38%,
+    rgba(232, 244, 242, 0.22) 72%,
+    rgba(232, 244, 242, 0) 100%
+  );
+}
+
+/* ── HUD top dock (top overlay) ──
+   Frosted band behind the ONLINE / brand / settings row so chats blur
+   softly as they scroll up beneath it. */
+.hud-top-dock::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  bottom: auto;
+  height: 120%;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(2, 10, 14, 0.72) 0%,
+    rgba(2, 10, 14, 0.5) 45%,
+    rgba(2, 10, 14, 0.18) 78%,
+    rgba(2, 10, 14, 0) 100%
+  );
+  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  z-index: -1;
+}
+.light .hud-top-dock::before {
+  background: linear-gradient(
+    to bottom,
+    rgba(232, 244, 242, 0.78) 0%,
+    rgba(232, 244, 242, 0.5) 45%,
+    rgba(232, 244, 242, 0.18) 78%,
+    rgba(232, 244, 242, 0) 100%
+  );
+}
+
+/* ── HUD composer ── */
+.hud-composer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px 6px 18px;
+  background: rgba(2, 16, 22, 0.32);
+  border: 1px solid var(--hud-cyan-dim);
+  border-radius: 8px;
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.light .hud-composer {
+  background: rgba(255, 255, 255, 0.62);
+}
+.hud-composer:focus-within {
+  border-color: var(--hud-cyan-soft);
+  box-shadow: 0 0 0 3px rgba(94, 234, 212, 0.08), 0 0 40px -10px rgba(94, 234, 212, 0.45);
+}
+.hud-composer-textarea {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  resize: none;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  min-height: 24px;
+  max-height: 180px;
+  padding: 8px 4px;
+}
+.hud-composer-textarea::placeholder {
+  color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+}
+
+/* Round 'ghost' button used for attach/mic in the composer. */
+.composer-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--hud-cyan-soft);
+  border: 0;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+.composer-icon-btn:hover {
+  background: rgba(94, 234, 212, 0.08);
+  color: var(--hud-cyan-bright);
+}
+.composer-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Square cyan send button. */
+.composer-send-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 38px;
+  border-radius: 6px;
+  background: rgba(94, 234, 212, 0.16);
+  color: var(--hud-cyan-bright);
+  border: 1px solid rgba(94, 234, 212, 0.32);
+  cursor: pointer;
+  transition: background 0.18s ease, transform 0.12s ease, box-shadow 0.18s ease;
+  margin-left: 2px;
+}
+.composer-send-btn:hover:not(:disabled) {
+  background: rgba(94, 234, 212, 0.28);
+  box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.08), 0 0 22px -4px rgba(94, 234, 212, 0.55);
+}
+.composer-send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.light .composer-send-btn { color: #02322b; background: rgba(20, 184, 166, 0.18); border-color: rgba(20, 184, 166, 0.32); }
+
+/* ── HUD tool strip (above the composer) ─────── */
+.hud-tool-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.hud-tool {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  background: rgba(2, 16, 22, 0.3);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  color: var(--hud-cyan-soft);
+  border: 1px solid var(--hud-cyan-dim);
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.light .hud-tool {
+  background: rgba(255, 255, 255, 0.85);
+}
+.hud-tool:hover {
+  color: var(--hud-cyan-bright);
+  border-color: var(--hud-cyan);
+  background: rgba(94, 234, 212, 0.1);
+}
+.hud-tool[data-active='true'] {
+  color: var(--hud-cyan-bright);
+  border-color: var(--hud-cyan);
+  background: rgba(94, 234, 212, 0.18);
+  box-shadow: 0 0 18px -2px rgba(94, 234, 212, 0.55), inset 0 0 12px rgba(94, 234, 212, 0.18);
+}
+.hud-tool-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'Orbitron', 'Inter', monospace;
+  font-size: 0.55rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--hud-cyan-bright);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  background: rgba(2, 16, 22, 0.85);
+  border: 1px solid var(--hud-cyan-dim);
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.hud-tool:hover .hud-tool-tip { opacity: 1; }
+
+.hud-voice-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 200px;
+  padding: 8px;
+  background: rgba(2, 16, 22, 0.95);
+  border: 1px solid var(--hud-cyan-dim);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.6);
+  z-index: 20;
+}
+.light .hud-voice-popover {
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 12px 32px -8px rgba(15, 23, 42, 0.18);
+}
+.hud-voice-popover select { width: 100%; cursor: pointer; }
+
+/* ── Standardised chat bubble (user + assistant) ── */
+.hud-chat-bubble {
+  position: relative;
+  padding: 14px 18px;
+  border-radius: 8px;
+  background: rgba(2, 16, 22, 0.6);
+  border: 1px solid var(--hud-cyan-dim);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+.light .hud-chat-bubble {
+  background: rgba(255, 255, 255, 0.85);
+}
+.hud-chat-bubble-user {
+  background: linear-gradient(180deg, rgba(94, 234, 212, 0.14), rgba(94, 234, 212, 0.05));
+}
+.light .hud-chat-bubble-user {
+  background: linear-gradient(180deg, rgba(20, 184, 166, 0.10), rgba(20, 184, 166, 0.04));
+}
+.hud-chat-bubble-assistant {
+  /* assistant inherits the base styling */
+}
+.hud-chat-bubble-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'Orbitron', 'Inter', monospace;
+  letter-spacing: 0.28em;
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--hud-cyan-bright);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.hud-chat-bubble-label::after {
+  content: '';
+  flex: 0 0 28px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--hud-cyan), transparent);
+  margin-left: 4px;
+}
+
+/* ── Particle globe stage ── */
+.particle-globe-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw !important;
+  height: 100vh !important;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Orbiting tool icons around the viewport-centered globe */
+.welcome-orbit-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.welcome-orbit-layer .tool-node { pointer-events: auto; }
+
+.tool-orbit-ring {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1px dashed var(--hud-cyan-dim);
+  opacity: 0.3;
+  animation: tool-orbit-spin 90s linear infinite;
+}
+.tool-orbit-ring.outer {
+  border-style: dotted;
+  opacity: 0.2;
+  animation-duration: 140s;
+  animation-direction: reverse;
+}
+@keyframes tool-orbit-spin {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+.tool-node {
+  position: absolute;
+  width: 54px;
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(2, 10, 16, 0.88);
+  border: 1px solid var(--hud-cyan-dim);
+  color: var(--hud-cyan);
+  cursor: pointer;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  transition: color 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
+  box-shadow:
+    0 0 12px rgba(94, 234, 212, 0.16),
+    inset 0 0 18px rgba(94, 234, 212, 0.06);
+}
+.light .tool-node {
+  background: rgba(255, 255, 255, 0.92);
+}
+.tool-node::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1px solid var(--hud-cyan-dim);
+  opacity: 0.5;
+}
+.tool-node:hover {
+  color: var(--hud-cyan-bright);
+  border-color: var(--hud-cyan);
+  background: rgba(2, 16, 22, 0.95);
+  z-index: 6;
+  box-shadow:
+    0 0 32px rgba(94, 234, 212, 0.55),
+    inset 0 0 22px rgba(94, 234, 212, 0.18);
+}
+.tool-node[data-active='true'] {
+  color: var(--hud-cyan-bright);
+  border-color: var(--hud-cyan);
+  box-shadow: 0 0 28px rgba(94, 234, 212, 0.5);
+}
+.tool-node-tip {
+  position: absolute;
+  font-family: 'Orbitron', 'Inter', monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.16em;
+  color: var(--hud-cyan-bright);
+  text-transform: uppercase;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  background: rgba(2, 14, 20, 0.92);
+  border: 1px solid var(--hud-cyan-dim);
+  border-radius: 6px;
+  padding: 5px 10px;
+  box-shadow: 0 0 18px -6px rgba(94, 234, 212, 0.5);
+  z-index: 5;
+}
+.tool-node-tip.right { left: calc(100% + 12px); top: 50%; transform: translateY(-50%); }
+.tool-node-tip.left { right: calc(100% + 12px); top: 50%; transform: translateY(-50%); }
+.tool-node-tip.top { bottom: calc(100% + 12px); left: 50%; transform: translateX(-50%); }
+.tool-node-tip.bottom { top: calc(100% + 12px); left: 50%; transform: translateX(-50%); }
+.tool-node:hover .tool-node-tip { opacity: 1; }
+.light .tool-node-tip { background: rgba(255, 255, 255, 0.95); color: #0a4f48; }
+
+/* ── Sidebar drawer (animated open / close) ── */
+.mira-sidebar {
+  transform: translateX(-110%);
+  opacity: 0;
+  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.32s ease;
+  pointer-events: none;
+  will-change: transform;
+}
+.mira-sidebar.open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Mini status text under the brand frame */
+.hud-status-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: 'Orbitron', 'Inter', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--hud-cyan-soft);
+}
+.hud-status-line .hud-divider {
+  width: 1px;
+  height: 12px;
+  background: var(--hud-cyan-dim);
+}
+
+/* HUD scroll area subtle vignette */
+.hud-scroll-area {
+  position: relative;
+}
+/* (vignette pseudo-elements removed — they created the distracting
+   horizontal shadow lines the user flagged.) */
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-orbit-ring,
+  .hud-chip-dot,
+  body.mira-hud-active::before { animation: none; }
+}
+
+/* HUD chat input pasted-attachment chips reuse glass-subtle but with cyan border */
+.hud-attachment-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+

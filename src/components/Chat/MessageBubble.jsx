@@ -800,58 +800,48 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
 
   return (
     <div className={`group flex gap-3 px-4 lg:px-0 ${isUser ? 'justify-end' : 'justify-start'} animate-fade-in`}>
-      {/* Assistant avatar */}
-      {!isUser && (
-        <div className="flex-shrink-0 mt-1">
-          <img src="/mira-logo.png" alt="MIRA" className="w-8 h-8 rounded-xl object-cover" />
-        </div>
-      )}
-
-      {/* Message body */}
-      <div className={`max-w-[85%] lg:max-w-[75%] ${isUser ? '' : 'flex-1 min-w-0'}`}>
-        <div
-          className={`rounded-2xl px-4 py-3 transition-all relative ${
-            isUser
-              ? ''
-              : 'glass-subtle'
-          }${searchingBubbleActive ? ' assistant-bubble-searching' : ''}`}
-          style={isUser ? { background: 'var(--user-bubble-bg)', color: 'var(--user-bubble-text)' } : { color: 'var(--text-primary)' }}
-        >
-          {message.image && message.image.length > 0 && (
-            <img src={message.image} alt="Generated" className="rounded-xl mb-3 max-w-full shadow-lg" />
-          )}
-
-          {/* Animated image generation placeholder — moving gradient blobs */}
-          {message.type === 'image_loading' && (
-            <div className="w-64 h-64 rounded-xl overflow-hidden relative" style={{ background: '#0a0a12' }}>
-              <div className="absolute w-40 h-40 rounded-full blur-2xl animate-[blobMove1_2s_ease-in-out_infinite_alternate]" style={{ background: 'rgba(139,92,246,0.6)', top: '-10%', left: '-10%' }} />
-              <div className="absolute w-36 h-36 rounded-full blur-2xl animate-[blobMove2_2.4s_ease-in-out_infinite_alternate]" style={{ background: 'rgba(236,72,153,0.5)', bottom: '-10%', right: '-10%' }} />
+      <div className={`${isUser ? 'max-w-[78%]' : 'max-w-[820px] min-w-0'}`}>
+        {isUser ? (
+          <div
+            className="hud-chat-bubble hud-chat-bubble-user"
+            style={{ color: 'var(--user-bubble-text)' }}
+          >
+            {message.content && (
+              <p className="whitespace-pre-wrap" style={{ lineHeight: 1.6 }}>{message.content}</p>
+            )}
+            {message.webPage && (
+              <WebPageCapsule page={message.webPage} />
+            )}
+            {message.attachments && message.attachments.length > 0 && (
+              <div className="space-y-1">
+                {message.attachments.map((att, idx) => (
+                  <AttachmentPreview key={idx} attachment={att} />
+                ))}
+              </div>
+            )}
+          </div>
+        ) : message.type === 'image_loading' ? (
+          <div className="hud-chat-bubble hud-chat-bubble-assistant">
+            <div className="hud-chat-bubble-label">MIRA · RENDERING</div>
+            <div className="w-64 h-64 rounded-md overflow-hidden relative" style={{ background: '#02080e' }}>
+              <div className="absolute w-40 h-40 rounded-full blur-2xl animate-[blobMove1_2s_ease-in-out_infinite_alternate]" style={{ background: 'rgba(94,234,212,0.55)', top: '-10%', left: '-10%' }} />
+              <div className="absolute w-36 h-36 rounded-full blur-2xl animate-[blobMove2_2.4s_ease-in-out_infinite_alternate]" style={{ background: 'rgba(34,211,238,0.5)', bottom: '-10%', right: '-10%' }} />
               <div className="absolute w-32 h-32 rounded-full blur-3xl animate-[blobMove3_1.8s_ease-in-out_infinite_alternate]" style={{ background: 'rgba(59,130,246,0.5)', top: '50%', left: '50%', transform: 'translate(-50%,-50%)' }} />
-              <div className="absolute w-28 h-28 rounded-full blur-2xl animate-[blobMove4_2.2s_ease-in-out_infinite_alternate]" style={{ background: 'rgba(168,85,247,0.4)', top: '20%', right: '10%' }} />
-              <div className="absolute w-24 h-24 rounded-full blur-xl animate-[blobMove5_1.6s_ease-in-out_infinite_alternate]" style={{ background: 'rgba(244,114,182,0.5)', bottom: '15%', left: '15%' }} />
+              <div className="absolute w-28 h-28 rounded-full blur-2xl animate-[blobMove4_2.2s_ease-in-out_infinite_alternate]" style={{ background: 'rgba(125,211,252,0.4)', top: '20%', right: '10%' }} />
+              <div className="absolute w-24 h-24 rounded-full blur-xl animate-[blobMove5_1.6s_ease-in-out_infinite_alternate]" style={{ background: 'rgba(94,234,212,0.5)', bottom: '15%', left: '15%' }} />
             </div>
-          )}
-
-          {message.type !== 'image_loading' && isUser ? (
-            <>
-              {message.content && (
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
-              )}
-              {message.webPage && (
-                <WebPageCapsule page={message.webPage} />
-              )}
-              {message.attachments && message.attachments.length > 0 && (
-                <div className="space-y-1">
-                  {message.attachments.map((att, idx) => (
-                    <AttachmentPreview key={idx} attachment={att} />
-                  ))}
-                </div>
-              )}
-            </>
-          ) : message.type !== 'image_loading' && !isUser ? (
-            <div className="prose prose-sm max-w-none prose-headings:font-bold prose-p:leading-relaxed prose-li:leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+          </div>
+        ) : (
+          <div className="hud-chat-bubble hud-chat-bubble-assistant">
+            <div className="hud-chat-bubble-label">
+              {searchingBubbleActive ? 'MIRA · SEARCHING' : message.isStreaming ? 'MIRA · THINKING' : 'MIRA'}
+            </div>
+            <div className="prose prose-base max-w-none prose-headings:font-bold prose-p:leading-relaxed prose-li:leading-relaxed" style={{ color: 'var(--text-primary)' }}>
               {message.thinkingContent && (
                 <ThinkingSection content={message.thinkingContent} isActive={message.isThinkingActive} />
+              )}
+              {message.image && message.image.length > 0 && (
+                <img src={message.image} alt="Generated" className="rounded-xl mb-3 max-w-full shadow-lg" />
               )}
               {imagePrompt ? (
                 <GeneratedImageCard prompt={imagePrompt} />
@@ -877,59 +867,59 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
                 isSearching ? <SearchingPlaceholder /> : <ThinkingPlaceholder />
               )}
             </div>
-          ) : null}
-        </div>
+          </div>
+        )}
 
         {/* Actions */}
         {isUser && message.content && (
-          <div className="flex items-center gap-1 mt-1.5 ml-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-            <button onClick={() => setShowEditModal(true)} className="p-1.5 rounded-lg transition-all hover:scale-110" style={{ color: 'var(--text-tertiary)' }} title="Edit and resend">
+          <div className="flex items-center gap-1 mt-1.5 mr-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 justify-end">
+            <button onClick={() => setShowEditModal(true)} className="p-1.5 rounded-md transition-all hover:scale-110" style={{ color: 'var(--hud-cyan-soft)' }} title="Edit and resend">
               <Pencil size={13} />
             </button>
-            <button onClick={handleRetry} className="p-1.5 rounded-lg transition-all hover:scale-110" style={{ color: 'var(--text-tertiary)' }} title="Retry">
+            <button onClick={handleRetry} className="p-1.5 rounded-md transition-all hover:scale-110" style={{ color: 'var(--hud-cyan-soft)' }} title="Retry">
               <RefreshCw size={13} />
             </button>
           </div>
         )}
         {!isUser && message.content && (
           <div className="flex items-center gap-1 mt-1.5 ml-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-            <button onClick={handleCopy} className="p-1.5 rounded-lg transition-all hover:scale-110" style={{ color: copied ? '#10b981' : 'var(--text-tertiary)' }} title="Copy">
+            <button onClick={handleCopy} className="p-1.5 rounded-md transition-all hover:scale-110" style={{ color: copied ? '#5eead4' : 'var(--hud-cyan-soft)' }} title="Copy">
               {copied ? <Check size={13} /> : <Copy size={13} />}
             </button>
-            <button onClick={handleSpeak} className="p-1.5 rounded-lg transition-all hover:scale-110" style={{ color: speaking ? 'var(--accent)' : 'var(--text-tertiary)', background: speaking ? 'var(--hover-bg)' : 'transparent' }} title="Read aloud">
+            <button onClick={handleSpeak} className="p-1.5 rounded-md transition-all hover:scale-110" style={{ color: speaking ? 'var(--hud-cyan-bright)' : 'var(--hud-cyan-soft)', background: speaking ? 'rgba(94,234,212,0.08)' : 'transparent' }} title="Read aloud">
               <Volume2 size={13} />
             </button>
             <div className="relative">
-              <button 
-                onClick={() => setShowExportMenu(!showExportMenu)} 
-                className="p-1.5 rounded-lg transition-all hover:scale-110" 
-                style={{ color: exporting ? 'var(--accent)' : 'var(--text-tertiary)' }} 
+              <button
+                onClick={() => setShowExportMenu(!showExportMenu)}
+                className="p-1.5 rounded-md transition-all hover:scale-110"
+                style={{ color: exporting ? 'var(--hud-cyan-bright)' : 'var(--hud-cyan-soft)' }}
                 title="Export"
                 disabled={exporting}
               >
                 <Download size={13} />
               </button>
               {showExportMenu && (
-                <div 
-                  className="absolute left-0 top-full mt-1 py-1 rounded-lg shadow-lg z-50 min-w-[100px]" 
-                  style={{ background: 'var(--glass-bg)', border: '1px solid var(--border)' }}
+                <div
+                  className="absolute left-0 top-full mt-1 py-1 rounded-md shadow-lg z-50 min-w-[100px]"
+                  style={{ background: 'var(--hud-bg)', border: '1px solid var(--hud-cyan-dim)' }}
                 >
-                  <button 
-                    onClick={() => handleExport('pdf')} 
+                  <button
+                    onClick={() => handleExport('pdf')}
                     className="w-full px-3 py-1.5 text-left text-xs hover:opacity-80 transition-opacity"
                     style={{ color: 'var(--text-primary)' }}
                   >
                     PDF
                   </button>
-                  <button 
-                    onClick={() => handleExport('docx')} 
+                  <button
+                    onClick={() => handleExport('docx')}
                     className="w-full px-3 py-1.5 text-left text-xs hover:opacity-80 transition-opacity"
                     style={{ color: 'var(--text-primary)' }}
                   >
                     DOCX
                   </button>
-                  <button 
-                    onClick={() => handleExport('pptx')} 
+                  <button
+                    onClick={() => handleExport('pptx')}
                     className="w-full px-3 py-1.5 text-left text-xs hover:opacity-80 transition-opacity"
                     style={{ color: 'var(--text-primary)' }}
                   >

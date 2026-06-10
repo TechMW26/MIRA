@@ -12,7 +12,7 @@ export function ChatProvider({ children }) {
   const [currentConversationId, setCurrentConversationId] = useState(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState(null);
   // Tracks which projects have been PIN-unlocked this session

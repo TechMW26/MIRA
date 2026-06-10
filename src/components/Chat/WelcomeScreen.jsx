@@ -1,6 +1,12 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
-import { Sparkles, Code2, Lightbulb, MessageCircle, Eye, Bug, PenLine, Calculator, Database, FlaskConical, FileText, BarChart3, Globe, Palette, Shield, Send, X, Paperclip, Camera, RefreshCw, Image as ImageIcon, FileCode, File as FileIcon } from 'lucide-react';
+import {
+  Code2, Lightbulb, MessageCircle, Eye, Bug, PenLine, Calculator, Database, FlaskConical, FileText,
+  BarChart3, Globe, Palette, Shield, Send, X, Paperclip, Camera, RefreshCw,
+  Image as ImageIcon, FileCode, File as FileIcon,
+  Mail, Folder, Mic, AudioLines, Wrench, MessageSquare,
+} from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
+import ParticleGlobe from './ParticleGlobe';
 
 const ATTACH_ACCEPT = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic';
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'heic']);
@@ -283,15 +289,6 @@ const TEMPLATE_POOL = [
   },
 ];
 
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
 function TemplateForm({ template, onSubmit, onClose }) {
   const [values, setValues] = useState(() =>
     Object.fromEntries(template.inputs.map((inp) => [inp.key, '']))
@@ -474,7 +471,26 @@ function TemplateForm({ template, onSubmit, onClose }) {
 export default function WelcomeScreen({ onSend }) {
   const [selectedTemplate, setSelectedTemplate] = useState(null);
 
-  const visibleTemplates = useMemo(() => shuffle(TEMPLATE_POOL).slice(0, 6), []);
+  // Fixed orbit lineup matching the reference HUD mockup. Each entry pairs
+  // the visual icon shown on the ring with the prompt template it opens.
+  const orbitTools = useMemo(() => {
+    const byLabel = (label) => TEMPLATE_POOL.find((t) => t.label === label);
+    const lineup = [
+      { icon: Lightbulb,      template: byLabel('Explain a concept') },
+      { icon: Code2,          template: byLabel('Write a React component') },
+      { icon: Database,       template: byLabel('Design a database schema') },
+      { icon: Mail,           template: byLabel('Write a professional email') },
+      { icon: Wrench,         template: byLabel('Debug my code') },
+      { icon: AudioLines,     template: byLabel('Solve a math problem') },
+      { icon: Folder,         template: byLabel('Summarize content') },
+      { icon: Globe,          template: byLabel('Write an API endpoint') },
+      { icon: MessageSquare,  template: byLabel('Write a blog post') },
+      { icon: Shield,         template: byLabel('Security code review') },
+    ];
+    return lineup
+      .filter((item) => item.template)
+      .map((item) => ({ ...item.template, icon: item.icon }));
+  }, []);
 
   const handleTemplateSubmit = (prompt, attachments = []) => {
     setSelectedTemplate(null);
@@ -482,7 +498,11 @@ export default function WelcomeScreen({ onSend }) {
   };
 
   return (
-    <div className="flex flex-col items-center justify-center h-full px-4 py-10 animate-fade-in">
+    <>
+      {/* Full-viewport particle field so the globe + its outer particles span
+          the whole screen and never clip against a tight canvas edge. */}
+      <ParticleGlobe />
+
       {/* Template form modal */}
       {selectedTemplate && (
         <TemplateForm
@@ -492,31 +512,73 @@ export default function WelcomeScreen({ onSend }) {
         />
       )}
 
-      {/* Section label */}
-      <p className="text-xs font-medium tracking-widest uppercase mb-6" style={{ color: 'var(--text-tertiary)' }}>
-        Quick start
-      </p>
+      <ToolOrbit tools={orbitTools} onSelect={setSelectedTemplate} />
+    </>
+  );
+}
 
-      {/* Suggestion cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 w-full max-w-2xl">
-        {visibleTemplates.map((t, i) => (
+/**
+ * ToolOrbit — tool icons placed on a ring around the viewport-centered globe.
+ * Rendered as a fixed full-viewport layer so the icons line up with the
+ * full-screen particle canvas and always have room (never get clipped).
+ */
+function ToolOrbit({ tools, onSelect }) {
+  const [vp, setVp] = useState(() => ({
+    w: typeof window !== 'undefined' ? window.innerWidth : 1280,
+    h: typeof window !== 'undefined' ? window.innerHeight : 800,
+  }));
+
+  useEffect(() => {
+    const onResize = () => setVp({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const centerX = vp.w / 2;
+  const centerY = vp.h / 2;
+  const vmin = Math.min(vp.w, vp.h);
+  // Orbit sits ~1.6x the sphere radius so the icons hug the globe closely
+  // while still clearing its corona glow.
+  // Keep the ring outside the sphere but capped so the top/bottom icons stay
+  // clear of the floating header and composer bars.
+  const orbitRadius = Math.max(120, Math.min(vmin * 0.26, vp.h / 2 - 130));
+  const ringD = orbitRadius * 2;
+
+  return (
+    <div className="welcome-orbit-layer">
+      <div
+        className="tool-orbit-ring outer"
+        style={{ left: centerX, top: centerY, width: ringD * 1.08, height: ringD * 1.08 }}
+      />
+      <div
+        className="tool-orbit-ring"
+        style={{ left: centerX, top: centerY, width: ringD, height: ringD }}
+      />
+
+      {tools.map((tool, idx) => {
+        const angle = (-Math.PI / 2) + ((Math.PI * 2) / tools.length) * idx;
+        const dx = Math.cos(angle);
+        const dy = Math.sin(angle);
+        const x = centerX + dx * orbitRadius;
+        const y = centerY + dy * orbitRadius;
+        // Place the label on the "empty" outward side of each icon.
+        const placement =
+          Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'bottom' : 'top');
+        const Icon = tool.icon;
+        return (
           <button
-            key={i}
-            onClick={() => setSelectedTemplate(t)}
-            className="group glass-subtle rounded-2xl p-4 text-left transition-all duration-300 hover:shadow-sm"
-            style={{ animationDelay: `${i * 0.06}s` }}
+            key={tool.label}
+            type="button"
+            onClick={() => onSelect(tool)}
+            className="tool-node"
+            style={{ left: `${x}px`, top: `${y}px` }}
+            title={tool.label}
           >
-            <div className={`w-9 h-9 rounded-xl ${t.color} flex items-center justify-center mb-3 transition-transform duration-300 group-hover:scale-110`}>
-              <t.icon size={16} className="text-white" />
-            </div>
-            <span className="text-sm leading-snug" style={{ color: 'var(--text-secondary)' }}>
-              {t.label}
-            </span>
+            <Icon size={22} strokeWidth={1.5} />
+            <span className={`tool-node-tip ${placement}`}>{tool.label}</span>
           </button>
-        ))}
-      </div>
-
-      {/* Footer */}
+        );
+      })}
     </div>
   );
 }

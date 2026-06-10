@@ -10,8 +10,8 @@ function ProtectedRoute({ children }) {
     return (
       <div className="flex items-center justify-center h-screen" style={{ background: 'var(--bg-primary)' }}>
         <div className="flex flex-col items-center gap-4">
-          <div className="w-10 h-10 border-4 border-violet-500 border-t-transparent rounded-full animate-spin" />
-          <span className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Loading MIRA...</span>
+          <div className="w-10 h-10 border-4 rounded-full animate-spin" style={{ borderColor: 'var(--hud-cyan-dim)', borderTopColor: 'transparent' }} />
+          <span className="text-xs tracking-[0.3em] uppercase" style={{ color: 'var(--hud-cyan-soft)' }}>Initializing MIRA…</span>
         </div>
       </div>
     );
