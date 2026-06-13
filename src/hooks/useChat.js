@@ -18,6 +18,10 @@ import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 const HISTORY_ATTACHMENT_CHAR_LIMIT = 16000;
+const MAX_HISTORY_MESSAGES_FOR_MODEL = 24;
+const MAX_HISTORY_CHARS_FOR_MODEL = 18000;
+const MAX_GREETING_HISTORY_MESSAGES = 6;
+const MAX_GREETING_HISTORY_CHARS = 4000;
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN:\s*([\s\S]*?)\]/i;
 const MEDIA_REQUEST_PATTERN = /\b(video|videos|clip|clips|media|reel|reels|youtube|instagram|social\s+posts?)\b|\b(show|find|fetch|get|search|check|look\s+up|more)\b[^.!?]{0,40}\b(images|photos|pictures)\b|\b(images|photos|pictures)\b[^.!?]{0,40}\b(show|find|fetch|get|search|check|look\s+up|more)\b/i;
 const VISUAL_WEB_REQUEST_PATTERN = /\b(who|what|which|identify|recognize|verify|match|search|check|look\s+up|find\s+out)\b[^.!?]{0,80}\b(image|photo|picture|person|device|product|object|item|thing|prototype|machine|system|this|that|it)\b|\b(image|photo|picture|person|device|product|object|item|thing|prototype|machine|system|this|that|it)\b[^.!?]{0,80}\b(who|what|which|identify|recognize|verify|match|search|check|look\s+up|find\s+out)\b/i;
@@ -28,6 +32,7 @@ const CONTEXTUAL_DEVICE_MEDIA_PATTERN = /\b(this|that|the)\s+(device|product|too
 const CONTEXT_REFERENCE_PATTERN = /\b(it|its|this|that|these|those|they|them|the\s+(device|product|tool|item|object|thing|company|brand|manufacturer|maker|producer|person|model|app|software|platform|service|system|prototype|machine))\b/i;
 const CONTEXTUAL_WEB_RESEARCH_PATTERN = /\b(company|companies|manufacturer|manufactures?|producer|produces?|producing|maker|made\s+by|built\s+by|created\s+by|developed\s+by|owner|owned\s+by|founder|team|organization|brand|official|website|source|origin|specs?|features?|pricing|price|cost|availability|launch|release|details?|in[-\s]?depth|deep\s+dive|full\s+information|complete\s+information|let\s+me\s+know|tell\s+me\s+more|more\s+about|background|research|explain)\b/i;
 const SHORT_CONTEXT_FOLLOWUP_PATTERN = /\b(are\s+you\s+sure|sure\s+about\s+that|really|seriously|wait|why\??|how\s+so|what\s+do\s+you\s+mean|continue|go\s+on|tell\s+me\s+more|more|elaborate|explain\s+that)\b/i;
+const SIMPLE_GREETING_PATTERN = /^\s*(?:hi|hello|hey|hey there|hello there|yo|sup|good\s+(?:morning|afternoon|evening))(?:[!.?\s]+)?$/i;
 const CONTEXT_ENTITY_STOP = new Set(['I', 'The', 'A', 'An', 'It', 'This', 'That', 'These', 'Those', 'You', 'He', 'She', 'We', 'They', 'My', 'Your', 'MIRA', 'AI', 'PDF', 'DOCX', 'PPTX']);
 const TEXT_ENTITY_RESEARCH_PATTERN = /\b(tell\s+me\s+about|tell\s+me\s+more\s+about|details?\s+about|information\s+about|info\s+about|background\s+on|research|explain|what\s+is|what's|overview\s+of|in\s+detail|deep\s+dive)\b/i;
 
@@ -528,6 +533,42 @@ function needsRecentConversationContext(text = '', historySource = []) {
   return wordCount <= 5 && /[?!]$/.test(value) && !/^\s*(hi|hello|hey|thanks|thank\s+you)\b/i.test(value);
 }
 
+function isSimpleGreeting(text = '') {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!value) return false;
+  const wordCount = value.split(/\s+/).filter(Boolean).length;
+  return wordCount <= 6 && SIMPLE_GREETING_PATTERN.test(value);
+}
+
+function buildModelHistory(historySource = [], promptInterpretation = {}, { isGreeting = false } = {}) {
+  const recent = Array.isArray(historySource) ? historySource.slice() : [];
+  const maxMessages = isGreeting ? MAX_GREETING_HISTORY_MESSAGES : MAX_HISTORY_MESSAGES_FOR_MODEL;
+  const maxChars = isGreeting ? MAX_GREETING_HISTORY_CHARS : MAX_HISTORY_CHARS_FOR_MODEL;
+  const selected = [];
+  let totalChars = 0;
+
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    const message = recent[index];
+    let msgContent = formatHistoryMessageForModel(message, promptInterpretation);
+    if (message.role === 'user' && message.attachments?.length) {
+      const fileAttachments = message.attachments.filter(a => !a.isImage && (a.parsedText || a.parseError));
+      if (fileAttachments.length) {
+        const injected = buildAttachmentPrompt(fileAttachments, HISTORY_ATTACHMENT_CHAR_LIMIT);
+        msgContent = `${msgContent}\n\n[Previously attached file(s) — still in context]:\n\n${injected}`;
+      }
+    }
+
+    if (!msgContent.trim()) continue;
+    const nextChars = totalChars + msgContent.length;
+    if (selected.length >= maxMessages || (selected.length > 0 && nextChars > maxChars)) break;
+
+    selected.push({ role: message.role, content: msgContent });
+    totalChars = nextChars;
+  }
+
+  return selected.reverse();
+}
+
 export default function useChat() {
   const { user } = useAuth();
   const {
@@ -658,6 +699,7 @@ export default function useChat() {
       const promptInterpretation = engineResult.interpretation || { route: engineResult.classification.intent, codeIntent: engineResult.classification.intent === 'code', imageIntent: engineResult.classification.intent === 'image' };
       const chosenModel = engineResult.model;
       const wantsImageGeneration = promptInterpretation.imageIntent === true;
+      const simpleGreeting = !hasImages && attachments.length === 0 && !replaceMessageId && isSimpleGreeting(content);
       const requestedDocumentFormat = wantsImageGeneration
         ? null
         : detectDocumentRequest(content, textAttachments.length > 0);
@@ -732,17 +774,7 @@ Place every image and every mermaid block on its own line with a blank line abov
           historySource = await pruneMessagesAfter(convId, replaceMessageId, historySource);
         }
 
-        const history = historySource.map((m) => {
-          let msgContent = formatHistoryMessageForModel(m, promptInterpretation);
-          if (m.role === 'user' && m.attachments?.length) {
-            const fileAttachments = m.attachments.filter(a => !a.isImage && (a.parsedText || a.parseError));
-            if (fileAttachments.length) {
-              const injected = buildAttachmentPrompt(fileAttachments, HISTORY_ATTACHMENT_CHAR_LIMIT);
-              msgContent = `${msgContent}\n\n[Previously attached file(s) — still in context]:\n\n${injected}`;
-            }
-          }
-          return { role: m.role, content: msgContent };
-        });
+        const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: simpleGreeting });
 
         if (replaceMessageId) {
           await updateMessage(convId, replaceMessageId, {
@@ -798,7 +830,7 @@ Place every image and every mermaid block on its own line with a blank line abov
           // person/product/object/device. The image analysis becomes the search
           // anchor, then the final answer uses live sources instead of stopping
           // at a vision-only guess.
-          const effectiveWebSearch = webSearch || engineResult.needsSearch || shouldUseVisualAnchor || shouldUseContextualSearch || Boolean(textResearchMediaScope);
+          const effectiveWebSearch = !simpleGreeting && (webSearch || engineResult.needsSearch || shouldUseVisualAnchor || shouldUseContextualSearch || Boolean(textResearchMediaScope));
           let visualSearchAnchor = '';
 
           // Build a context-aware search query. Short follow-up questions like

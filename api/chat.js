@@ -2,14 +2,15 @@ export const config = { maxDuration: 60 };
 
 const SALAD_API_URL = process.env.SALAD_API_URL || process.env.API_URL;
 const SALAD_API_KEY = process.env.SALAD_API_KEY || process.env.API_KEY;
-const SALAD_MODEL = process.env.SALAD_MODEL || 'llama3.2-vision';
+const SALAD_MODEL = process.env.SALAD_MODEL || 'llama3.2';
+const SALAD_VISION_MODEL = process.env.SALAD_VISION_MODEL || 'llama3.2-vision';
 const SALAD_MAX_TOKENS = Number(process.env.SALAD_MAX_TOKENS || 2048);
 const SALAD_TIMEOUT_MS = Number(process.env.SALAD_TIMEOUT_MS || 55000);
 
 // Hard caps to prevent DoS / runaway requests.
 const MAX_BODY_BYTES = 5 * 1024 * 1024;        // 5 MB request body
-const MAX_MESSAGES = 200;                       // history depth
-const MAX_TEXT_CONTENT_CHARS = 200_000;         // total chars across a single message
+const MAX_MESSAGES = 40;                        // history depth
+const MAX_TEXT_CONTENT_CHARS = 24_000;          // total chars across a single message
 const MAX_IMAGES = 6;
 const MAX_TOKENS_CAP = 8192;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
@@ -110,25 +111,29 @@ export async function POST(req) {
     // model requested by the client.
     const hasImages = messages.some((m) => Array.isArray(m.images) && m.images.length > 0);
     const requestedModel = typeof body.model === 'string' ? body.model : SALAD_MODEL;
-    const effectiveModel = hasImages ? 'llama3.2-vision' : requestedModel;
+    const effectiveModel = hasImages ? SALAD_VISION_MODEL : requestedModel;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), SALAD_TIMEOUT_MS);
-    const upstream = await fetch(SALAD_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Salad-Api-Key': SALAD_API_KEY,
-      },
-      body: JSON.stringify({
-        model: effectiveModel,
-        messages,
-        stream: body.stream !== false,
-        max_tokens: safeMax,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+    let upstream;
+    try {
+      upstream = await fetch(SALAD_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Salad-Api-Key': SALAD_API_KEY,
+        },
+        body: JSON.stringify({
+          model: effectiveModel,
+          messages,
+          stream: body.stream !== false,
+          max_tokens: safeMax,
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!upstream.ok) {
       const errorText = await upstream.text().catch(() => '');

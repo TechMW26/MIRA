@@ -175,8 +175,7 @@ export function interpretUserPrompt(text = '', hasImages = false) {
 function pickModel({ intent, complexity }, hasImages) {
   void intent;
   void complexity;
-  void hasImages;
-  return 'llama3.2-vision';
+  return hasImages ? 'llama3.2-vision' : 'llama3.2';
 }
 
 // ── Prompt enhancement ─────────────────────────────────────────

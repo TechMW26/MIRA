@@ -563,12 +563,13 @@ async function readChatResponse(response, onChunk) {
   return full;
 }
 
-async function requestChat({ messages, images = [], systemPrompt = SYSTEM_PROMPT, maxTokens, onChunk }) {
+async function requestChat({ messages, model, images = [], systemPrompt = SYSTEM_PROMPT, maxTokens, onChunk }) {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       messages,
+      ...(model ? { model } : {}),
       systemPrompt,
       images,
       stream: true,
@@ -584,16 +585,17 @@ async function requestChat({ messages, images = [], systemPrompt = SYSTEM_PROMPT
   return readChatResponse(response, onChunk);
 }
 
-export async function runChatCompletion({ messages, images = [], systemPrompt = SYSTEM_PROMPT, maxTokens } = {}) {
-  const result = await requestChat({ messages, images, systemPrompt, maxTokens });
+export async function runChatCompletion({ messages, model, images = [], systemPrompt = SYSTEM_PROMPT, maxTokens } = {}) {
+  const result = await requestChat({ messages, model, images, systemPrompt, maxTokens });
   if (!result) throw new Error('No result in response');
   return { result };
 }
 
-export async function sendChatMessage(messages, _model, onChunk, images = [], systemPrompt = SYSTEM_PROMPT, { onThinking } = {}) {
+export async function sendChatMessage(messages, model, onChunk, images = [], systemPrompt = SYSTEM_PROMPT, { onThinking } = {}) {
   void onThinking;
   const fullText = await requestChat({
     messages,
+    model,
     images,
     systemPrompt,
     onChunk: (_delta, accumulated) => onChunk?.(accumulated, accumulated),
