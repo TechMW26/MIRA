@@ -15,6 +15,47 @@ const MAX_IMAGES = 6;
 const MAX_TOKENS_CAP = 8192;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
 
+function candidateChatUrls(rawUrl = '') {
+  const value = String(rawUrl || '').trim();
+  if (!value) return [];
+
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return [value];
+  }
+
+  const cleanPath = parsed.pathname.replace(/\/+$/, '');
+  const hasExplicitChatPath = /chat\/completions/i.test(cleanPath);
+  const looksLikeRoot = cleanPath === '' || cleanPath === '/';
+
+  const urls = [parsed.toString()];
+  if (!hasExplicitChatPath) {
+    urls.push(new URL('/api/v1/chat/completions', parsed.origin).toString());
+    urls.push(new URL('/v1/chat/completions', parsed.origin).toString());
+    if (looksLikeRoot) {
+      urls.push(new URL('/chat/completions', parsed.origin).toString());
+    } else if (/\/api\/v1$/i.test(cleanPath)) {
+      urls.push(new URL('/api/v1/chat/completions', parsed.origin).toString());
+    } else if (/\/v1$/i.test(cleanPath)) {
+      urls.push(new URL('/v1/chat/completions', parsed.origin).toString());
+    }
+  }
+
+  return [...new Set(urls)];
+}
+
+async function fetchChatUpstream(urls, init) {
+  let lastResponse = null;
+  for (let index = 0; index < urls.length; index += 1) {
+    const response = await fetch(urls[index], init);
+    if (response.ok || response.status !== 404 || index === urls.length - 1) return response;
+    lastResponse = response;
+  }
+  return lastResponse;
+}
+
 function imageToDataUrl(image) {
   // Kept for potential future OpenAI-style multimodal use; not used by the
   // Ollama vision path below.
@@ -115,9 +156,10 @@ export async function POST(req) {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), SALAD_TIMEOUT_MS);
+    const chatUrls = candidateChatUrls(SALAD_API_URL);
     let upstream;
     try {
-      upstream = await fetch(SALAD_API_URL, {
+      upstream = await fetchChatUpstream(chatUrls, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

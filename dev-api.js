@@ -166,9 +166,51 @@ function buildResultAnchoredImageQuery(results = [], anchorScope = null, fallbac
 // === Salad chat configuration ===
 const SALAD_API_URL = process.env.SALAD_API_URL || process.env.API_URL;
 const SALAD_API_KEY = process.env.SALAD_API_KEY || process.env.API_KEY;
-const SALAD_MODEL = process.env.SALAD_MODEL || 'llama3.2-vision';
+const SALAD_MODEL = process.env.SALAD_MODEL || 'llama3.2';
+const SALAD_VISION_MODEL = process.env.SALAD_VISION_MODEL || 'llama3.2-vision';
 const SALAD_MAX_TOKENS = Number(process.env.SALAD_MAX_TOKENS || 2048);
 const SALAD_TIMEOUT_MS = Number(process.env.SALAD_TIMEOUT_MS || 55000);
+
+function candidateChatUrls(rawUrl = '') {
+  const value = String(rawUrl || '').trim();
+  if (!value) return [];
+
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return [value];
+  }
+
+  const cleanPath = parsed.pathname.replace(/\/+$/, '');
+  const hasExplicitChatPath = /chat\/completions/i.test(cleanPath);
+  const looksLikeRoot = cleanPath === '' || cleanPath === '/';
+
+  const urls = [parsed.toString()];
+  if (!hasExplicitChatPath) {
+    urls.push(new URL('/api/v1/chat/completions', parsed.origin).toString());
+    urls.push(new URL('/v1/chat/completions', parsed.origin).toString());
+    if (looksLikeRoot) {
+      urls.push(new URL('/chat/completions', parsed.origin).toString());
+    } else if (/\/api\/v1$/i.test(cleanPath)) {
+      urls.push(new URL('/api/v1/chat/completions', parsed.origin).toString());
+    } else if (/\/v1$/i.test(cleanPath)) {
+      urls.push(new URL('/v1/chat/completions', parsed.origin).toString());
+    }
+  }
+
+  return [...new Set(urls)];
+}
+
+async function fetchChatUpstream(urls, init) {
+  let lastResponse = null;
+  for (let index = 0; index < urls.length; index += 1) {
+    const response = await fetch(urls[index], init);
+    if (response.ok || response.status !== 404 || index === urls.length - 1) return response;
+    lastResponse = response;
+  }
+  return lastResponse;
+}
 
 function imageToDataUrl(image) {
   const raw = image?.base64 || image?.data || image?.url || '';
@@ -252,12 +294,13 @@ async function handleChat(body, res) {
 
   const hasImages = messages.some((m) => Array.isArray(m.images) && m.images.length > 0);
   const requestedModel = payload.model || SALAD_MODEL;
-  const effectiveModel = hasImages ? 'llama3.2-vision' : requestedModel;
+  const effectiveModel = hasImages ? SALAD_VISION_MODEL : requestedModel;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SALAD_TIMEOUT_MS);
   try {
-    const upstream = await fetch(SALAD_API_URL, {
+    const chatUrls = candidateChatUrls(SALAD_API_URL);
+    const upstream = await fetchChatUpstream(chatUrls, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -271,7 +314,6 @@ async function handleChat(body, res) {
       }),
       signal: controller.signal,
     });
-    clearTimeout(timeout);
 
     if (!upstream.ok) {
       const errorText = await upstream.text().catch(() => '');
@@ -287,10 +329,11 @@ async function handleChat(body, res) {
     });
     await writeUpstreamBody(upstream, res);
   } catch (err) {
-    clearTimeout(timeout);
     const message = err.name === 'AbortError' ? `Salad API timeout after ${SALAD_TIMEOUT_MS}ms` : err.message;
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: message }));
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
