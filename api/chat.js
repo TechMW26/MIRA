@@ -6,6 +6,10 @@ const SALAD_MODEL = process.env.SALAD_MODEL || 'llama3.2';
 const SALAD_VISION_MODEL = process.env.SALAD_VISION_MODEL || 'llama3.2-vision';
 const SALAD_MAX_TOKENS = Number(process.env.SALAD_MAX_TOKENS || 2048);
 const SALAD_TIMEOUT_MS = Number(process.env.SALAD_TIMEOUT_MS || 55000);
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+const GROQ_API_URL = process.env.GROQ_API_URL || 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
+const FALLBACK_TIMEOUT_MS = Number(process.env.FALLBACK_TIMEOUT_MS || 25000);
 
 // Hard caps to prevent DoS / runaway requests.
 const MAX_BODY_BYTES = 5 * 1024 * 1024;        // 5 MB request body
@@ -14,6 +18,23 @@ const MAX_TEXT_CONTENT_CHARS = 24_000;          // total chars across a single m
 const MAX_IMAGES = 6;
 const MAX_TOKENS_CAP = 8192;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
+
+function splitKeys(value = '') {
+  return String(value || '')
+    .split(/[\n,]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+const GEMINI_API_KEYS = [...new Set([
+  process.env.GEMINI_API_KEY,
+  ...splitKeys(process.env.GEMINI_API_KEYS),
+])].filter(Boolean);
+
+const GROQ_API_KEYS = [...new Set([
+  process.env.GROQ_API_KEY,
+  ...splitKeys(process.env.GROQ_API_KEYS),
+])].filter(Boolean);
 
 function candidateChatUrls(rawUrl = '') {
   const value = String(rawUrl || '').trim();
@@ -54,6 +75,113 @@ async function fetchChatUpstream(urls, init) {
     lastResponse = response;
   }
   return lastResponse;
+}
+
+function getEndpoint404Guidance(chatUrls = []) {
+  const tried = Array.isArray(chatUrls) && chatUrls.length
+    ? ` Tried: ${chatUrls.join(', ')}`
+    : '';
+  return `Chat upstream endpoint not found (404). Verify SALAD_API_URL in .env from Salad portal (do not use local-style paths like /api/chat).${tried}`;
+}
+
+function withTimeoutController(timeoutMs = FALLBACK_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    signal: controller.signal,
+    done: () => clearTimeout(timer),
+  };
+}
+
+function toFallbackPrompt(messages = []) {
+  return (Array.isArray(messages) ? messages : [])
+    .map((message) => {
+      const role = String(message?.role || 'user').toUpperCase();
+      const content = typeof message?.content === 'string' ? message.content : String(message?.content || '');
+      return `${role}: ${content}`;
+    })
+    .join('\n\n')
+    .trim();
+}
+
+function extractGeminiText(payload) {
+  const parts = payload?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return '';
+  return parts.map((part) => String(part?.text || '')).join('').trim();
+}
+
+async function tryGeminiFallback(messages, maxTokens) {
+  if (!GEMINI_API_KEYS.length) return null;
+  const prompt = toFallbackPrompt(messages);
+  if (!prompt) return null;
+
+  for (const key of GEMINI_API_KEYS) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(key)}`;
+    const timeout = withTimeoutController();
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: Math.min(maxTokens || 1024, 2048) },
+        }),
+        signal: timeout.signal,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) continue;
+      const text = extractGeminiText(payload);
+      if (text) return { provider: `gemini:${GEMINI_MODEL}`, text };
+    } catch {
+      // Try the next key.
+    } finally {
+      timeout.done();
+    }
+  }
+  return null;
+}
+
+async function tryGroqFallback(messages, maxTokens) {
+  if (!GROQ_API_KEYS.length) return null;
+  const safeMessages = (Array.isArray(messages) ? messages : [])
+    .filter((message) => ALLOWED_ROLES.has(message?.role))
+    .map((message) => ({ role: message.role, content: typeof message.content === 'string' ? message.content : String(message.content || '') }));
+  if (!safeMessages.length) return null;
+
+  for (const key of GROQ_API_KEYS) {
+    const timeout = withTimeoutController();
+    try {
+      const response = await fetch(GROQ_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          model: GROQ_MODEL,
+          messages: safeMessages,
+          stream: false,
+          max_tokens: Math.min(maxTokens || 1024, 4096),
+        }),
+        signal: timeout.signal,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) continue;
+      const text = String(payload?.choices?.[0]?.message?.content || '').trim();
+      if (text) return { provider: `groq:${GROQ_MODEL}`, text };
+    } catch {
+      // Try the next key.
+    } finally {
+      timeout.done();
+    }
+  }
+  return null;
+}
+
+async function tryProviderFallbacks(messages, maxTokens) {
+  const gemini = await tryGeminiFallback(messages, maxTokens);
+  if (gemini) return gemini;
+  return tryGroqFallback(messages, maxTokens);
 }
 
 function imageToDataUrl(image) {
@@ -125,10 +253,6 @@ function jsonResponse(payload, status = 200) {
 }
 
 export async function POST(req) {
-  if (!SALAD_API_URL || !SALAD_API_KEY) {
-    return jsonResponse({ error: 'Salad API URL or key is not configured.' }, 500);
-  }
-
   try {
     // Enforce request body size cap.
     const lengthHeader = Number(req.headers.get?.('content-length') || 0);
@@ -153,6 +277,14 @@ export async function POST(req) {
     const hasImages = messages.some((m) => Array.isArray(m.images) && m.images.length > 0);
     const requestedModel = typeof body.model === 'string' ? body.model : SALAD_MODEL;
     const effectiveModel = hasImages ? SALAD_VISION_MODEL : requestedModel;
+
+    if (!SALAD_API_URL || !SALAD_API_KEY) {
+      const fallback = await tryProviderFallbacks(messages, safeMax);
+      if (fallback?.text) {
+        return jsonResponse({ result: fallback.text, provider: fallback.provider }, 200);
+      }
+      return jsonResponse({ error: 'Salad API URL or key is not configured, and no fallback provider succeeded.' }, 500);
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), SALAD_TIMEOUT_MS);
@@ -181,6 +313,13 @@ export async function POST(req) {
       const errorText = await upstream.text().catch(() => '');
       // Don't leak upstream provider error verbatim; log it and return a generic message.
       console.error('Upstream chat error:', upstream.status, errorText?.slice(0, 500));
+      const fallback = await tryProviderFallbacks(messages, safeMax);
+      if (fallback?.text) {
+        return jsonResponse({ result: fallback.text, provider: fallback.provider }, 200);
+      }
+      if (upstream.status === 404) {
+        return jsonResponse({ error: getEndpoint404Guidance(chatUrls) }, 502);
+      }
       return jsonResponse({ error: `Chat upstream error (${upstream.status}).` }, upstream.status);
     }
 
@@ -193,8 +332,22 @@ export async function POST(req) {
       },
     });
   } catch (err) {
-    const message = err.name === 'AbortError' ? 'Chat request timed out.' : 'Chat request failed.';
     console.error('Chat API error:', err?.message);
+    try {
+      const body = await req.clone().json().catch(() => ({}));
+      const imageList = Array.isArray(body.images) ? body.images.slice(0, MAX_IMAGES) : [];
+      const baseMessages = normalizeMessages(body.messages, body.systemPrompt);
+      const messages = attachImagesToLastUserMessage(baseMessages, imageList);
+      const requestedMax = Number(body.max_tokens) || SALAD_MAX_TOKENS;
+      const safeMax = Math.max(1, Math.min(requestedMax, MAX_TOKENS_CAP));
+      const fallback = await tryProviderFallbacks(messages, safeMax);
+      if (fallback?.text) {
+        return jsonResponse({ result: fallback.text, provider: fallback.provider }, 200);
+      }
+    } catch {
+      // Ignore fallback parse failure.
+    }
+    const message = err.name === 'AbortError' ? 'Chat request timed out.' : 'Chat request failed.';
     return jsonResponse({ error: message }, 500);
   }
 }
