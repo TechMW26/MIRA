@@ -528,12 +528,47 @@ export function extractChatText(payload) {
   return '';
 }
 
+function extractThinkingText(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+
+  const candidates = [
+    payload.thinking,
+    payload.reasoning,
+    payload.reasoning_content,
+    payload.message?.thinking,
+    payload.message?.reasoning,
+    payload.message?.reasoning_content,
+    payload.delta?.thinking,
+    payload.delta?.reasoning,
+    payload.delta?.reasoning_content,
+    payload.choices?.[0]?.delta?.thinking,
+    payload.choices?.[0]?.delta?.reasoning,
+    payload.choices?.[0]?.delta?.reasoning_content,
+    payload.choices?.[0]?.message?.thinking,
+    payload.choices?.[0]?.message?.reasoning,
+    payload.choices?.[0]?.message?.reasoning_content,
+  ];
+
+  for (const candidate of candidates) {
+    const text = contentToText(candidate);
+    if (text) return text;
+  }
+  return '';
+}
+
 function parseStreamData(data) {
-  if (!data || data === '[DONE]') return '';
+  if (!data || data === '[DONE]') return { answer: '', thinking: '' };
   try {
-    return extractChatText(JSON.parse(data));
+    const payload = JSON.parse(data);
+    return {
+      answer: extractChatText(payload),
+      thinking: extractThinkingText(payload),
+    };
   } catch {
-    return data.startsWith('{') || data.startsWith('[') ? '' : data;
+    return {
+      answer: data.startsWith('{') || data.startsWith('[') ? '' : data,
+      thinking: '',
+    };
   }
 }
 
@@ -542,17 +577,37 @@ async function readChatResponse(response, onChunk) {
   if (!reader) {
     const text = await response.text();
     const parsed = parseStreamData(text.trim());
-    return parsed || text;
+    const answer = parsed.answer || text;
+    if (parsed.thinking || answer) {
+      onChunk?.({
+        answerDelta: answer,
+        answerFull: answer,
+        thinkingDelta: parsed.thinking || '',
+        thinkingFull: parsed.thinking || '',
+      });
+    }
+    return { answer, thinking: parsed.thinking || '' };
   }
 
   const decoder = new TextDecoder();
   let buffer = '';
-  let full = '';
+  let fullAnswer = '';
+  let fullThinking = '';
 
-  const append = (delta) => {
-    if (!delta) return;
-    full += delta;
-    onChunk?.(delta, full);
+  const append = ({ answer, thinking }) => {
+    const answerDelta = answer || '';
+    const thinkingDelta = thinking || '';
+    if (!answerDelta && !thinkingDelta) return;
+
+    if (thinkingDelta) fullThinking += thinkingDelta;
+    if (answerDelta) fullAnswer += answerDelta;
+
+    onChunk?.({
+      answerDelta,
+      answerFull: fullAnswer,
+      thinkingDelta,
+      thinkingFull: fullThinking,
+    });
   };
 
   while (true) {
@@ -577,7 +632,7 @@ async function readChatResponse(response, onChunk) {
     append(parseStreamData(data));
   }
 
-  return full;
+  return { answer: fullAnswer, thinking: fullThinking };
 }
 
 async function requestChat({ messages, model, images = [], systemPrompt = SYSTEM_PROMPT, maxTokens, onChunk }) {
@@ -602,22 +657,73 @@ async function requestChat({ messages, model, images = [], systemPrompt = SYSTEM
   return readChatResponse(response, onChunk);
 }
 
+function splitThinkingFromRaw(raw = '') {
+  const normalized = String(raw || '')
+    .replace(/<thinking>/gi, '<think>')
+    .replace(/<\/thinking>/gi, '</think>');
+
+  let answer = normalized;
+  const thinkingParts = [];
+
+  const completeBlockPattern = /<think>([\s\S]*?)<\/think>/gi;
+  answer = answer.replace(completeBlockPattern, (_full, inner) => {
+    if (inner) thinkingParts.push(inner);
+    return '';
+  });
+
+  const openIndex = answer.toLowerCase().lastIndexOf('<think>');
+  if (openIndex !== -1) {
+    const partial = answer.slice(openIndex + '<think>'.length);
+    if (partial) thinkingParts.push(partial);
+    answer = answer.slice(0, openIndex);
+  }
+
+  answer = answer.replace(/<\/?think>/gi, '');
+
+  return {
+    thinking: thinkingParts.join(' ').replace(/\s+/g, ' ').trim(),
+    answer: answer,
+  };
+}
+
 export async function runChatCompletion({ messages, model, images = [], systemPrompt = SYSTEM_PROMPT, maxTokens } = {}) {
   const result = await requestChat({ messages, model, images, systemPrompt, maxTokens });
-  if (!result) throw new Error('No result in response');
-  return { result };
+  const answer = result?.answer || '';
+  if (!answer) throw new Error('No result in response');
+  return { result: answer };
 }
 
 export async function sendChatMessage(messages, model, onChunk, images = [], systemPrompt = SYSTEM_PROMPT, { onThinking } = {}) {
-  void onThinking;
-  const fullText = await requestChat({
+  let latestAnswer = '';
+  let latestThinking = '';
+  const streamed = await requestChat({
     messages,
     model,
     images,
     systemPrompt,
-    onChunk: (_delta, accumulated) => onChunk?.(accumulated, accumulated),
+    onChunk: ({ answerFull, thinkingFull }) => {
+      const split = splitThinkingFromRaw(answerFull || '');
+      const mergedThinking = [thinkingFull || '', split.thinking || '']
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+
+      latestThinking = mergedThinking;
+      latestAnswer = split.answer || '';
+
+      if (mergedThinking) onThinking?.(mergedThinking);
+      onChunk?.(latestAnswer, latestAnswer);
+    },
   });
 
-  if (fullText) return fullText;
+  const split = splitThinkingFromRaw(streamed?.answer || '');
+  const finalThinking = [streamed?.thinking || '', split.thinking || '']
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  const finalAnswer = split.answer || latestAnswer;
+
+  if (finalThinking) onThinking?.(finalThinking);
+  if (finalAnswer) return finalAnswer;
   throw new Error('No result in response');
 }

@@ -2,7 +2,7 @@ import { analyzeText } from './textAnalysis.js';
 import { analyzeImage } from './imageAnalysis.js';
 
 export async function testTextAnalysis() {
-  console.log('Testing Salad text analysis...');
+  console.log('Testing Ollama text analysis...');
   try {
     const result = await analyzeText('What is artificial intelligence?');
     const passed = Boolean(result?.result);
@@ -36,7 +36,7 @@ export async function runAllTests(base64Image = null) {
     text: await testTextAnalysis(),
     image: base64Image ? await testImageAnalysis(base64Image) : null,
   };
-  console.log('Salad API test results:', results);
+  console.log('Ollama API test results:', results);
   return results;
 }
 

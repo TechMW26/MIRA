@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useChatContext } from '../../contexts/ChatContext';
 import Sidebar from '../Sidebar/Sidebar';
 import ChatWindow from '../Chat/ChatWindow';
@@ -6,7 +7,18 @@ import HudOverlay from '../Chat/HudOverlay';
 import SettingsModal from '../Profile/ProfilePage';
 
 export default function MainLayout() {
-  const { showSettings, setShowSettings, isGenerating, isSearching } = useChatContext();
+  const {
+    showSettings,
+    setShowSettings,
+    isGenerating,
+    isSearching,
+    currentConversationId,
+    setCurrentConversationId,
+    activeProjectId,
+    setActiveProjectId,
+  } = useChatContext();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const hasHydratedFromUrlRef = useRef(false);
 
   useEffect(() => {
     document.body.classList.add('mira-hud', 'mira-hud-active');
@@ -14,6 +26,50 @@ export default function MainLayout() {
       document.body.classList.remove('mira-hud', 'mira-hud-active');
     };
   }, []);
+
+  // URL -> state sync (supports opening direct permalinks and browser back/forward).
+  // We complete this hydration before allowing state -> URL writes to avoid first-load
+  // races that can force stale `?c=` params back onto `/`.
+  useEffect(() => {
+    const urlConversationId = searchParams.get('c') || null;
+    const urlProjectId = searchParams.get('p') || null;
+
+    setCurrentConversationId(urlConversationId);
+    setActiveProjectId(urlProjectId);
+    hasHydratedFromUrlRef.current = true;
+  }, [searchParams, setCurrentConversationId, setActiveProjectId]);
+
+  // State -> URL sync (ensures every chat has a shareable permalink).
+  useEffect(() => {
+    if (!hasHydratedFromUrlRef.current) return;
+
+    const next = new URLSearchParams(searchParams);
+    let changed = false;
+
+    if (currentConversationId) {
+      if (next.get('c') !== currentConversationId) {
+        next.set('c', currentConversationId);
+        changed = true;
+      }
+    } else if (next.has('c')) {
+      next.delete('c');
+      changed = true;
+    }
+
+    if (activeProjectId) {
+      if (next.get('p') !== activeProjectId) {
+        next.set('p', activeProjectId);
+        changed = true;
+      }
+    } else if (next.has('p')) {
+      next.delete('p');
+      changed = true;
+    }
+
+    if (changed) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [currentConversationId, activeProjectId, searchParams, setSearchParams]);
 
   const status = isSearching ? 'SEARCHING' : isGenerating ? 'PROCESSING' : 'READY';
 

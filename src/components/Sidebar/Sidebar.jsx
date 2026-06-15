@@ -85,6 +85,24 @@ export default function Sidebar() {
     return () => { unsub1(); unsub2(); };
   }, [user]);
 
+  useEffect(() => {
+    if (currentConversationId && conversations.length > 0) {
+      const exists = conversations.some((conversation) => conversation.id === currentConversationId);
+      if (!exists) {
+        setCurrentConversationId(null);
+      }
+    }
+  }, [currentConversationId, conversations, setCurrentConversationId]);
+
+  useEffect(() => {
+    if (activeProjectId && projects.length > 0) {
+      const exists = projects.some((project) => project.id === activeProjectId);
+      if (!exists) {
+        setActiveProjectId(null);
+      }
+    }
+  }, [activeProjectId, projects, setActiveProjectId]);
+
   // Close menus on outside click
   useEffect(() => {
     const handler = () => { setActiveMenu(null); setContextMenu(null); setMoveToProjectMenu(null); setShowUserMenu(false); setProjectMenu(null); };

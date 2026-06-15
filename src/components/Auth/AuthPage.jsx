@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Eye, EyeOff, ArrowRight, Loader2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 export default function AuthPage() {
   const { user, login, register, error, authLoading } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [isLogin, setIsLogin] = useState(true);
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [showPw, setShowPw] = useState(false);
@@ -13,9 +14,11 @@ export default function AuthPage() {
   // Redirect when user becomes authenticated
   useEffect(() => {
     if (user) {
-      navigate('/', { replace: true });
+      const next = searchParams.get('next');
+      const safeNext = next && next.startsWith('/') ? next : '/';
+      navigate(safeNext, { replace: true });
     }
-  }, [user, navigate]);
+  }, [user, navigate, searchParams]);
 
   async function handleSubmit(e) {
     e.preventDefault();

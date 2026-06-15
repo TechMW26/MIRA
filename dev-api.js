@@ -168,93 +168,14 @@ function buildResultAnchoredImageQuery(results = [], anchorScope = null, fallbac
   return cleaned || fallback;
 }
 
-// === Salad chat configuration ===
-const SALAD_API_URL = process.env.SALAD_API_URL || process.env.API_URL;
-const SALAD_API_KEY = process.env.SALAD_API_KEY || process.env.API_KEY;
-const SALAD_MODEL = process.env.SALAD_MODEL || 'llama3.2';
-const SALAD_VISION_MODEL = process.env.SALAD_VISION_MODEL || 'llama3.2-vision';
-const SALAD_MAX_TOKENS = Number(process.env.SALAD_MAX_TOKENS || 2048);
-const SALAD_TIMEOUT_MS = Number(process.env.SALAD_TIMEOUT_MS || 55000);
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
-const GROQ_API_URL = process.env.GROQ_API_URL || 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
-const FALLBACK_TIMEOUT_MS = Number(process.env.FALLBACK_TIMEOUT_MS || 25000);
+// === Ollama chat configuration ===
+const OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'http://147.93.102.103:11434/api/generate';
+const OLLAMA_TEXT_MODEL = process.env.OLLAMA_TEXT_MODEL || 'huihui_ai/deepseek-r1-abliterated:14b';
+const OLLAMA_VISION_MODEL = process.env.OLLAMA_VISION_MODEL || 'llama3.2-vision';
+const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 2048);
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 90000);
 
-function splitKeys(value = '') {
-  return String(value || '')
-    .split(/[\n,]/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-const GEMINI_API_KEYS = [...new Set([
-  process.env.GEMINI_API_KEY,
-  ...splitKeys(process.env.GEMINI_API_KEYS),
-])].filter(Boolean);
-
-const GROQ_API_KEYS = [...new Set([
-  process.env.GROQ_API_KEY,
-  ...splitKeys(process.env.GROQ_API_KEYS),
-])].filter(Boolean);
-
-function candidateChatUrls(rawUrl = '') {
-  const value = String(rawUrl || '').trim();
-  if (!value) return [];
-
-  let parsed;
-  try {
-    parsed = new URL(value);
-  } catch {
-    return [value];
-  }
-
-  const cleanPath = parsed.pathname.replace(/\/+$/, '');
-  const hasExplicitChatPath = /chat\/completions/i.test(cleanPath);
-  const looksLikeRoot = cleanPath === '' || cleanPath === '/';
-
-  const urls = [parsed.toString()];
-  if (!hasExplicitChatPath) {
-    urls.push(new URL('/api/v1/chat/completions', parsed.origin).toString());
-    urls.push(new URL('/v1/chat/completions', parsed.origin).toString());
-    if (looksLikeRoot) {
-      urls.push(new URL('/chat/completions', parsed.origin).toString());
-    } else if (/\/api\/v1$/i.test(cleanPath)) {
-      urls.push(new URL('/api/v1/chat/completions', parsed.origin).toString());
-    } else if (/\/v1$/i.test(cleanPath)) {
-      urls.push(new URL('/v1/chat/completions', parsed.origin).toString());
-    }
-  }
-
-  return [...new Set(urls)];
-}
-
-async function fetchChatUpstream(urls, init) {
-  let lastResponse = null;
-  for (let index = 0; index < urls.length; index += 1) {
-    const response = await fetch(urls[index], init);
-    if (response.ok || response.status !== 404 || index === urls.length - 1) return response;
-    lastResponse = response;
-  }
-  return lastResponse;
-}
-
-function getEndpoint404Guidance(chatUrls = []) {
-  const tried = Array.isArray(chatUrls) && chatUrls.length
-    ? ` Tried: ${chatUrls.join(', ')}`
-    : '';
-  return `Chat upstream endpoint not found (404). Verify SALAD_API_URL in .env from Salad portal (do not use local-style paths like /api/chat).${tried}`;
-}
-
-function withTimeoutController(timeoutMs = FALLBACK_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return {
-    signal: controller.signal,
-    done: () => clearTimeout(timer),
-  };
-}
-
-function toFallbackPrompt(messages = []) {
+function toOllamaPrompt(messages = []) {
   return (Array.isArray(messages) ? messages : [])
     .map((message) => {
       const role = String(message?.role || 'user').toUpperCase();
@@ -263,93 +184,6 @@ function toFallbackPrompt(messages = []) {
     })
     .join('\n\n')
     .trim();
-}
-
-function extractGeminiText(payload) {
-  const parts = payload?.candidates?.[0]?.content?.parts;
-  if (!Array.isArray(parts)) return '';
-  return parts.map((part) => String(part?.text || '')).join('').trim();
-}
-
-async function tryGeminiFallback(messages, maxTokens) {
-  if (!GEMINI_API_KEYS.length) return null;
-  const prompt = toFallbackPrompt(messages);
-  if (!prompt) return null;
-
-  for (const key of GEMINI_API_KEYS) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(key)}`;
-    const timeout = withTimeoutController();
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: Math.min(maxTokens || 1024, 2048) },
-        }),
-        signal: timeout.signal,
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) continue;
-      const text = extractGeminiText(payload);
-      if (text) return { provider: `gemini:${GEMINI_MODEL}`, text };
-    } catch {
-      // Try the next key.
-    } finally {
-      timeout.done();
-    }
-  }
-  return null;
-}
-
-async function tryGroqFallback(messages, maxTokens) {
-  if (!GROQ_API_KEYS.length) return null;
-  const safeMessages = (Array.isArray(messages) ? messages : [])
-    .filter((message) => ['system', 'assistant', 'user'].includes(message?.role))
-    .map((message) => ({ role: message.role, content: typeof message.content === 'string' ? message.content : String(message.content || '') }));
-  if (!safeMessages.length) return null;
-
-  for (const key of GROQ_API_KEYS) {
-    const timeout = withTimeoutController();
-    try {
-      const response = await fetch(GROQ_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: GROQ_MODEL,
-          messages: safeMessages,
-          stream: false,
-          max_tokens: Math.min(maxTokens || 1024, 4096),
-        }),
-        signal: timeout.signal,
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) continue;
-      const text = String(payload?.choices?.[0]?.message?.content || '').trim();
-      if (text) return { provider: `groq:${GROQ_MODEL}`, text };
-    } catch {
-      // Try the next key.
-    } finally {
-      timeout.done();
-    }
-  }
-  return null;
-}
-
-async function tryProviderFallbacks(messages, maxTokens) {
-  const gemini = await tryGeminiFallback(messages, maxTokens);
-  if (gemini) return gemini;
-  return tryGroqFallback(messages, maxTokens);
-}
-
-function imageToDataUrl(image) {
-  const raw = image?.base64 || image?.data || image?.url || '';
-  if (!raw) return null;
-  if (raw.startsWith('data:') || raw.startsWith('http://') || raw.startsWith('https://')) return raw;
-  return `data:${image?.mimeType || image?.type || 'image/jpeg'};base64,${raw}`;
 }
 
 function normalizeMessages(messages = [], systemPrompt) {
@@ -378,19 +212,16 @@ function imageToOllamaBase64(image) {
   return raw;
 }
 
-function attachImagesToLastUserMessage(messages, images) {
-  if (!Array.isArray(images) || images.length === 0) return messages;
-  const base64List = images.map(imageToOllamaBase64).filter(Boolean);
-  if (base64List.length === 0) return messages;
-  const copy = messages.map((m) => ({ ...m }));
-  for (let i = copy.length - 1; i >= 0; i--) {
-    if (copy[i].role === 'user') {
-      copy[i] = { ...copy[i], images: base64List };
-      return copy;
-    }
+function extractLastUserImages(messages = [], fallbackImages = []) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role !== 'user') continue;
+    const list = Array.isArray(messages[i].images) ? messages[i].images : [];
+    const converted = list.map((img) => imageToOllamaBase64({ data: img })).filter(Boolean);
+    if (converted.length) return converted;
   }
-  copy.push({ role: 'user', content: '', images: base64List });
-  return copy;
+  return (Array.isArray(fallbackImages) ? fallbackImages : [])
+    .map(imageToOllamaBase64)
+    .filter(Boolean);
 }
 
 async function writeUpstreamBody(upstream, res) {
@@ -411,65 +242,44 @@ async function writeUpstreamBody(upstream, res) {
 async function handleChat(body, res) {
   const payload = JSON.parse(body || '{}');
   const imageList = Array.isArray(payload.images) ? payload.images.slice(0, 6) : [];
-  const baseMessages = normalizeMessages(payload.messages, payload.systemPrompt);
-  const messages = attachImagesToLastUserMessage(baseMessages, imageList);
+  const messages = normalizeMessages(payload.messages, payload.systemPrompt);
   if (messages.length === 0) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'At least one chat message is required.' }));
     return;
   }
 
-  const hasImages = messages.some((m) => Array.isArray(m.images) && m.images.length > 0);
-  const requestedModel = payload.model || SALAD_MODEL;
-  const effectiveModel = hasImages ? SALAD_VISION_MODEL : requestedModel;
-  const safeMax = Math.max(1, Math.min(Number(payload.max_tokens) || SALAD_MAX_TOKENS, 8192));
-
-  if (!SALAD_API_URL || !SALAD_API_KEY) {
-    const fallback = await tryProviderFallbacks(messages, safeMax);
-    if (fallback?.text) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ result: fallback.text, provider: fallback.provider }));
-      return;
-    }
+  const safeMax = Math.max(1, Math.min(Number(payload.max_tokens) || OLLAMA_MAX_TOKENS, 8192));
+  const prompt = toOllamaPrompt(messages);
+  const promptImages = extractLastUserImages(messages, imageList);
+  const hasImages = promptImages.length > 0;
+  const effectiveModel = hasImages ? OLLAMA_VISION_MODEL : OLLAMA_TEXT_MODEL;
+  if (!OLLAMA_API_URL) {
     res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Salad API URL or key is not configured, and no fallback provider succeeded.' }));
+    res.end(JSON.stringify({ error: 'OLLAMA_API_URL is not configured.' }));
     return;
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), SALAD_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
   try {
-    const chatUrls = candidateChatUrls(SALAD_API_URL);
-    const upstream = await fetchChatUpstream(chatUrls, {
+    const upstream = await fetch(OLLAMA_API_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Salad-Api-Key': SALAD_API_KEY,
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: effectiveModel,
-        messages,
+        prompt,
+        ...(hasImages ? { images: promptImages } : {}),
         stream: payload.stream !== false,
-        max_tokens: safeMax,
+        options: { num_predict: safeMax },
       }),
       signal: controller.signal,
     });
 
     if (!upstream.ok) {
       const errorText = await upstream.text().catch(() => '');
-      const fallback = await tryProviderFallbacks(messages, safeMax);
-      if (fallback?.text) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ result: fallback.text, provider: fallback.provider }));
-        return;
-      }
-      if (upstream.status === 404) {
-        res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: getEndpoint404Guidance(chatUrls) }));
-        return;
-      }
       res.writeHead(upstream.status, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: errorText || `Salad API error: ${upstream.status}` }));
+      res.end(JSON.stringify({ error: errorText || `Ollama API error: ${upstream.status}` }));
       return;
     }
 
@@ -480,13 +290,7 @@ async function handleChat(body, res) {
     });
     await writeUpstreamBody(upstream, res);
   } catch (err) {
-    const fallback = await tryProviderFallbacks(messages, safeMax).catch(() => null);
-    if (fallback?.text) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ result: fallback.text, provider: fallback.provider }));
-      return;
-    }
-    const message = err.name === 'AbortError' ? `Salad API timeout after ${SALAD_TIMEOUT_MS}ms` : err.message;
+    const message = err.name === 'AbortError' ? `Ollama API timeout after ${OLLAMA_TIMEOUT_MS}ms` : err.message;
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: message }));
   } finally {

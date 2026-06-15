@@ -1037,6 +1037,8 @@ Place every image and every mermaid block on its own line with a blank line abov
               }
             } catch (e) {
               console.warn('Web search failed:', e.message);
+            } finally {
+              setIsSearching(false);
             }
           }
 
@@ -1117,6 +1119,7 @@ Place every image and every mermaid block on its own line with a blank line abov
               {
                 onThinking: (accumulated) => {
                   if (abortRef.current) return;
+                  if (accumulated) setIsSearching(false);
                   setThinkingContent(accumulated);
                 },
               },
@@ -1186,6 +1189,7 @@ Place every image and every mermaid block on its own line with a blank line abov
                     {
                       onThinking: (accumulated) => {
                         if (abortRef.current) return;
+                        if (accumulated) setIsSearching(false);
                         setThinkingContent(accumulated);
                       },
                     },

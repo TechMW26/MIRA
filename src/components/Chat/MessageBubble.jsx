@@ -275,7 +275,7 @@ function ThinkingSection({ content, isActive }) {
 
   if (isActive) {
     return (
-      <div className="thinking-section mb-4">
+      <div className="thinking-section thinking-active mb-4">
         <div className="thinking-header">
           <span className="thinking-sparkle">✦</span>
           <span className="thinking-label">Thinking</span>
@@ -292,7 +292,7 @@ function ThinkingSection({ content, isActive }) {
                 style={{ animationDelay: `${Math.min(i * 0.05, 2)}s` }}
               >
                 <span className="thinking-line-marker">›</span>
-                <span className="thinking-line-text">{line}</span>
+                <span className="thinking-line-text thinking-line-ghost">{line}</span>
               </div>
             ))}
           </div>
@@ -321,31 +321,6 @@ function ThinkingSection({ content, isActive }) {
         </div>
       )}
     </div>
-  );
-}
-
-const THINKING_PHRASES = [
-  'Let me think...',
-  'Gathering my thoughts...',
-  'Connecting the dots...',
-  'Working on it...',
-  'Searching the right words...',
-  'Putting it together...',
-  'Reasoning through this...',
-  'Almost there...',
-  'Composing a response...',
-  'Thinking carefully...',
-  'Lining up the details...',
-  'Tuning the answer...',
-];
-
-function ThinkingPlaceholder() {
-  const phrase = useMemo(
-    () => THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)],
-    []
-  );
-  return (
-    <ParticleText text={phrase} active placeholder />
   );
 }
 
@@ -966,8 +941,8 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
               {message.media && !message.isStreaming && (
                 <RelatedMedia media={message.media} />
               )}
-              {isLast && message.content === '' && !message.thinkingContent && (
-                isSearching ? <SearchingPlaceholder /> : <ThinkingPlaceholder />
+              {isLast && message.content === '' && !message.thinkingContent && isSearching && (
+                <SearchingPlaceholder />
               )}
             </div>
           </div>
