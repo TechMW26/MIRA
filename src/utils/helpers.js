@@ -52,3 +52,99 @@ export function detectIntent(message) {
 export function cn(...classes) {
   return classes.filter(Boolean).join(' ');
 }
+
+// ── User context system prompt ──────────────────────────────
+// Builds a concise system block so the model always knows WHO it is talking to
+// and what the current chat is about, even after history truncation.
+
+const PREFERENCE_LABELS = {
+  responseStyle: 'preferred response style',
+  codeTheme: 'code theme',
+  fontSize: 'text size',
+  streamResponses: 'streaming responses',
+  notifications: 'notifications',
+};
+
+function stripMarkdown(text = '') {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, ' [code] ')
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/[#*_>~|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function condense(text = '', maxLen = 160) {
+  const clean = stripMarkdown(text);
+  if (clean.length <= maxLen) return clean;
+  return `${clean.slice(0, maxLen - 1).trimEnd()}…`;
+}
+
+function formatPreferences(preferences = {}) {
+  const entries = Object.entries(preferences || {})
+    .filter(([key, value]) => key in PREFERENCE_LABELS && value !== '' && value !== null && value !== undefined)
+    .map(([key, value]) => {
+      const label = PREFERENCE_LABELS[key];
+      if (typeof value === 'boolean') return `${label}: ${value ? 'on' : 'off'}`;
+      return `${label}: ${value}`;
+    });
+  return entries.length ? entries.join('; ') : '';
+}
+
+function summarizeMessages(messages = [], { maxTurns = 6 } = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  // Look at the last few turns so the recap stays compact.
+  const recent = list.slice(-maxTurns * 2);
+  const lines = [];
+  for (const message of recent) {
+    if (!message || !message.role) continue;
+    const role = message.role === 'assistant' ? 'MIRA' : message.role === 'user' ? 'User' : null;
+    if (!role) continue;
+    const text = typeof message.content === 'string' ? message.content : '';
+    const condensed = condense(text, 140);
+    if (!condensed) continue;
+    lines.push(`- ${role}: ${condensed}`);
+  }
+  return lines.join('\n');
+}
+
+export function buildUserContextPrompt({ profile, conversation, messages = [] } = {}) {
+  const sections = [];
+  const aboutLines = [];
+
+  const name = profile?.displayName?.trim();
+  if (name) aboutLines.push(`Name: ${name}`);
+  if (profile?.age) aboutLines.push(`Age: ${profile.age}`);
+  if (profile?.gender) aboutLines.push(`Gender: ${profile.gender}`);
+  if (profile?.email) aboutLines.push(`Email: ${profile.email}`);
+  const bio = profile?.bio?.trim();
+  if (bio) aboutLines.push(`Bio: ${condense(bio, 240)}`);
+  const prefs = formatPreferences(profile?.preferences);
+  if (prefs) aboutLines.push(`Preferences: ${prefs}`);
+
+  if (aboutLines.length) {
+    sections.push(`THE USER YOU ARE TALKING TO\n${aboutLines.join('\n')}\n\nUsage rules:\n- Address the user by their name when natural; never invent a different name.\n- Honor the stated preferences (especially response style).\n- Treat age, gender, and bio as background context, not topics to bring up unless the user does.`);
+  }
+
+  const totalMessages = Array.isArray(messages) ? messages.length : 0;
+  const conversationLines = [];
+  if (conversation?.title && conversation.title !== 'New Chat') {
+    conversationLines.push(`Title: ${conversation.title}`);
+  }
+  if (totalMessages > 0) {
+    conversationLines.push(`Messages so far: ${totalMessages}`);
+  }
+  const recap = summarizeMessages(messages, { maxTurns: 6 });
+  if (recap) {
+    conversationLines.push(`Recent exchanges (most recent last):\n${recap}`);
+  }
+
+  if (conversationLines.length) {
+    sections.push(`CURRENT CONVERSATION RECAP\n${conversationLines.join('\n')}\n\nUse this recap to stay consistent with what was already said. The full transcript follows in the chat messages — do not repeat it back unless asked.`);
+  }
+
+  return sections.join('\n\n');
+}
+

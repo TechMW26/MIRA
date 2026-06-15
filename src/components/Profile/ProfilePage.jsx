@@ -12,6 +12,8 @@ import {
   Bell,
   Shield,
   ChevronRight,
+  Cake,
+  UserCircle2,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useChatContext } from '../../contexts/ChatContext';
@@ -26,6 +28,8 @@ export default function SettingsModal({ onClose }) {
     phone: '',
     photoURL: '',
     bio: '',
+    age: '',
+    gender: '',
   });
   const [preferences, setPreferences] = useState({
     responseStyle: 'balanced',
@@ -54,6 +58,8 @@ export default function SettingsModal({ onClose }) {
         phone: data.phone || '',
         photoURL: data.photoURL || '',
         bio: data.bio || '',
+        age: data.age != null ? String(data.age) : '',
+        gender: data.gender || '',
       });
       if (data.preferences) {
         setPreferences((prev) => ({ ...prev, ...data.preferences }));
@@ -70,11 +76,14 @@ export default function SettingsModal({ onClose }) {
     if (!user) return;
     setSaving(true);
     try {
+      const ageNum = profile.age ? Number(profile.age) : null;
       await updateUserProfile(user.uid, {
         displayName: profile.displayName,
         phone: profile.phone,
         photoURL: profile.photoURL,
         bio: profile.bio,
+        age: Number.isFinite(ageNum) && ageNum > 0 && ageNum < 130 ? ageNum : null,
+        gender: profile.gender || '',
         preferences,
       });
       // Persist preferences to localStorage for instant access by engine/UI
@@ -239,6 +248,16 @@ export default function SettingsModal({ onClose }) {
               <FormField icon={User} label="Display Name" value={profile.displayName} onChange={(v) => setProfile((p) => ({ ...p, displayName: v }))} placeholder="Your name" />
               <FormField icon={Mail} label="Email" value={profile.email} disabled note="Email cannot be changed" />
               <FormField icon={Phone} label="Phone Number" value={profile.phone} onChange={(v) => setProfile((p) => ({ ...p, phone: v }))} placeholder="+1 234 567 890" type="tel" />
+              <div className="grid grid-cols-2 gap-3">
+                <FormField icon={Cake} label="Age" value={profile.age} onChange={(v) => setProfile((p) => ({ ...p, age: v.replace(/[^0-9]/g, '').slice(0, 3) }))} placeholder="e.g. 24" type="text" />
+                <SelectField icon={UserCircle2} label="Gender" value={profile.gender} onChange={(v) => setProfile((p) => ({ ...p, gender: v }))} options={[
+                  { value: '', label: 'Prefer not to say' },
+                  { value: 'female', label: 'Female' },
+                  { value: 'male', label: 'Male' },
+                  { value: 'non-binary', label: 'Non-binary' },
+                  { value: 'other', label: 'Other' },
+                ]} />
+              </div>
               <div>
                 <label className="block text-xs font-medium mb-1.5 tracking-wide uppercase" style={{ color: 'var(--text-tertiary)' }}>Bio</label>
                 <textarea
@@ -383,6 +402,29 @@ function FormField({ icon: Icon, label, value, onChange, placeholder, type = 'te
         />
       </div>
       {note && <span className="text-[11px] mt-1 block" style={{ color: 'var(--text-tertiary)' }}>{note}</span>}
+    </div>
+  );
+}
+
+function SelectField({ icon: Icon, label, value, onChange, options = [] }) {
+  return (
+    <div>
+      <label className="block text-xs font-medium mb-1.5 tracking-wide uppercase" style={{ color: 'var(--text-tertiary)' }}>
+        {label}
+      </label>
+      <div className="relative">
+        <Icon size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-tertiary)' }} />
+        <select
+          value={value}
+          onChange={(e) => onChange?.(e.target.value)}
+          className="w-full glass-input rounded-xl pl-10 pr-4 py-3 text-sm outline-none transition-all duration-200 focus:ring-1 focus:ring-[var(--border)] appearance-none cursor-pointer"
+          style={{ color: 'var(--text-primary)' }}
+        >
+          {options.map((opt) => (
+            <option key={opt.value} value={opt.value} style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>{opt.label}</option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }

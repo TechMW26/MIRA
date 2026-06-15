@@ -4,6 +4,7 @@ import useChat from '../../hooks/useChat';
 import useUserProfile from '../../hooks/useUserProfile';
 import MessageBubble from './MessageBubble';
 import WelcomeScreen from './WelcomeScreen';
+import ParticleGlobe from './ParticleGlobe';
 import ChatInput from './ChatInput';
 import BrowserPanel from './BrowserPanel';
 import CanvasPanel from './CanvasPanel';
@@ -77,6 +78,7 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
 
 export default function ChatWindow() {
   const { currentConversationId, isGenerating, isSearching } = useChatContext();
+  const { selectedModel } = useChatContext();
   const { messages, streamingContent, thinkingContent, sendMessage, stopGenerating, retryMessage, editMessage } = useChat();
   const userProfile = useUserProfile();
 
@@ -144,9 +146,18 @@ export default function ChatWindow() {
 
   return (
     <div className="flex-1 flex min-h-0 relative">
+      {/* Particle background — always rendered, scattered when messages appear */}
+      <div className="fixed inset-0 pointer-events-none z-0">
+        <ParticleGlobe 
+          iconAttractor={null}
+          locked={selectedModel === 'locked'}
+          hasMessages={messages.length > 0}
+        />
+      </div>
+
       {showShare && <ShareModal messages={messages} title={messages[0]?.content?.slice(0, 50)} onClose={() => setShowShare(false)} />}
 
-      <div className="flex flex-col flex-1 min-w-0 min-h-0 relative">
+      <div className="flex flex-col flex-1 min-w-0 min-h-0 relative z-10">
         <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden hud-scroll-area" style={{ fontSize: chatFontSize }}>
           <div className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 pb-44 gap-6 px-4 w-full min-w-0`}>
             {showingWelcome ? (

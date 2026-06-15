@@ -22,6 +22,8 @@ export default function useUserProfile() {
     phone: profile?.phone || '',
     photoURL: profile?.photoURL || user?.photoURL || '',
     bio: profile?.bio || '',
+    age: profile?.age ?? null,
+    gender: profile?.gender || '',
     preferences: profile?.preferences || {},
   }), [profile, user]);
 }

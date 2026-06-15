@@ -6,7 +6,6 @@ import {
   Mail, Folder, Mic, AudioLines, Wrench, MessageSquare,
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
-import ParticleGlobe from './ParticleGlobe';
 import { useChatContext } from '../../contexts/ChatContext';
 
 const ATTACH_ACCEPT = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic';
@@ -355,9 +354,7 @@ function TemplateForm({ template, onSubmit, onClose }) {
         {/* Header */}
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-3">
-            <div className={`w-9 h-9 rounded-xl ${template.color} flex items-center justify-center`}>
-              <template.icon size={16} className="text-white" />
-            </div>
+            <template.icon size={20} style={{ color: 'var(--accent)' }} />
             <h3 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
               {template.label}
             </h3>
@@ -502,10 +499,6 @@ export default function WelcomeScreen({ onSend }) {
 
   return (
     <>
-      {/* Full-viewport particle field so the globe + its outer particles span
-          the whole screen and never clip against a tight canvas edge. */}
-      <ParticleGlobe iconAttractor={iconAttractor} locked={selectedModel === 'locked'} />
-
       {/* Template form modal */}
       {selectedTemplate && (
         <TemplateForm

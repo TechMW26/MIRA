@@ -14,7 +14,8 @@ import {
 } from '../services/database';
 import { useAuth } from '../contexts/AuthContext';
 import { useChatContext } from '../contexts/ChatContext';
-import { generateSmartTitle } from '../utils/helpers';
+import useUserProfile from './useUserProfile';
+import { generateSmartTitle, buildUserContextPrompt } from '../utils/helpers';
 import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
@@ -627,6 +628,7 @@ function buildModelHistory(historySource = [], promptInterpretation = {}, { isGr
 
 export default function useChat() {
   const { user } = useAuth();
+  const profile = useUserProfile();
   const {
     chatConversations,
     currentConversationId,
@@ -637,7 +639,6 @@ export default function useChat() {
     activeProjectId,
     selectedModel,
   } = useChatContext();
-  void chatConversations;
   const [messages, setMessages] = useState([]);
   const [streamingContent, setStreamingContent] = useState('');
   const [thinkingContent, setThinkingContent] = useState('');
@@ -816,6 +817,18 @@ export default function useChat() {
         }
 
         const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: simpleGreeting });
+
+        // Always give the model a system block describing WHO it is talking to
+        // and a short recap of this conversation, so it stays consistent even
+        // after history truncation.
+        const currentConversation = Array.isArray(chatConversations)
+          ? chatConversations.find((c) => c?.id === convId)
+          : null;
+        const userSystemPrompt = buildUserContextPrompt({
+          profile,
+          conversation: currentConversation,
+          messages: historySource,
+        });
 
         if (replaceMessageId) {
           await updateMessage(convId, replaceMessageId, {
@@ -1160,6 +1173,7 @@ export default function useChat() {
               images,
               {
                 think: shouldThink,
+                ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                 onThinking: (accumulated) => {
                   if (abortRef.current) return;
                   if (accumulated) setIsSearching(false);
@@ -1238,6 +1252,7 @@ export default function useChat() {
                     images,
                     {
                       think: shouldThink,
+                      ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                       onThinking: (accumulated) => {
                         if (abortRef.current) return;
                         if (accumulated) setIsSearching(false);

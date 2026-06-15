@@ -12,15 +12,16 @@ export default function ParticleGlobe({
   particleCount = 1200,
   iconAttractor = null,
   locked = false,
+  hasMessages = false,
 }) {
   const canvasRef = useRef(null);
-  const stateRef = useRef({ thinking, speaking, iconAttractor, locked });
+  const stateRef = useRef({ thinking, speaking, iconAttractor, locked, hasMessages });
 
   // Keep a live ref so the animation loop reads fresh prop values without
   // restarting on every change.
   useEffect(() => {
-    stateRef.current = { thinking, speaking, iconAttractor, locked };
-  }, [thinking, speaking, iconAttractor, locked]);
+    stateRef.current = { thinking, speaking, iconAttractor, locked, hasMessages };
+  }, [thinking, speaking, iconAttractor, locked, hasMessages]);
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
@@ -80,7 +81,8 @@ export default function ParticleGlobe({
     let rotation = 0;
     let pulse = 0;
     let energy = 0;
-    let scatter = 0;
+    let scatter = 0;  // Thinking burst scatter
+    let edgeScatter = 0;  // NEW: sustained scatter to edges when messages appear
     let burstUntil = 0;
     let lastBurst = 0;
     let mouseX = 0;
@@ -131,6 +133,7 @@ export default function ParticleGlobe({
         speaking: isSpeaking,
         iconAttractor: activeIconAttractor,
         locked: isLocked,
+        hasMessages: hasChats,
       } = stateRef.current;
       redLerp += ((isLocked ? 1 : 0) - redLerp) * 0.035;
       if (redLerp < 0.002) redLerp = 0;
@@ -154,6 +157,10 @@ export default function ParticleGlobe({
       }
       const burstTarget = now < burstUntil ? 1 : 0;
       scatter += (burstTarget - scatter) * (burstTarget > scatter ? 0.18 : 0.05);
+
+      // NEW: Smooth edge scatter when messages appear
+      const edgeTarget = hasChats ? 1 : 0;
+      edgeScatter += (edgeTarget - edgeScatter) * 0.08;  // Smooth animation
 
       rotation += 0.0016 + energy * 0.004;
       pulse += 0.04 + energy * 0.05;
@@ -225,6 +232,17 @@ export default function ParticleGlobe({
 
         let px = cx + x * R * wobble;
         let py = cy + y * R * wobble;
+
+        // NEW: Apply edge scatter — push particles outward toward screen edges
+        // The stronger they scatter, the more they move toward the edge
+        if (edgeScatter > 0.002) {
+          const distFromCenter = Math.hypot(x, y) || 1;
+          // Direction away from center
+          const outwardX = (x / distFromCenter) * edgeScatter * (320 + R * 1.2);
+          const outwardY = (y / distFromCenter) * edgeScatter * (320 + R * 1.2);
+          px += outwardX;
+          py += outwardY;
+        }
 
         // ── Build TARGET displacement for this frame, then smooth into the
         // persistent dispX/dispY (motion dampening) so flow feels fluid.
@@ -332,10 +350,13 @@ export default function ParticleGlobe({
         const rim = Math.min(1, Math.max(0, (projR[i] - 0.55) / 0.45));
         const band = 0.5 + 0.5 * Math.sin(shimmer + baseY[i] * 3 + phase[i] * 0.4);
 
-        const alpha = Math.min(
+        const baseAlpha = Math.min(
           1,
           (0.1 + depth * 0.5 + rim * 0.3) * (0.72 + 0.28 * band) + energy * 0.16,
         );
+        // When scattered to edges, particles fade out to stay minimal
+        const scatterFade = 1 - edgeScatter * 0.35;
+        const alpha = baseAlpha * scatterFade;
         // Dot size is driven by the rim (silhouette) factor: particles facing
         // us at the middle stay small, growing toward the largest size at the
         // outer edges of the sphere. A higher base keeps the centre dots from
