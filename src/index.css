@@ -602,6 +602,11 @@ body[data-locked='true'] .hud-btn:hover {
   background: rgba(248, 113, 113, 0.14);
   color: #fca5a5;
 }
+body[data-locked='true'] .hud-btn[data-active='true'] {
+  background: rgba(248, 113, 113, 0.2);
+  color: #fca5a5;
+  box-shadow: 0 0 18px rgba(248, 113, 113, 0.35);
+}
 body[data-locked='true'] .hud-tool[data-active='true'] {
   box-shadow: 0 0 18px -2px rgba(248, 113, 113, 0.55), inset 0 0 12px rgba(248, 113, 113, 0.18);
 }
@@ -695,6 +700,29 @@ body[data-locked='true'] .tool-node-tip,
 body[data-locked='true'] .tool-node {
   background: rgba(22, 4, 6, 0.92);
   border-color: rgba(248, 113, 113, 0.22);
+}
+body[data-locked='true'] .tool-node {
+  color: #f87171;
+  box-shadow:
+    0 0 12px rgba(248, 113, 113, 0.16),
+    inset 0 0 18px rgba(248, 113, 113, 0.06);
+}
+body[data-locked='true'] .tool-node:hover {
+  color: #fca5a5;
+  border-color: #f87171;
+  background: rgba(30, 6, 8, 0.95);
+  box-shadow:
+    0 0 32px rgba(248, 113, 113, 0.55),
+    inset 0 0 22px rgba(248, 113, 113, 0.18);
+}
+body[data-locked='true'] .tool-node[data-active='true'] {
+  color: #fca5a5;
+  border-color: #f87171;
+  box-shadow: 0 0 28px rgba(248, 113, 113, 0.5);
+}
+body[data-locked='true'] .tool-node-tip {
+  color: #fca5a5;
+  box-shadow: 0 0 18px -6px rgba(248, 113, 113, 0.5);
 }
 /* Override every remaining cyan-tinted stylesheet background. These selectors
    are explicit because [style*=] cannot match colours set in stylesheets. */

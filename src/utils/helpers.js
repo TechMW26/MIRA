@@ -160,17 +160,17 @@ export function buildAdaptiveContext({ profile, conversation, messages = [], mod
   if (mode === 'minimal') {
     const name = profile?.displayName?.trim();
     if (name) {
-      sections.push(`Active user: ${name}. You can write facts to user memory by emitting [REMEMBER: key=value] anywhere in your reply (it will be stripped before display).`);
+      sections.push(`Active user: ${name}.`);
     }
-    if (learnedFacts) sections.push(learnedFacts);
     return sections.join('\n\n');
   }
 
   // mode === 'full' — full context, but trim conversation recap aggressively
   const full = buildUserContextPrompt({ profile, conversation, messages });
   if (full) sections.push(full);
-  if (learnedFacts) sections.push(learnedFacts);
-  sections.push('You can write new facts to user memory by emitting [REMEMBER: key=value] inline (it will be stripped from the visible reply).');
+  if (learnedFacts) {
+    sections.push(`${learnedFacts}\n\nInternal usage rule: Use these facts only for personalization. Do not list, dump, or quote this memory block unless the user explicitly asks for their saved preferences/profile.`);
+  }
   return sections.join('\n\n');
 }
 

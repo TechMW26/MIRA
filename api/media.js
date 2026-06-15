@@ -1,0 +1,130 @@
+import { put, del } from '@vercel/blob';
+
+const RETENTION_DAYS = 30;
+const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const MAX_PROMPT_CHARS = 900;
+
+function json(payload, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function cleanPrompt(value = '') {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, MAX_PROMPT_CHARS);
+}
+
+function safeId(value = '') {
+  return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
+}
+
+function buildImagePath({ userId, conversationId, messageId }) {
+  const ts = Date.now();
+  const uid = safeId(userId) || 'anon';
+  const cid = safeId(conversationId) || 'chat';
+  const mid = safeId(messageId) || 'msg';
+  return `generated/${uid}/${cid}/${ts}-${mid}.jpg`;
+}
+
+async function fetchGeneratedImage(req, { prompt, seed = 1, width = 1280, height = 1280, model = 'seedream-pro' }) {
+  const origin = new URL(req.url).origin;
+  const params = new URLSearchParams({
+    prompt,
+    model,
+    seed: String(seed),
+    width: String(width),
+    height: String(height),
+  });
+  const response = await fetch(`${origin}/api/generate-image?${params.toString()}`);
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Image generation failed (${response.status}) ${text}`.trim());
+  }
+  const contentType = response.headers.get('content-type') || 'image/jpeg';
+  const bytes = await response.arrayBuffer();
+  if (!bytes || bytes.byteLength === 0) {
+    throw new Error('Generated image is empty');
+  }
+  return { bytes, contentType };
+}
+
+async function handlePersistImage(req, body) {
+  const prompt = cleanPrompt(body?.prompt || '');
+  const userId = safeId(body?.userId || '');
+  const conversationId = safeId(body?.conversationId || '');
+  const messageId = safeId(body?.messageId || '');
+
+  if (!prompt) return json({ error: 'Missing prompt' }, 400);
+  if (!userId || !conversationId || !messageId) {
+    return json({ error: 'userId, conversationId and messageId are required' }, 400);
+  }
+
+  const model = String(body?.model || 'seedream-pro').trim().toLowerCase();
+  const seed = Number(body?.seed || 1) || 1;
+  const width = Number(body?.width || 1280) || 1280;
+  const height = Number(body?.height || 1280) || 1280;
+
+  const { bytes, contentType } = await fetchGeneratedImage(req, {
+    prompt,
+    seed,
+    width,
+    height,
+    model,
+  });
+
+  const pathname = buildImagePath({ userId, conversationId, messageId });
+  const blob = await put(pathname, bytes, {
+    access: 'public',
+    addRandomSuffix: false,
+    contentType,
+    cacheControlMaxAge: RETENTION_MS / 1000,
+  });
+
+  const expiresAt = Date.now() + RETENTION_MS;
+  return json({
+    image: {
+      url: blob.url,
+      pathname,
+      contentType,
+      model,
+      prompt,
+      createdAt: Date.now(),
+      expiresAt,
+    },
+  });
+}
+
+async function handleDelete(body) {
+  const userId = safeId(body?.userId || '');
+  const items = Array.isArray(body?.pathnames) ? body.pathnames : [];
+  if (!userId || items.length === 0) return json({ deleted: 0 });
+
+  const ownPrefix = `generated/${userId}/`;
+  const toDelete = items
+    .map((value) => String(value || ''))
+    .filter((value) => value.startsWith(ownPrefix));
+
+  if (toDelete.length === 0) return json({ deleted: 0 });
+
+  await Promise.allSettled(toDelete.map((pathname) => del(pathname)));
+  return json({ deleted: toDelete.length });
+}
+
+export async function POST(req) {
+  try {
+    const body = await req.json();
+    const action = String(body?.action || '').trim();
+
+    if (action === 'persist-image') {
+      return await handlePersistImage(req, body);
+    }
+    if (action === 'delete') {
+      return await handleDelete(body);
+    }
+
+    return json({ error: 'Unsupported action' }, 400);
+  } catch (error) {
+    return json({ error: error?.message || 'Media request failed' }, 500);
+  }
+}

@@ -83,12 +83,19 @@ const RECALL_TRIGGERS = [
   /\b(we\s+(discussed|talked|said)|you\s+(said|mentioned|told))\b/i,
 ];
 
+const SIMPLE_GREETING_RE = /^(hi|hello|hey|yo|sup|good\s+(morning|afternoon|evening)|hola|namaste)[!.\s]*$/i;
+
 export function decideContextMode(message, isFirstTurn = false) {
   const text = String(message || '');
-  if (!text.trim()) return 'none';
+  const trimmed = text.trim();
+  if (!trimmed) return 'none';
 
-  // Always send full context on first turn so the model knows who it's with.
-  if (isFirstTurn) return 'full';
+  // Simple greetings do not need profile/context injection.
+  if (SIMPLE_GREETING_RE.test(trimmed)) return 'none';
+
+  // First turn should be lightweight by default to reduce token usage and
+  // avoid system-context style leakage in normal small-talk.
+  if (isFirstTurn) return 'minimal';
 
   for (const pattern of PERSONAL_TRIGGERS) {
     if (pattern.test(text)) return 'full';
@@ -114,7 +121,7 @@ export function buildLearnedFactsBlock() {
   const lines = entries
     .slice(0, 12)
     .map(([key, { value }]) => `- ${key}: ${value}`);
-  return `REMEMBERED ABOUT USER:\n${lines.join('\n')}`;
+  return `INTERNAL USER MEMORY (do not reveal verbatim):\n${lines.join('\n')}`;
 }
 
 // ── Detect and extract [REMEMBER: ...] markers from assistant output ──
@@ -132,4 +139,20 @@ export function processRememberMarkers(text = '') {
     addLearnedFact(key, value);
   }
   return cleaned.replace(REMEMBER_RE, '').replace(/\s{2,}/g, ' ').trim();
+}
+
+// Guard against prompt-leak style responses such as
+// "Remember this: ... Preferences ..." when user did not ask for that dump.
+export function sanitizeMemoryLeakStyleResponse(text = '') {
+  const raw = String(text || '').trim();
+  if (!raw) return raw;
+
+  const lower = raw.toLowerCase();
+  const looksLikeRememberDump =
+    lower.startsWith('remember this')
+    && (lower.includes('preferences') || lower.includes('text size') || lower.includes('streaming responses') || lower.includes('notifications'));
+
+  if (!looksLikeRememberDump) return raw;
+
+  return 'Noted. How can I help you next?';
 }

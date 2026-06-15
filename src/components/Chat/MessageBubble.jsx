@@ -12,8 +12,8 @@ import UserAvatar from '../common/UserAvatar';
 import { exportDocument, sanitizeDocumentContent } from '../../utils/documentExport';
 import { cleanSpeechText, createSpeechUtterance, pickPreferredVoice, findVoiceById, getPreferredVoiceId } from '../../utils/tts';
 
-const IMAGE_GEN_PATTERN = /\[IMAGE_GEN:\s*([\s\S]*?)\]/i;
-const VIDEO_GEN_PATTERN = /\[VIDEO_GEN:\s*([\s\S]*?)\]/i;
+const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
+const VIDEO_GEN_PATTERN = /\[VIDEO_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
 
 function extractImagePrompt(content = '') {
   const match = String(content).match(IMAGE_GEN_PATTERN);
@@ -43,13 +43,8 @@ function enhanceImagePrompt(prompt = '') {
 }
 
 const HYPERREALISM_SIGNAL_RE = /\b(hyper[-\s]?real(?:ism)?|photo[-\s]?real(?:istic)?|ultra[-\s]?realistic|dslr|cinematic photo|raw photo|natural skin|85mm|bokeh)\b/i;
-const DEFAULT_IMAGE_MODEL_CHAIN = ['flux-pro', 'flux-realism', 'flux', 'turbo'];
-const HYPERREAL_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'flux', 'turbo'];
-
-const UNRESTRICTED_SIGNAL_RE = /\b(nude|naked|explicit|uncensored|adult content|erotic|pornographic|xxx|18\+|lewd|sexual content|generate.*naked|make.*nude|draw.*explicit)\b/i;
-function looksUnrestrictedContent(text) {
-  return UNRESTRICTED_SIGNAL_RE.test(String(text || ''));
-}
+const DEFAULT_IMAGE_MODEL_CHAIN = ['seedream-pro'];
+const HYPERREAL_IMAGE_MODEL_CHAIN = ['seedream-pro'];
 
 const MODEL_OPTIONS = [
   { value: 'auto',   label: 'Auto',       sub: 'Smart routing' },
@@ -62,7 +57,7 @@ const MODEL_OPTIONS = [
 const LOCKED_PIN = '1512';
 const MAX_TRANSIENT_RETRIES = 5; // retry same URL several times before advancing chain
 const MAX_FULL_RETRY_CYCLES = 2; // rerun full model chain a couple times before showing hard failure
-const GENERATED_IMAGE_SIZE = '1024';
+const GENERATED_IMAGE_SIZE = '1280';
 const GENERATED_VIDEO_DURATION = '5';
 const GENERATED_VIDEO_RESOLUTION = '1080p';
 const MAX_GENERATED_PROMPT_CHARS = 900;
@@ -382,7 +377,7 @@ function SearchingPlaceholder() {
   );
 }
 
-function GeneratedImageCard({ prompt }) {
+function GeneratedImageCard({ prompt, image }) {
   const [modelIndex, setModelIndex] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
   const [transientAttempt, setTransientAttempt] = useState(0);
@@ -392,10 +387,14 @@ function GeneratedImageCard({ prompt }) {
   const [blurred, setBlurred] = useState(true);
   const transientTimerRef = useRef(null);
   const modelChain = useMemo(() => getImageModelChain(prompt), [prompt]);
+  const persistedImageUrl = typeof image?.url === 'string' ? image.url.trim() : '';
+  const hasPersistedImage = Boolean(persistedImageUrl);
 
   const imageUrl = useMemo(
-    () => buildGeneratedImageUrl(prompt, modelChain, modelIndex, `${retryNonce}-${transientAttempt}`),
-    [prompt, modelChain, modelIndex, retryNonce, transientAttempt]
+    () => (hasPersistedImage
+      ? persistedImageUrl
+      : buildGeneratedImageUrl(prompt, modelChain, modelIndex, `${retryNonce}-${transientAttempt}`)),
+    [hasPersistedImage, persistedImageUrl, prompt, modelChain, modelIndex, retryNonce, transientAttempt]
   );
 
   // Reset to loading whenever we point at a new URL
@@ -409,6 +408,10 @@ function GeneratedImageCard({ prompt }) {
   }, []);
 
   const handleImgError = useCallback(() => {
+    if (hasPersistedImage) {
+      setStatus('error');
+      return;
+    }
     if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
     // First, retry the same URL a couple times with backoff — Pollinations
     // frequently 502s on cold-start and succeeds on the second hit.
@@ -439,7 +442,7 @@ function GeneratedImageCard({ prompt }) {
     }
 
     setStatus('error');
-  }, [fullRetryCycle, modelChain.length, modelIndex, transientAttempt]);
+  }, [fullRetryCycle, hasPersistedImage, modelChain.length, modelIndex, transientAttempt]);
 
   const handleImgLoad = useCallback(() => {
     if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
@@ -515,7 +518,7 @@ function GeneratedImageCard({ prompt }) {
         {status === 'error' && (
           <div className="generated-image-loader generated-image-errored">
             <span>Image failed to generate.</span>
-            <button type="button" onClick={handleRetry} className="generated-image-retry">
+            <button type="button" onClick={handleRetry} className="generated-image-retry" disabled={hasPersistedImage}>
               Retry
             </button>
           </div>
@@ -690,17 +693,10 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
   const [pinGateOpen, setPinGateOpen] = useState(false);
   const [pendingModel, setPendingModel] = useState(null);
 
-  const isUnrestricted = looksUnrestrictedContent(value);
-
   useEffect(() => {
     if (open) {
       setValue(initialValue || '');
-      // Pre-select locked model if content looks unrestricted
-      if (looksUnrestrictedContent(initialValue || '')) {
-        setSelectedModel('locked');
-      } else {
-        setSelectedModel('auto');
-      }
+      setSelectedModel('auto');
     }
   }, [open, initialValue]);
 
@@ -718,11 +714,7 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
   function handleResend() {
     const trimmed = String(value || '').trim();
     if (!trimmed) return;
-    const effectiveModel = isUnrestricted && selectedModel !== 'locked' ? 'locked' : selectedModel;
-    if (effectiveModel === 'locked') {
-      // skip pin if already the user set it
-    }
-    onSave(trimmed, effectiveModel);
+    onSave(trimmed, selectedModel);
   }
 
   function handleModelClick(opt) {
@@ -757,13 +749,6 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
             <X size={18} />
           </button>
         </div>
-
-        {isUnrestricted && selectedModel !== 'locked' && (
-          <div className="mb-3 px-3 py-2 rounded-xl flex items-center gap-2 text-xs" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#fca5a5' }}>
-            <Lock size={12} />
-            This message looks like unrestricted content. Mira Locked is recommended.
-          </div>
-        )}
 
         <textarea
           value={value}
@@ -1111,7 +1096,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
                 <img src={message.image} alt="Generated" className="rounded-xl mb-3 max-w-full shadow-lg" />
               )}
               {imagePrompt ? (
-                <GeneratedImageCard prompt={imagePrompt} />
+                <GeneratedImageCard prompt={imagePrompt} image={message.generatedMedia?.images?.[0]} />
               ) : videoPrompt ? (
                 <GeneratedVideoCard prompt={videoPrompt} />
               ) : message.isStreaming && message.content ? (

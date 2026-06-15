@@ -185,7 +185,7 @@ export default function ChatWindow() {
         </div>
 
         <ChatInput
-          onSend={(text, attachments) => sendToChat(text, attachments, webSearch)}
+          onSend={(text, attachments, options = {}) => sendToChat(text, attachments, webSearch, options)}
           onStop={stopGenerating}
           isGenerating={isGenerating}
           isSearching={isSearching}

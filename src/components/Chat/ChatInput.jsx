@@ -127,16 +127,9 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [lockedPinOpen, setLockedPinOpen] = useState(false);
-  const [unrestrictedSuggestOpen, setUnrestrictedSuggestOpen] = useState(false);
   const [lockedPinInput, setLockedPinInput] = useState('');
   const [lockedPinError, setLockedPinError] = useState('');
   const { selectedModel, setSelectedModel, lockedModelUnlocked, setLockedModelUnlocked, LOCKED_MODEL_PIN } = useChatContext();
-
-  // Detect unrestricted-content intent in user input
-  const UNRESTRICTED_SIGNAL_RE = /\b(nude|naked|explicit|uncensored|adult content|erotic|pornographic|xxx|18\+|lewd|sexual content|generate.*naked|make.*nude|draw.*explicit)\b/i;
-  function looksUnrestricted(text) {
-    return UNRESTRICTED_SIGNAL_RE.test(String(text || ''));
-  }
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const dragCounterRef = useRef(0);
@@ -177,13 +170,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   function handleSubmit(e) {
     e?.preventDefault();
     if ((!input.trim() && attachments.length === 0) || isGenerating) return;
-    // Suggest unrestricted model if content looks explicit and locked isn't already active
-    if (selectedModel !== 'locked' && looksUnrestricted(input)) {
-      setLockedPinInput('');
-      setLockedPinError('');
-      setUnrestrictedSuggestOpen(true);
-      return;
-    }
     onSend(input.trim(), attachments);
     setInput('');
     setAttachments([]);
@@ -633,83 +619,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
         </div>
       )}
 
-      {/* ── Unrestricted content suggestion ── */}
-      {unrestrictedSuggestOpen && (
-        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(6px)' }} onClick={() => setUnrestrictedSuggestOpen(false)}>
-          <div className="glass-strong rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.15)' }}>
-                <Lock size={18} style={{ color: '#f87171' }} />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Switch to Mira Locked?</h3>
-                <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>This message may need the unrestricted model</p>
-              </div>
-            </div>
-            <p className="text-xs leading-relaxed mb-4 px-1" style={{ color: 'var(--text-tertiary)' }}>
-              Mira Locked operates without restrictions. Confirm you are <strong>18+</strong> and enter your PIN to enable it and send this message.
-            </p>
-            <input
-              type="password"
-              inputMode="numeric"
-              value={lockedPinInput}
-              onChange={(e) => { setLockedPinInput(e.target.value.replace(/\D/g, '')); setLockedPinError(''); }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  if (lockedPinInput === LOCKED_MODEL_PIN) {
-                    setLockedModelUnlocked(true);
-                    setSelectedModel('locked');
-                    setUnrestrictedSuggestOpen(false);
-                    const msg = input.trim();
-                    const att = attachments;
-                    setInput('');
-                    setAttachments([]);
-                    onSend(msg, att);
-                  } else {
-                    setLockedPinError('Incorrect PIN');
-                  }
-                }
-              }}
-              placeholder="Enter PIN..."
-              autoFocus
-              maxLength={8}
-              className="w-full glass-input rounded-xl px-4 py-3 text-sm text-center tracking-[0.5em] outline-none focus:ring-1 focus:ring-[var(--border)] mb-2"
-              style={{ color: 'var(--text-primary)' }}
-            />
-            {lockedPinError && <p className="text-xs text-red-400 text-center mb-2">{lockedPinError}</p>}
-            <div className="flex gap-2 mt-3">
-              <button
-                onClick={() => {
-                  setUnrestrictedSuggestOpen(false);
-                  onSend(input.trim(), attachments);
-                  setInput('');
-                  setAttachments([]);
-                }}
-                className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-all"
-                style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}
-              >Send anyway</button>
-              <button
-                onClick={() => {
-                  if (lockedPinInput === LOCKED_MODEL_PIN) {
-                    setLockedModelUnlocked(true);
-                    setSelectedModel('locked');
-                    setUnrestrictedSuggestOpen(false);
-                    const msg = input.trim();
-                    const att = attachments;
-                    setInput('');
-                    setAttachments([]);
-                    onSend(msg, att);
-                  } else {
-                    setLockedPinError('Incorrect PIN');
-                  }
-                }}
-                className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-all hover:opacity-90"
-                style={{ background: 'rgba(239,68,68,0.2)', color: '#f87171', border: '1px solid rgba(239,68,68,0.35)' }}
-              >Unlock &amp; send</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

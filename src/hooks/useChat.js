@@ -21,6 +21,7 @@ import {
   decideContextMode,
   buildLearnedFactsBlock,
   processRememberMarkers,
+  sanitizeMemoryLeakStyleResponse,
 } from '../services/knowledgeBank';
 import { makeCacheKey, getCachedResponse, setCachedResponse } from '../services/responseCache';
 import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
@@ -31,16 +32,16 @@ const MAX_HISTORY_MESSAGES_FOR_MODEL = 24;
 const MAX_HISTORY_CHARS_FOR_MODEL = 18000;
 const MAX_GREETING_HISTORY_MESSAGES = 6;
 const MAX_GREETING_HISTORY_CHARS = 4000;
-const IMAGE_GEN_PATTERN = /\[IMAGE_GEN:\s*([\s\S]*?)\]/i;
-const VIDEO_GEN_PATTERN = /\[VIDEO_GEN:\s*([\s\S]*?)\]/i;
+const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
+const VIDEO_GEN_PATTERN = /\[VIDEO_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
 const MEDIA_REQUEST_PATTERN = /\b(video|videos|clip|clips|media|reel|reels|youtube|instagram|social\s+posts?)\b|\b(show|find|fetch|get|search|check|look\s+up|more)\b[^.!?]{0,40}\b(images|photos|pictures)\b|\b(images|photos|pictures)\b[^.!?]{0,40}\b(show|find|fetch|get|search|check|look\s+up|more)\b/i;
 const EXPLICIT_VISUAL_WEB_SEARCH_PATTERN = /\b(who\s+is\s+this|who\s+is\s+in\s+this\s+image|find\s+this\s+online|find\s+this\s+on\s+the\s+web|search\s+this\s+product|search\s+this\s+image|search\s+this\s+online|look\s+this\s+up|look\s+this\s+up\s+online|check\s+this\s+online|verify\s+this\s+online|find\s+out\s+what\s+product\s+this\s+is|search\s+the\s+web\s+for\s+this|identify\s+this\s+online)\b/i;
 const CONTEXTUAL_DEVICE_MEDIA_PATTERN = /\b(this|that|the)\s+(device|product|tool|item|object|thing|model|prototype|machine|system)\b|\b(tell me more|more about|details about|background on|explain)\b[^.!?]{0,70}\b(this|that|it|device|product|object|thing|model|prototype|machine|system)\b/i;
 const CONTEXT_REFERENCE_PATTERN = /\b(it|its|this|that|these|those|they|them|the\s+(device|product|tool|item|object|thing|company|brand|manufacturer|maker|producer|person|model|app|software|platform|service|system|prototype|machine))\b/i;
 const CONTEXTUAL_WEB_RESEARCH_PATTERN = /\b(company|companies|manufacturer|manufactures?|producer|produces?|producing|maker|made\s+by|built\s+by|created\s+by|developed\s+by|owner|owned\s+by|founder|team|organization|brand|official|website|source|origin|specs?|features?|pricing|price|cost|availability|launch|release|details?|in[-\s]?depth|deep\s+dive|full\s+information|complete\s+information|let\s+me\s+know|tell\s+me\s+more|more\s+about|background|research|explain)\b/i;
 const SHORT_CONTEXT_FOLLOWUP_PATTERN = /\b(are\s+you\s+sure|sure\s+about\s+that|really|seriously|wait|why\??|how\s+so|what\s+do\s+you\s+mean|continue|go\s+on|tell\s+me\s+more|more|elaborate|explain\s+that)\b/i;
+const SEARCH_WORTHY_CONTEXT_PATTERN = /\b(company|manufacturer|maker|producer|brand|official\s+website|specs?|pricing|price|cost|availability|launch|release|latest|current|current\s+status|who\s+makes|who\s+owns|what\s+company|where\s+to\s+buy|how\s+much|how\s+many)\b/i;
 const SIMPLE_GREETING_PATTERN = /^\s*(?:hi|hello|hey|hey there|hello there|yo|sup|good\s+(?:morning|afternoon|evening))(?:[!.?\s]+)?$/i;
-const UNRESTRICTED_SIGNAL_RE = /\b(nude|nudity|naked|explicit|uncensored|adult\s*content|erotic|porn|pornographic|xxx|18\+|lewd|sexual\s*content|sex|nsfw|fetish|hardcore|boobs?|breasts?|nipples?|genitals?|penis|vagina|anal|blowjob|handjob|cum|orgasm|hentai)\b/i;
 const CONTEXT_ENTITY_STOP = new Set(['I', 'The', 'A', 'An', 'It', 'This', 'That', 'These', 'Those', 'You', 'He', 'She', 'We', 'They', 'My', 'Your', 'MIRA', 'AI', 'PDF', 'DOCX', 'PPTX']);
 const TEXT_ENTITY_RESEARCH_PATTERN = /\b(tell\s+me\s+about|tell\s+me\s+more\s+about|details?\s+about|information\s+about|info\s+about|background\s+on|research|explain|what\s+is|what's|overview\s+of|in\s+detail|deep\s+dive)\b/i;
 
@@ -354,8 +355,9 @@ function getRecentContextAnchor(historySource = []) {
 
 function needsContextualWebSearch(text = '', historySource = []) {
   const value = String(text || '');
-  if (!CONTEXTUAL_WEB_RESEARCH_PATTERN.test(value)) return false;
   if (!CONTEXT_REFERENCE_PATTERN.test(value)) return false;
+  if (!SEARCH_WORTHY_CONTEXT_PATTERN.test(value)) return false;
+  if (!CONTEXTUAL_WEB_RESEARCH_PATTERN.test(value)) return false;
   return getRecentContextEntities(historySource).length > 0 || getRecentContextAnchor(historySource).length > 0;
 }
 
@@ -387,8 +389,11 @@ function indicatesKnowledgeGap(text = '') {
 
 function cleanImagePrompt(text = '') {
   return String(text || '')
-    .replace(/\[IMAGE_GEN:\s*/gi, '')
+    .replace(/\[IMAGE_GEN(?:\:\s*|\]\s*)/gi, '')
     .replace(/\]$/g, '')
+    .replace(/^generated\s+an\s+image\s+from\s+(?:this\s+)?(?:refined\s+)?prompt[:\s-]*/i, '')
+    .replace(/^create\s+a\s+concise\s+but\s+highly\s+detailed\s+visual\s+prompt[:\s-]*/i, '')
+    .replace(/^image\s+generation\s+request[:\s-]*/i, '')
     .replace(/^(sure|okay|absolutely|here'?s|here is|i can|i will)[\s,:-]+/i, '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -396,25 +401,85 @@ function cleanImagePrompt(text = '') {
 
 function cleanVideoPrompt(text = '') {
   return String(text || '')
-    .replace(/\[VIDEO_GEN:\s*/gi, '')
+    .replace(/\[VIDEO_GEN(?:\:\s*|\]\s*)/gi, '')
     .replace(/\]$/g, '')
+    .replace(/^generated\s+a\s+video\s+from\s+(?:this\s+)?(?:refined\s+)?prompt[:\s-]*/i, '')
+    .replace(/^create\s+a\s+concise\s+but\s+highly\s+detailed\s+cinematic\s+prompt[:\s-]*/i, '')
+    .replace(/^video\s+generation\s+request[:\s-]*/i, '')
     .replace(/^(sure|okay|absolutely|here'?s|here is|i can|i will)[\s,:-]+/i, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-function normalizeImageGenerationOutput(modelText, userText) {
+function normalizeImageGenerationOutput(modelText, userText, previousPrompt = '') {
   const markerPrompt = modelText?.match(IMAGE_GEN_PATTERN)?.[1]?.trim();
-  const prompt = cleanImagePrompt(markerPrompt || modelText || userText);
-  const fallback = cleanImagePrompt(userText) || 'A high-quality, detailed image based on the user request';
+  const currentPrompt = cleanImagePrompt(markerPrompt || modelText || userText);
+  const priorPrompt = cleanImagePrompt(previousPrompt);
+  const correctionText = cleanImagePrompt(userText);
+
+  let prompt = currentPrompt || priorPrompt || correctionText;
+  if (priorPrompt && correctionText) {
+    const sameAsPrevious = currentPrompt && cleanImagePrompt(currentPrompt) === priorPrompt;
+    if (!sameAsPrevious) {
+      prompt = `${priorPrompt}, ${correctionText}`.replace(/\s+/g, ' ').trim();
+    }
+  }
+
+  const fallback = 'A high-quality, detailed image based on the user request';
   return `[IMAGE_GEN: ${prompt || fallback}]`;
 }
 
-function normalizeVideoGenerationOutput(modelText, userText) {
+function normalizeVideoGenerationOutput(modelText, userText, previousPrompt = '') {
   const markerPrompt = modelText?.match(VIDEO_GEN_PATTERN)?.[1]?.trim();
-  const prompt = cleanVideoPrompt(markerPrompt || modelText || userText);
-  const fallback = cleanVideoPrompt(userText) || 'A cinematic, high-quality short video based on the user request';
+  const currentPrompt = cleanVideoPrompt(markerPrompt || modelText || userText);
+  const priorPrompt = cleanVideoPrompt(previousPrompt);
+  const correctionText = cleanVideoPrompt(userText);
+
+  let prompt = currentPrompt || priorPrompt || correctionText;
+  if (priorPrompt && correctionText) {
+    const sameAsPrevious = currentPrompt && cleanVideoPrompt(currentPrompt) === priorPrompt;
+    if (!sameAsPrevious) {
+      prompt = `${priorPrompt}, ${correctionText}`.replace(/\s+/g, ' ').trim();
+    }
+  }
+
+  const fallback = 'A cinematic, high-quality short video based on the user request';
   return `[VIDEO_GEN: ${prompt || fallback}]`;
+}
+
+function extractImageGenerationPrompt(content = '') {
+  const match = String(content || '').match(IMAGE_GEN_PATTERN);
+  const prompt = cleanImagePrompt(match?.[1] || '');
+  return prompt || '';
+}
+
+async function persistGeneratedImageAsset({ prompt, userId, conversationId, messageId }) {
+  const cleanPrompt = cleanImagePrompt(prompt);
+  if (!cleanPrompt || !userId || !conversationId || !messageId) return null;
+
+  const response = await fetch('/api/media', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'persist-image',
+      prompt: cleanPrompt,
+      model: 'seedream-pro',
+      userId,
+      conversationId,
+      messageId,
+      width: 1280,
+      height: 1280,
+      seed: 1,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Persist image failed (${response.status}) ${text}`.trim());
+  }
+
+  const payload = await response.json();
+  return payload?.image || null;
 }
 
 function getFileExtension(name = '') {
@@ -523,12 +588,37 @@ function getLatestGeneratedImagePrompt(historySource = []) {
   return '';
 }
 
+function getLatestGeneratedVideoPrompt(historySource = []) {
+  const source = Array.isArray(historySource) ? historySource : [];
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    const message = source[index];
+    if (message?.role !== 'assistant') continue;
+    const text = normalizeMessageContent(message?.promptContent || message?.content || '');
+    const markerPrompt = String(text || '').match(VIDEO_GEN_PATTERN)?.[1]?.trim();
+    if (!markerPrompt) continue;
+    const cleaned = cleanVideoPrompt(markerPrompt);
+    if (cleaned) return cleaned.slice(0, 900);
+  }
+  return '';
+}
+
 function isImageRefinementFollowup(text = '') {
   const value = String(text || '').replace(/\s+/g, ' ').trim();
   if (!value) return false;
 
   const dissatisfaction = /\b(not\s+as\s+expected|not\s+good|not\s+right|doesn'?t\s+look\s+right|wrong|bad|failed|issue|problem|fix|improve|adjust|refine|tweak|modify|redo|regenerate|retry|again|visible|show|closer|close[-\s]?up|angle|lighting|camera|detail)\b/i;
   const reference = /\b(this|that|it|image|pic|picture|render|generation|one|result|output|previous|last)\b/i;
+  const shortFollowup = value.length <= 220;
+
+  return shortFollowup && dissatisfaction.test(value) && reference.test(value);
+}
+
+function isVideoRefinementFollowup(text = '') {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!value) return false;
+
+  const dissatisfaction = /\b(not\s+as\s+expected|not\s+good|not\s+right|doesn'?t\s+look\s+right|wrong|bad|failed|issue|problem|fix|improve|adjust|refine|tweak|modify|redo|regenerate|retry|again|visible|show|closer|camera|lighting|motion|scene|cut|shot|transition)\b/i;
+  const reference = /\b(this|that|it|video|clip|render|generation|one|result|output|previous|last)\b/i;
   const shortFollowup = value.length <= 220;
 
   return shortFollowup && dissatisfaction.test(value) && reference.test(value);
@@ -762,10 +852,13 @@ export default function useChat() {
       }
 
       const hasImages = imageAttachments.length > 0;
-      const isUnrestrictedContent = UNRESTRICTED_SIGNAL_RE.test(String(content || ''));
       const modelOverride = options.modelOverride || null;
-      const guardedOverride = (isUnrestrictedContent && modelOverride === 'mini') ? 'locked' : modelOverride;
-      const effectiveSelectedModel = guardedOverride || (isUnrestrictedContent && selectedModel === 'mini' ? 'locked' : selectedModel);
+      const guardedOverride = modelOverride;
+      // Locked mode is absolute: once locked is selected (or explicitly overridden),
+      // no downstream router/fallback can switch to mini/lite/spec.
+      const effectiveSelectedModel = (selectedModel === 'locked' || guardedOverride === 'locked')
+        ? 'locked'
+        : (guardedOverride || selectedModel);
       const engineResult = processQuery(content, hasImages, { selectedMode: effectiveSelectedModel });
       const promptInterpretation = engineResult.interpretation || {
         route: engineResult.classification.intent,
@@ -774,11 +867,11 @@ export default function useChat() {
         videoIntent: engineResult.classification.intent === 'video',
       };
       let chosenModel = engineResult.model;
-      if (isUnrestrictedContent && chosenModel === 'mini') {
+      if (effectiveSelectedModel === 'locked') {
         chosenModel = 'locked';
       }
       let wantsImageGeneration = promptInterpretation.imageIntent === true;
-      const wantsVideoGeneration = promptInterpretation.videoIntent === true;
+      let wantsVideoGeneration = promptInterpretation.videoIntent === true;
       const simpleGreeting = !hasImages && attachments.length === 0 && !replaceMessageId && isSimpleGreeting(content);
       const requestedDocumentFormat = (wantsImageGeneration || wantsVideoGeneration)
         ? null
@@ -812,6 +905,7 @@ export default function useChat() {
         }
 
         const previousImagePrompt = getLatestGeneratedImagePrompt(historySource);
+        const previousVideoPrompt = getLatestGeneratedVideoPrompt(historySource);
         const wantsImageRefinementFollowup = (
           !wantsImageGeneration
           && !hasImages
@@ -819,8 +913,17 @@ export default function useChat() {
           && Boolean(previousImagePrompt)
           && isImageRefinementFollowup(content)
         );
+        const wantsVideoRefinementFollowup = (
+          !wantsVideoGeneration
+          && !hasImages
+          && Boolean(previousVideoPrompt)
+          && isVideoRefinementFollowup(content)
+        );
         if (wantsImageRefinementFollowup) {
           wantsImageGeneration = true;
+        }
+        if (wantsVideoRefinementFollowup) {
+          wantsVideoGeneration = true;
         }
 
         const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: simpleGreeting });
@@ -915,6 +1018,7 @@ export default function useChat() {
         // Attached to the assistant message for the UI gallery — NOT injected
         // into the LLM prompt (would bloat tokens and confuse the model).
         let mediaForMessage = null;
+        let generatedMediaForMessage = null;
         let deterministicMediaReply = null;
 
         {
@@ -1137,11 +1241,14 @@ export default function useChat() {
             const previousPromptContext = wantsImageRefinementFollowup && previousImagePrompt
               ? `\n\nPREVIOUS GENERATED IMAGE PROMPT (use as base context): "${previousImagePrompt}".\nThe current user message is a refinement request for that image. Keep the core subject, then apply only the user's requested corrections.`
               : '';
-            userContent = `${userContent}${previousPromptContext}\n\nIMAGE GENERATION REQUEST: Create a concise but highly detailed visual prompt for this request. Respond only as [IMAGE_GEN: subject, environment, composition, camera, lighting, style, mood, colors, quality].`;
+            userContent = `${userContent}${previousPromptContext}\n\nIMAGE GENERATION REQUEST: Return exactly one line in the form [IMAGE_GEN: ...]. Do not add any explanation, commentary, markdown, or extra text. The prompt inside the marker should be concise, detailed, and ready for image generation.`;
           }
 
           if (wantsVideoGeneration) {
-            userContent = `${userContent}\n\nVIDEO GENERATION REQUEST: Create a concise but highly detailed cinematic prompt for this request. Respond only as [VIDEO_GEN: subject, motion, scene progression, camera movement, lighting, style, mood, duration, quality].`;
+            const previousVideoPromptContext = wantsVideoRefinementFollowup && previousVideoPrompt
+              ? `\n\nPREVIOUS GENERATED VIDEO PROMPT (use as base context): "${previousVideoPrompt}".\nThe current user message is a refinement request for that video. Keep the core scene, then apply only the user's requested corrections.`
+              : '';
+            userContent = `${userContent}${previousVideoPromptContext}\n\nVIDEO GENERATION REQUEST: Return exactly one line in the form [VIDEO_GEN: ...]. Do not add any explanation, commentary, markdown, or extra text. The prompt inside the marker should be concise, cinematic, and ready for video generation.`;
           }
 
           if (hasImages && !wantsImageGeneration && !wantsVideoGeneration) {
@@ -1226,9 +1333,25 @@ export default function useChat() {
           }
 
           if (wantsImageGeneration && !requestFailed) {
-            fullText = normalizeImageGenerationOutput(fullText, content);
+            fullText = normalizeImageGenerationOutput(fullText, content, wantsImageRefinementFollowup ? previousImagePrompt : '');
+            const imagePrompt = extractImageGenerationPrompt(fullText);
+            if (imagePrompt && !abortRef.current) {
+              try {
+                const persistedImage = await persistGeneratedImageAsset({
+                  prompt: imagePrompt,
+                  userId: user.uid,
+                  conversationId: convId,
+                  messageId: assistantMsgId,
+                });
+                if (persistedImage?.url) {
+                  generatedMediaForMessage = { images: [persistedImage] };
+                }
+              } catch (persistErr) {
+                console.warn('Generated image persistence failed:', persistErr?.message);
+              }
+            }
           } else if (wantsVideoGeneration && !requestFailed) {
-            fullText = normalizeVideoGenerationOutput(fullText, content);
+            fullText = normalizeVideoGenerationOutput(fullText, content, wantsVideoRefinementFollowup ? previousVideoPrompt : '');
           }
 
           // ── Model-driven fallback web search ──
@@ -1310,6 +1433,7 @@ export default function useChat() {
           if (fullText) {
             // Strip + persist [REMEMBER: key=value] markers before display
             fullText = processRememberMarkers(fullText);
+            fullText = sanitizeMemoryLeakStyleResponse(fullText);
 
             const requestedFormat = requestedDocumentFormat;
             let titleSource = fullText;
@@ -1339,6 +1463,7 @@ export default function useChat() {
                 content: fullText,
                 modelUsed: chosenModel,
                 ...(mediaForMessage ? { media: mediaForMessage } : {}),
+                ...(generatedMediaForMessage ? { generatedMedia: generatedMediaForMessage } : {}),
               });
             }
 
