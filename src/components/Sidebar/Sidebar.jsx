@@ -77,6 +77,7 @@ export default function Sidebar() {
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
   const [projectMenu, setProjectMenu] = useState(null);
+  const sidebarRef = useRef(null);
 
   useEffect(() => {
     if (!user) return;
@@ -109,6 +110,24 @@ export default function Sidebar() {
     window.addEventListener('click', handler);
     return () => window.removeEventListener('click', handler);
   }, []);
+
+  // Close sidebar on outside click/tap (desktop + mobile).
+  useEffect(() => {
+    if (!sidebarOpen) return undefined;
+
+    const handleOutsidePointer = (event) => {
+      const sidebarEl = sidebarRef.current;
+      const target = event.target;
+      if (!sidebarEl || !(target instanceof Node)) return;
+      if (sidebarEl.contains(target)) return;
+      setSidebarOpen(false);
+    };
+
+    window.addEventListener('pointerdown', handleOutsidePointer, true);
+    return () => {
+      window.removeEventListener('pointerdown', handleOutsidePointer, true);
+    };
+  }, [sidebarOpen, setSidebarOpen]);
 
   const filtered = search
     ? conversations.filter((c) => c.title?.toLowerCase().includes(search.toLowerCase()))
@@ -318,6 +337,7 @@ export default function Sidebar() {
       )}
 
       <aside
+        ref={sidebarRef}
         onMouseEnter={cancelHide}
         onMouseLeave={scheduleHide}
         className={`mira-sidebar ${sidebarOpen ? 'open' : ''} fixed inset-y-0 left-0 z-50 w-[280px] p-0 lg:p-3 flex flex-col h-full`}

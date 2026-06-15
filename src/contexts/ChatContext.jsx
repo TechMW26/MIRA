@@ -2,6 +2,9 @@ import { createContext, useContext, useState, useCallback, useEffect } from 'rea
 
 const ACTIVE_CONVERSATION_STORAGE_KEY = 'mira_active_conversation_id';
 const ACTIVE_PROJECT_STORAGE_KEY = 'mira_active_project_id';
+const SELECTED_MODEL_STORAGE_KEY = 'mira_selected_model';
+const ALLOWED_MODELS = new Set(['auto', 'mini', 'lite', 'spec', 'locked']);
+const LOCKED_MODEL_PIN = '1512';
 
 const ChatContext = createContext(null);
 
@@ -32,6 +35,26 @@ export function ChatProvider({ children }) {
   });
   // Tracks which projects have been PIN-unlocked this session
   const [unlockedProjects, setUnlockedProjects] = useState(new Set());
+  // Session-only unlock for the Unrestricted locked model
+  const [lockedModelUnlocked, setLockedModelUnlocked] = useState(false);
+  const [selectedModel, setSelectedModelState] = useState(() => {
+    try {
+      const stored = localStorage.getItem(SELECTED_MODEL_STORAGE_KEY);
+      return stored && ALLOWED_MODELS.has(stored) ? stored : 'auto';
+    } catch {
+      return 'auto';
+    }
+  });
+
+  const setSelectedModel = useCallback((value) => {
+    const next = ALLOWED_MODELS.has(value) ? value : 'auto';
+    setSelectedModelState(next);
+    try {
+      localStorage.setItem(SELECTED_MODEL_STORAGE_KEY, next);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const startNewChat = useCallback(() => {
     setCurrentConversationId(null);
@@ -85,6 +108,11 @@ export function ChatProvider({ children }) {
     setActiveProjectId,
     unlockProject,
     isProjectUnlocked,
+    selectedModel,
+    setSelectedModel,
+    lockedModelUnlocked,
+    setLockedModelUnlocked,
+    LOCKED_MODEL_PIN,
   };
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;

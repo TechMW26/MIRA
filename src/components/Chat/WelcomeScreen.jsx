@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 import ParticleGlobe from './ParticleGlobe';
+import { useChatContext } from '../../contexts/ChatContext';
 
 const ATTACH_ACCEPT = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic';
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'heic']);
@@ -470,6 +471,8 @@ function TemplateForm({ template, onSubmit, onClose }) {
 
 export default function WelcomeScreen({ onSend }) {
   const [selectedTemplate, setSelectedTemplate] = useState(null);
+  const [iconAttractor, setIconAttractor] = useState(null);
+  const { selectedModel } = useChatContext();
 
   // Fixed orbit lineup matching the reference HUD mockup. Each entry pairs
   // the visual icon shown on the ring with the prompt template it opens.
@@ -501,7 +504,7 @@ export default function WelcomeScreen({ onSend }) {
     <>
       {/* Full-viewport particle field so the globe + its outer particles span
           the whole screen and never clip against a tight canvas edge. */}
-      <ParticleGlobe />
+      <ParticleGlobe iconAttractor={iconAttractor} locked={selectedModel === 'locked'} />
 
       {/* Template form modal */}
       {selectedTemplate && (
@@ -512,7 +515,11 @@ export default function WelcomeScreen({ onSend }) {
         />
       )}
 
-      <ToolOrbit tools={orbitTools} onSelect={setSelectedTemplate} />
+      <ToolOrbit
+        tools={orbitTools}
+        onSelect={setSelectedTemplate}
+        onHoverChange={setIconAttractor}
+      />
     </>
   );
 }
@@ -522,7 +529,7 @@ export default function WelcomeScreen({ onSend }) {
  * Rendered as a fixed full-viewport layer so the icons line up with the
  * full-screen particle canvas and always have room (never get clipped).
  */
-function ToolOrbit({ tools, onSelect }) {
+function ToolOrbit({ tools, onSelect, onHoverChange }) {
   const [vp, setVp] = useState(() => ({
     w: typeof window !== 'undefined' ? window.innerWidth : 1280,
     h: typeof window !== 'undefined' ? window.innerHeight : 800,
@@ -570,6 +577,10 @@ function ToolOrbit({ tools, onSelect }) {
             key={tool.label}
             type="button"
             onClick={() => onSelect(tool)}
+            onMouseEnter={() => onHoverChange?.({ x, y, label: tool.label })}
+            onMouseLeave={() => onHoverChange?.(null)}
+            onFocus={() => onHoverChange?.({ x, y, label: tool.label })}
+            onBlur={() => onHoverChange?.(null)}
             className="tool-node"
             style={{ left: `${x}px`, top: `${y}px` }}
             title={tool.label}

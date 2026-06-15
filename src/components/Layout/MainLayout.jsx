@@ -10,12 +10,11 @@ export default function MainLayout() {
   const {
     showSettings,
     setShowSettings,
-    isGenerating,
-    isSearching,
     currentConversationId,
     setCurrentConversationId,
     activeProjectId,
     setActiveProjectId,
+    selectedModel,
   } = useChatContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const hasHydratedFromUrlRef = useRef(false);
@@ -26,6 +25,15 @@ export default function MainLayout() {
       document.body.classList.remove('mira-hud', 'mira-hud-active');
     };
   }, []);
+
+  useEffect(() => {
+    if (selectedModel === 'locked') {
+      document.body.setAttribute('data-locked', 'true');
+    } else {
+      document.body.removeAttribute('data-locked');
+    }
+    return () => document.body.removeAttribute('data-locked');
+  }, [selectedModel]);
 
   // URL -> state sync (supports opening direct permalinks and browser back/forward).
   // We complete this hydration before allowing state -> URL writes to avoid first-load
@@ -71,14 +79,12 @@ export default function MainLayout() {
     }
   }, [currentConversationId, activeProjectId, searchParams, setSearchParams]);
 
-  const status = isSearching ? 'SEARCHING' : isGenerating ? 'PROCESSING' : 'READY';
-
   return (
     <div className="relative flex h-screen overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
       <Sidebar />
 
       <div className="flex-1 flex flex-col min-w-0 relative z-10">
-        <HudOverlay status={status} model="MIRA v2.5" />
+        <HudOverlay />
 
         <div className="flex-1 min-h-0 flex flex-col">
           <ChatWindow />

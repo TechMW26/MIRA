@@ -170,23 +170,59 @@ function buildResultAnchoredImageQuery(results = [], anchorScope = null, fallbac
 
 // === Ollama chat configuration ===
 const OLLAMA_API_URL = (process.env.OLLAMA_API_URL || 'http://147.93.102.103:11434/api/generate').trim();
-const OLLAMA_TEXT_MODEL = (process.env.OLLAMA_TEXT_MODEL || 'huihui_ai/deepseek-r1-abliterated:14b').trim();
-const OLLAMA_VISION_MODEL = (process.env.OLLAMA_VISION_MODEL || 'llama3.2-vision').trim();
+const MIRA_MINI_MODEL = (process.env.MIRA_MINI_MODEL || 'mira-mini').trim();
+const MIRA_LITE_MODEL = (process.env.MIRA_LITE_MODEL || 'mira-lite').trim();
+const MIRA_SPEC_MODEL = (process.env.MIRA_SPEC_MODEL || 'mira-spec').trim();
+const MIRA_VISION_MODEL = (process.env.MIRA_VISION_MODEL || 'mira-vision').trim();
+const MIRA_LOCKED_MODEL = (process.env.MIRA_LOCKED_MODEL || 'mira-locked:latest').trim();
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 2048);
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);
+const ACTIVE_CHAT_REQUEST_TTL_MS = OLLAMA_TIMEOUT_MS + 120000;
+const UNRESTRICTED_SIGNAL_RE = /\b(nude|nudity|naked|explicit|uncensored|adult\s*content|erotic|porn|pornographic|xxx|18\+|lewd|sexual\s*content|sex|nsfw|fetish|hardcore|boobs?|breasts?|nipples?|genitals?|penis|vagina|anal|blowjob|handjob|cum|orgasm|hentai)\b/i;
+const ACTIVE_CHAT_REQUESTS = new Map();
+
+function resolveModelChoice(requested, hasImages, forceLocked = false) {
+  const value = String(requested || 'auto').trim().toLowerCase();
+  const isMini = value === 'mini' || value === 'mira-mini' || value === MIRA_MINI_MODEL.toLowerCase();
+  const isSpec = value === 'spec' || value === 'mira-spec' || value === MIRA_SPEC_MODEL.toLowerCase();
+  const isLite = value === 'lite' || value === 'mira-lite' || value === MIRA_LITE_MODEL.toLowerCase();
+  const isLocked = value === 'locked' || value === 'mira-locked' || value === MIRA_LOCKED_MODEL.toLowerCase();
+  if (forceLocked) return MIRA_LOCKED_MODEL;
+  if (isLocked) return MIRA_LOCKED_MODEL;
+  if (isSpec) return MIRA_SPEC_MODEL;
+  if (isMini) return hasImages ? MIRA_VISION_MODEL : MIRA_MINI_MODEL;
+  if (isLite) return hasImages ? MIRA_VISION_MODEL : MIRA_LITE_MODEL;
+  return hasImages ? MIRA_VISION_MODEL : MIRA_LITE_MODEL;
+}
+
+function hasUnrestrictedSignals(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const message = list[index];
+    if (message?.role !== 'user') continue;
+    return UNRESTRICTED_SIGNAL_RE.test(String(message?.content || ''));
+  }
+  return false;
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchOllamaWithRetry(payload) {
+async function fetchOllamaWithRetry(payload, requestAbortSignal) {
   const transientStatus = new Set([408, 429, 500, 502, 503, 504]);
   const maxAttempts = 2;
   let lastStatus = 500;
   let lastMessage = 'Chat request failed.';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (requestAbortSignal?.aborted) {
+      return { errorStatus: 499, errorMessage: 'Generation stopped by user.' };
+    }
+
     const controller = new AbortController();
+    const abortUpstream = () => controller.abort();
+    requestAbortSignal?.addEventListener?.('abort', abortUpstream, { once: true });
     const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
     try {
       const upstream = await fetch(OLLAMA_API_URL, {
@@ -196,6 +232,7 @@ async function fetchOllamaWithRetry(payload) {
         signal: controller.signal,
       });
       clearTimeout(timeout);
+      requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
 
       if (upstream.ok) return upstream;
 
@@ -209,6 +246,10 @@ async function fetchOllamaWithRetry(payload) {
       return { errorStatus: lastStatus, errorMessage: lastMessage };
     } catch (err) {
       clearTimeout(timeout);
+      requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
+      if (requestAbortSignal?.aborted) {
+        return { errorStatus: 499, errorMessage: 'Generation stopped by user.' };
+      }
       lastStatus = 500;
       lastMessage = err.name === 'AbortError' ? `Ollama API timeout after ${OLLAMA_TIMEOUT_MS}ms` : (err.message || 'Chat request failed.');
       if (attempt < maxAttempts) {
@@ -231,6 +272,18 @@ function toOllamaPrompt(messages = []) {
     })
     .join('\n\n')
     .trim();
+}
+
+function attachImagesToLastUser(messages = [], images = []) {
+  const list = Array.isArray(messages) ? messages.slice() : [];
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (list[i]?.role === 'user') {
+      list[i] = { ...list[i], images };
+      return list;
+    }
+  }
+  list.push({ role: 'user', content: '', images });
+  return list;
 }
 
 function normalizeMessages(messages = [], systemPrompt) {
@@ -288,7 +341,26 @@ async function writeUpstreamBody(upstream, res) {
 
 async function handleChat(body, res) {
   const payload = JSON.parse(body || '{}');
+  if (payload?.action === 'cancel') {
+    const requestId = String(payload?.requestId || '').trim();
+    if (!requestId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'requestId is required.' }));
+      return;
+    }
+
+    const controller = ACTIVE_CHAT_REQUESTS.get(requestId);
+    if (controller) {
+      controller.abort();
+      ACTIVE_CHAT_REQUESTS.delete(requestId);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ stopped: true }));
+    return;
+  }
+
   const imageList = Array.isArray(payload.images) ? payload.images.slice(0, 6) : [];
+  const toolList = Array.isArray(payload.tools) ? payload.tools.slice(0, 32) : [];
   const messages = normalizeMessages(payload.messages, payload.systemPrompt);
   if (messages.length === 0) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -296,27 +368,44 @@ async function handleChat(body, res) {
     return;
   }
 
-  const safeMax = Math.max(1, Math.min(Number(payload.max_tokens) || OLLAMA_MAX_TOKENS, 8192));
-  const prompt = toOllamaPrompt(messages);
+  const safeMax = Math.max(1, Math.min(Number(payload.max_tokens) || OLLAMA_MAX_TOKENS, 12000));
   const promptImages = extractLastUserImages(messages, imageList);
   const hasImages = promptImages.length > 0;
-  const effectiveModel = hasImages ? OLLAMA_VISION_MODEL : OLLAMA_TEXT_MODEL;
+  const forceLocked = hasUnrestrictedSignals(messages);
+  const effectiveModel = resolveModelChoice(payload.model, hasImages, forceLocked);
+  const requestId = String(payload.requestId || '').trim();
+  const requestController = requestId ? new AbortController() : null;
+  if (requestId && requestController) {
+    ACTIVE_CHAT_REQUESTS.set(requestId, requestController);
+    setTimeout(() => {
+      ACTIVE_CHAT_REQUESTS.delete(requestId);
+    }, ACTIVE_CHAT_REQUEST_TTL_MS);
+  }
   if (!OLLAMA_API_URL) {
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'OLLAMA_API_URL is not configured.' }));
     return;
   }
 
+  const chatMessages = hasImages
+    ? attachImagesToLastUser(messages, promptImages)
+    : messages;
+
   try {
-    const upstreamOrError = await fetchOllamaWithRetry({
-      model: effectiveModel,
-      prompt,
-      ...(hasImages ? { images: promptImages } : {}),
-      stream: payload.stream !== false,
-      options: { num_predict: safeMax },
-    });
+    const upstreamOrError = await fetchOllamaWithRetry(
+      {
+        model: effectiveModel,
+        messages: chatMessages,
+        ...(toolList.length > 0 && effectiveModel !== MIRA_LOCKED_MODEL ? { tools: toolList } : {}),
+        ...(typeof payload.think === 'boolean' ? { think: payload.think } : {}),
+        stream: payload.stream !== false,
+        options: { num_predict: safeMax },
+      },
+      requestController?.signal,
+    );
 
     if (upstreamOrError?.errorStatus) {
+      if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
       res.writeHead(upstreamOrError.errorStatus, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: upstreamOrError.errorMessage }));
       return;
@@ -334,7 +423,11 @@ async function handleChat(body, res) {
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: message }));
   } finally {
-    // no-op: retry helper handles connect timeout lifecycle per attempt
+    for (const [id, controller] of ACTIVE_CHAT_REQUESTS.entries()) {
+      if (!controller || controller.signal.aborted) {
+        ACTIVE_CHAT_REQUESTS.delete(id);
+      }
+    }
   }
 }
 
@@ -835,10 +928,6 @@ function boundedGeneratedSize(value) {
   const size = Number(value || 1024);
   if (!Number.isFinite(size)) return 1024;
   return Math.max(512, Math.min(1280, Math.round(size)));
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchGeneratedImageWithRetries(target) {

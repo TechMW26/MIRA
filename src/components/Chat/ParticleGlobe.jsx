@@ -10,15 +10,17 @@ export default function ParticleGlobe({
   thinking = false,
   speaking = false,
   particleCount = 1200,
+  iconAttractor = null,
+  locked = false,
 }) {
   const canvasRef = useRef(null);
-  const stateRef = useRef({ thinking, speaking });
+  const stateRef = useRef({ thinking, speaking, iconAttractor, locked });
 
   // Keep a live ref so the animation loop reads fresh prop values without
   // restarting on every change.
   useEffect(() => {
-    stateRef.current = { thinking, speaking };
-  }, [thinking, speaking]);
+    stateRef.current = { thinking, speaking, iconAttractor, locked };
+  }, [thinking, speaking, iconAttractor, locked]);
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
@@ -76,6 +78,16 @@ export default function ParticleGlobe({
     let scatter = 0;
     let burstUntil = 0;
     let lastBurst = 0;
+    let mouseX = 0;
+    let mouseY = 0;
+    let targetMouseX = 0;
+    let targetMouseY = 0;
+    let mouseInfluence = 0;
+    let mouseInVicinity = false;
+    let lastMouseMove = 0;
+    let iconInfluence = 0;
+    // 0 = cyan, 1 = red — interpolated smoothly each frame
+    let redLerp = 0;
     let raf = 0;
 
     // Globe radius tracks the CSS clamp on .particle-globe-wrap so the sphere
@@ -86,8 +98,45 @@ export default function ParticleGlobe({
       return wrap * 0.36;
     };
 
+    const handlePointerMove = (event) => {
+      const rect = canvas.getBoundingClientRect();
+      targetMouseX = event.clientX - rect.left;
+      targetMouseY = event.clientY - rect.top;
+      const inBounds = (
+        targetMouseX >= -40
+        && targetMouseY >= -40
+        && targetMouseX <= rect.width + 40
+        && targetMouseY <= rect.height + 40
+      );
+      mouseInVicinity = inBounds;
+      lastMouseMove = performance.now();
+    };
+
+    const handlePointerLeave = () => {
+      mouseInVicinity = false;
+    };
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: true });
+    window.addEventListener('pointerleave', handlePointerLeave, { passive: true });
+
     const render = () => {
-      const { thinking: isThinking, speaking: isSpeaking } = stateRef.current;
+      const {
+        thinking: isThinking,
+        speaking: isSpeaking,
+        iconAttractor: activeIconAttractor,
+        locked: isLocked,
+      } = stateRef.current;
+      redLerp += ((isLocked ? 1 : 0) - redLerp) * 0.035;
+      if (redLerp < 0.002) redLerp = 0;
+      if (redLerp > 0.998) redLerp = 1;
+      // Derived colour channels — lerp from cyan (94,234,212) → red (248,113,113)
+      const r1 = Math.round(94  + (248 - 94)  * redLerp);
+      const g1 = Math.round(234 + (113 - 234) * redLerp);
+      const b1 = Math.round(212 + (113 - 212) * redLerp);
+      const r2 = Math.round(34  + (239 - 34)  * redLerp);
+      const g2 = Math.round(211 + (68  - 211) * redLerp);
+      const b2 = Math.round(238 + (68  - 238) * redLerp);
+      const baseHue = 172 * (1 - redLerp); // 172 (cyan-teal) → 0 (red)
       const targetEnergy = isThinking ? 1 : isSpeaking ? 0.55 : 0;
       energy += (targetEnergy - energy) * 0.06;
 
@@ -106,14 +155,36 @@ export default function ParticleGlobe({
       const cx = width / 2;
       const cy = height / 2;
       const R = globeRadius();
+      const nowMs = performance.now();
+      const pointerActive = mouseInVicinity || nowMs - lastMouseMove < 260;
+      const targetInfluence = pointerActive ? 1 : 0;
+      mouseInfluence += (targetInfluence - mouseInfluence) * 0.12;
+      if (mouseInfluence < 0.002) mouseInfluence = 0;
+
+      const hasIconAttractor = activeIconAttractor
+        && Number.isFinite(activeIconAttractor.x)
+        && Number.isFinite(activeIconAttractor.y);
+      const targetIconInfluence = hasIconAttractor ? 1 : 0;
+      iconInfluence += (targetIconInfluence - iconInfluence) * 0.16;
+      if (iconInfluence < 0.002) iconInfluence = 0;
+      const attractorX = hasIconAttractor ? activeIconAttractor.x : cx;
+      const attractorY = hasIconAttractor ? activeIconAttractor.y : cy;
+      if (mouseX === 0 && mouseY === 0) {
+        mouseX = cx;
+        mouseY = cy;
+        targetMouseX = cx;
+        targetMouseY = cy;
+      }
+      mouseX += (targetMouseX - mouseX) * 0.14;
+      mouseY += (targetMouseY - mouseY) * 0.14;
 
       ctx.clearRect(0, 0, width, height);
 
       // ── Halo glow ──
       const haloRadius = R * (1.7 + Math.sin(pulse * 0.6) * 0.05 + energy * 0.2);
       const halo = ctx.createRadialGradient(cx, cy, R * 0.05, cx, cy, haloRadius);
-      halo.addColorStop(0, `rgba(94, 234, 212, ${0.22 + energy * 0.16})`);
-      halo.addColorStop(0.5, `rgba(34, 211, 238, ${0.08 + energy * 0.06})`);
+      halo.addColorStop(0, `rgba(${r1}, ${g1}, ${b1}, ${0.22 + energy * 0.16})`);
+      halo.addColorStop(0.5, `rgba(${r2}, ${g2}, ${b2}, ${0.08 + energy * 0.06})`);
       halo.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.fillStyle = halo;
       ctx.beginPath();
@@ -144,8 +215,49 @@ export default function ParticleGlobe({
           ripple * 0.05 +
           burst;
 
-        projX[i] = cx + x * R * wobble;
-        projY[i] = cy + y * R * wobble;
+        let px = cx + x * R * wobble;
+        let py = cy + y * R * wobble;
+
+        if (mouseInfluence > 0) {
+          const dx = mouseX - px;
+          const dy = mouseY - py;
+          const dist = Math.hypot(dx, dy) || 1;
+          const vicinity = Math.max(220, R * 1.9);
+          if (dist < vicinity) {
+            const norm = 1 - dist / vicinity;
+            const pull = norm * norm * (14 + R * 0.14) * mouseInfluence;
+            const depthFactor = 0.55 + ((z + 1) / 2) * 0.6;
+            px += (dx / dist) * pull * depthFactor;
+            py += (dy / dist) * pull * depthFactor;
+          }
+        }
+
+        // Hovering tool icons creates a stronger local attractor where
+        // particles arc toward the icon, orbit briefly, then naturally fold
+        // back into the globe circulation once hover ends.
+        if (iconInfluence > 0) {
+          const dx = attractorX - px;
+          const dy = attractorY - py;
+          const dist = Math.hypot(dx, dy) || 1;
+          const iconVicinity = Math.max(260, R * 2.35);
+          if (dist < iconVicinity) {
+            const norm = 1 - dist / iconVicinity;
+            const depthFactor = 0.68 + ((z + 1) / 2) * 0.62;
+            const pull = Math.pow(norm, 1.5) * (22 + R * 0.2) * iconInfluence;
+            const tangentX = -dy / dist;
+            const tangentY = dx / dist;
+            const swirlDir = (i % 2 === 0 ? 1 : -1);
+            const orbit = (0.65 + norm) * (5 + R * 0.07) * iconInfluence;
+
+            px += (dx / dist) * pull * depthFactor;
+            py += (dy / dist) * pull * depthFactor;
+            px += tangentX * orbit * swirlDir;
+            py += tangentY * orbit * swirlDir;
+          }
+        }
+
+        projX[i] = px;
+        projY[i] = py;
         projZ[i] = z;
         projR[i] = x * x + y * y;
         order[i] = i;
@@ -173,9 +285,9 @@ export default function ParticleGlobe({
         // reading as near-invisible specks next to the large rim particles.
         const dot = (0.9 + rim * rim * 1.5 + ripple * 0.4) * (0.82 + 0.3 * band);
         const light = 52 + depth * 26 + rim * 8;
-        const sat = 80 - depth * 20;                      // near side reads whiter
-
-        ctx.fillStyle = `hsla(${hue[i]}, ${sat}%, ${light}%, ${alpha})`;
+        const sat = 80 - depth * 20;
+        const particleHue = baseHue + (hue[i] - 172) * (1 - redLerp);
+        ctx.fillStyle = `hsla(${particleHue}, ${sat}%, ${light}%, ${alpha})`;
         ctx.beginPath();
         ctx.arc(projX[i], projY[i], dot, 0, Math.PI * 2);
         ctx.fill();
@@ -194,7 +306,10 @@ export default function ParticleGlobe({
         const my = cy + Math.sin(ang * 1.2) * R * 0.16;
         const r = R * (0.3 + (s % 2) * 0.08);
         const grad = ctx.createRadialGradient(mx, my, 0, mx, my, r);
-        grad.addColorStop(0, `rgba(103, 232, 249, ${0.14 + energy * 0.12})`);
+        const cr = Math.round(103 + (252 - 103) * redLerp);
+        const cg = Math.round(232 + (100 - 232) * redLerp);
+        const cb = Math.round(249 + (100 - 249) * redLerp);
+        grad.addColorStop(0, `rgba(${cr}, ${cg}, ${cb}, ${0.14 + energy * 0.12})`);
         grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
         ctx.fillStyle = grad;
         ctx.beginPath();
@@ -207,8 +322,8 @@ export default function ParticleGlobe({
       const orbR = R * (0.08 + Math.sin(pulse * 0.9) * 0.01 + energy * 0.035);
       const corona = ctx.createRadialGradient(cx, cy, 0, cx, cy, orbR * 5);
       corona.addColorStop(0, `rgba(255, 255, 255, ${0.5 + energy * 0.25})`);
-      corona.addColorStop(0.3, `rgba(186, 252, 251, ${0.34 + energy * 0.16})`);
-      corona.addColorStop(0.65, `rgba(94, 234, 212, ${0.14 + energy * 0.08})`);
+      corona.addColorStop(0.3, `rgba(${redLerp > 0.5 ? '255, 200, 200' : '186, 252, 251'}, ${0.34 + energy * 0.16})`);
+      corona.addColorStop(0.65, `rgba(${r1}, ${g1}, ${b1}, ${0.14 + energy * 0.08})`);
       corona.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.globalCompositeOperation = 'lighter';
       ctx.fillStyle = corona;
@@ -219,8 +334,8 @@ export default function ParticleGlobe({
 
       const orbGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, orbR);
       orbGrad.addColorStop(0, '#ffffff');
-      orbGrad.addColorStop(0.55, '#bafcfb');
-      orbGrad.addColorStop(1, '#5eead4');
+      orbGrad.addColorStop(0.55, redLerp > 0.5 ? '#ffb3b3' : '#bafcfb');
+      orbGrad.addColorStop(1, `rgb(${r1}, ${g1}, ${b1})`);
       ctx.fillStyle = orbGrad;
       ctx.beginPath();
       ctx.arc(cx, cy, orbR, 0, Math.PI * 2);
@@ -233,6 +348,8 @@ export default function ParticleGlobe({
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerleave', handlePointerLeave);
     };
   }, [particleCount]);
 

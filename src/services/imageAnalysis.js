@@ -1,7 +1,5 @@
 import { runChatCompletion } from './api.js';
 
-const IMAGE_ANALYSIS_SYSTEM_PROMPT = 'You are MIRA, a careful vision analysis assistant. Answer only from the provided image and prompt.';
-
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -42,9 +40,10 @@ export async function analyzeImage(prompt, image, mimeType = 'image/jpeg') {
 
   const normalizedImage = await normalizeImage(image, mimeType);
   return runChatCompletion({
-    systemPrompt: IMAGE_ANALYSIS_SYSTEM_PROMPT,
+    model: 'vision',
     messages: [{ role: 'user', content: prompt }],
     images: [normalizedImage],
+    think: false,
   });
 }
 

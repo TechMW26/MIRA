@@ -18,10 +18,9 @@ function formatTime(date) {
 /**
  * HudOverlay — chrome around the chat surface. Top row carries the
  * ONLINE chip, MIRA brand block, settings button and clock on a single
- * 38px-tall baseline. Bottom row anchors MODEL / STATUS panels at the
- * corners; the composer sits between them via ChatInput.
+ * 38px-tall baseline. Bottom chrome is now handled by the composer dock glow.
  */
-export default function HudOverlay({ status = 'READY', model = 'MIRA v2.5' }) {
+export default function HudOverlay() {
   const now = useClock();
   const { sidebarOpen, setSidebarOpen, setShowSettings } = useChatContext();
 
@@ -73,26 +72,6 @@ export default function HudOverlay({ status = 'READY', model = 'MIRA v2.5' }) {
         </div>
       </div>
 
-      <div className="pointer-events-none fixed bottom-5 left-5 right-5 z-30 flex items-end justify-between">
-        <div className="pointer-events-auto">
-          <div className="hud-panel">
-            <div className="hud-panel-row"><span className="hud-panel-label">MODEL</span></div>
-            <div className="hud-panel-row" style={{ marginTop: 2 }}>
-              <span className="hud-panel-value">{model}</span>
-            </div>
-          </div>
-        </div>
-        <div className="pointer-events-auto">
-          <div className="hud-panel">
-            <div className="hud-panel-row" style={{ justifyContent: 'flex-end' }}>
-              <span className="hud-panel-label">STATUS</span>
-            </div>
-            <div className="hud-panel-row" style={{ marginTop: 2, justifyContent: 'flex-end' }}>
-              <span className="hud-panel-value">{status}</span>
-            </div>
-          </div>
-        </div>
-      </div>
     </>
   );
 }

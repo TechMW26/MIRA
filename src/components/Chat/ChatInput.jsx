@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Loader, Mic,
-  Globe, PanelRight, Code2, Zap, Wrench, BookMarked, Share2, Volume2,
+  Globe, PanelRight, Code2, Zap, Wrench, BookMarked, Share2, Volume2, Cpu, ChevronDown, Lock, AlertTriangle,
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 import { formatVoiceLabel, getVoiceKey, pickPreferredVoice, getPreferredVoiceId, setPreferredVoiceId } from '../../utils/tts';
+import { useChatContext } from '../../contexts/ChatContext';
 import VoiceMode from './VoiceMode';
 
 const ACCEPT_TYPES = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic,.sh,.rs,.go,.rb,.php,.sql';
@@ -12,9 +13,9 @@ const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 
 
 function getFileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
-  if (['png','jpg','jpeg','gif','webp','svg'].includes(ext)) return ImageIcon;
-  if (['js','jsx','ts','tsx','py','java','c','cpp','html','css'].includes(ext)) return FileCode;
-  if (['txt','md','csv','log','json','xml','yaml','yml'].includes(ext)) return FileText;
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext)) return ImageIcon;
+  if (['js', 'jsx', 'ts', 'tsx', 'py', 'java', 'c', 'cpp', 'html', 'css'].includes(ext)) return FileCode;
+  if (['txt', 'md', 'csv', 'log', 'json', 'xml', 'yaml', 'yml'].includes(ext)) return FileText;
   return File;
 }
 
@@ -124,6 +125,18 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   const [voices, setVoices] = useState([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState(getPreferredVoiceId());
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [lockedPinOpen, setLockedPinOpen] = useState(false);
+  const [unrestrictedSuggestOpen, setUnrestrictedSuggestOpen] = useState(false);
+  const [lockedPinInput, setLockedPinInput] = useState('');
+  const [lockedPinError, setLockedPinError] = useState('');
+  const { selectedModel, setSelectedModel, lockedModelUnlocked, setLockedModelUnlocked, LOCKED_MODEL_PIN } = useChatContext();
+
+  // Detect unrestricted-content intent in user input
+  const UNRESTRICTED_SIGNAL_RE = /\b(nude|naked|explicit|uncensored|adult content|erotic|pornographic|xxx|18\+|lewd|sexual content|generate.*naked|make.*nude|draw.*explicit)\b/i;
+  function looksUnrestricted(text) {
+    return UNRESTRICTED_SIGNAL_RE.test(String(text || ''));
+  }
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const dragCounterRef = useRef(0);
@@ -144,6 +157,15 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   const voiceOptions = voices
     .slice()
     .sort((a, b) => (a.lang || '').localeCompare(b.lang || '') || (a.name || '').localeCompare(b.name || ''));
+  const selectedModelLabel = selectedModel === 'auto'
+    ? 'Auto'
+    : selectedModel === 'mini'
+      ? 'Mira Mini'
+      : selectedModel === 'spec'
+        ? 'Mira Spec'
+        : selectedModel === 'locked'
+          ? 'Mira Locked'
+          : 'Mira Lite';
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -155,6 +177,13 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   function handleSubmit(e) {
     e?.preventDefault();
     if ((!input.trim() && attachments.length === 0) || isGenerating) return;
+    // Suggest unrestricted model if content looks explicit and locked isn't already active
+    if (selectedModel !== 'locked' && looksUnrestricted(input)) {
+      setLockedPinInput('');
+      setLockedPinError('');
+      setUnrestrictedSuggestOpen(true);
+      return;
+    }
     onSend(input.trim(), attachments);
     setInput('');
     setAttachments([]);
@@ -238,14 +267,14 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   function onDragEnter(e) {
     if (!hasFileLikeDrag(e.dataTransfer)) return;
     e.preventDefault();
-    dragCounterRef.current++;
+    dragCounterRef.current += 1;
     setDragging(true);
   }
 
   function onDragLeave(e) {
     if (!hasFileLikeDrag(e.dataTransfer)) return;
     e.preventDefault();
-    dragCounterRef.current--;
+    dragCounterRef.current -= 1;
     if (dragCounterRef.current === 0) setDragging(false);
   }
 
@@ -280,20 +309,26 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   }
 
   const toolStrip = [
-    { id: 'web',      icon: Globe,       title: 'Web search', active: webSearch, onClick: onToggleWebSearch },
-    { id: 'browser',  icon: PanelRight,  title: 'Browser',    active: activePanel === 'browser', onClick: () => onTogglePanel('browser') },
-    { id: 'canvas',   icon: Code2,       title: 'Canvas',     active: activePanel === 'canvas',  onClick: () => onTogglePanel('canvas') },
-    { id: 'tasks',    icon: Zap,         title: 'Tasks',      active: activePanel === 'tasks',   onClick: () => onTogglePanel('tasks') },
-    { id: 'tools',    icon: Wrench,      title: 'Tools',      active: activePanel === 'tools',   onClick: () => onTogglePanel('tools') },
-    { id: 'prompts',  icon: BookMarked,  title: 'Prompts',    active: activePanel === 'prompts', onClick: () => onTogglePanel('prompts') },
+    { id: 'web', icon: Globe, title: 'Web search', active: webSearch, onClick: onToggleWebSearch },
+    { id: 'browser', icon: PanelRight, title: 'Browser', active: activePanel === 'browser', onClick: () => onTogglePanel('browser') },
+    { id: 'canvas', icon: Code2, title: 'Canvas', active: activePanel === 'canvas', onClick: () => onTogglePanel('canvas') },
+    { id: 'tasks', icon: Zap, title: 'Tasks', active: activePanel === 'tasks', onClick: () => onTogglePanel('tasks') },
+    { id: 'tools', icon: Wrench, title: 'Tools', active: activePanel === 'tools', onClick: () => onTogglePanel('tools') },
+    { id: 'prompts', icon: BookMarked, title: 'Prompts', active: activePanel === 'prompts', onClick: () => onTogglePanel('prompts') },
   ];
 
   const hasShare = messages?.length > 0;
 
   return (
     <div className="hud-composer-dock px-[180px] pb-5 pt-8 relative z-20">
+      {selectedModel === 'locked' && (
+        <div className="nsfw-banner max-w-2xl mx-auto mb-2">
+          <AlertTriangle size={13} />
+          <span>Unrestricted mode active — Mira Locked model is engaged. Content may be explicit.</span>
+          <button type="button" onClick={() => setSelectedModel('auto')} className="nsfw-banner-dismiss">Disable</button>
+        </div>
+      )}      
       <div className="max-w-2xl mx-auto">
-        {/* HUD tool strip — sits above the composer pill */}
         <div className="hud-tool-strip">
           {toolStrip.map(({ id, icon: Icon, title, active, onClick }) => (
             <button
@@ -310,7 +345,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
           ))}
 
           {voices.length > 0 && (
-            <div className="relative">
+            <div className="relative hud-popover-anchor">
               <button
                 type="button"
                 onClick={() => setVoicePickerOpen((v) => !v)}
@@ -435,6 +470,58 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                 style={{ padding: '12px 4px' }}
               />
 
+              <div className="composer-model-wrap">
+                <button
+                  type="button"
+                  onClick={() => setModelPickerOpen((v) => !v)}
+                  className="composer-model-btn"
+                  data-active={selectedModel !== 'auto' || modelPickerOpen || undefined}
+                  title={`Model: ${selectedModelLabel}`}
+                >
+                  <Cpu size={14} />
+                  <span>{selectedModelLabel}</span>
+                  <ChevronDown size={14} className={`transition-transform ${modelPickerOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {modelPickerOpen && (
+                  <div className="composer-model-popover" onMouseLeave={() => setModelPickerOpen(false)}>
+                    <button type="button" className="composer-model-option" data-active={selectedModel === 'auto' || undefined} onClick={() => { setSelectedModel('auto'); setModelPickerOpen(false); }}>
+                      <span>Auto</span>
+                      <small>Smart routing</small>
+                    </button>
+                    <button type="button" className="composer-model-option" data-active={selectedModel === 'mini' || undefined} onClick={() => { setSelectedModel('mini'); setModelPickerOpen(false); }}>
+                      <span>Mira Mini</span>
+                      <small>Ultra-fast chat</small>
+                    </button>
+                    <button type="button" className="composer-model-option" data-active={selectedModel === 'lite' || undefined} onClick={() => { setSelectedModel('lite'); setModelPickerOpen(false); }}>
+                      <span>Mira Lite</span>
+                      <small>Fast reasoning</small>
+                    </button>
+                    <button type="button" className="composer-model-option" data-active={selectedModel === 'spec' || undefined} onClick={() => { setSelectedModel('spec'); setModelPickerOpen(false); }}>
+                      <span>Mira Spec</span>
+                      <small>Deep coding</small>
+                    </button>
+                    <div style={{ borderTop: '1px solid var(--hud-cyan-dim)', margin: '4px 0' }} />
+                    <button
+                      type="button"
+                      className="composer-model-option"
+                      data-active={selectedModel === 'locked' || undefined}
+                      onClick={() => {
+                        setModelPickerOpen(false);
+                        setLockedPinInput('');
+                        setLockedPinError('');
+                        setLockedPinOpen(true);
+                      }}
+                    >
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Lock size={12} style={{ color: 'var(--hud-cyan-soft)' }} />
+                        Mira Locked
+                      </span>
+                      <small>Unrestricted · PIN required</small>
+                    </button>
+                  </div>
+                )}
+              </div>
+
               <input ref={fileInputRef} type="file" multiple accept={ACCEPT_TYPES} onChange={handleFiles} className="hidden" />
 
               <button
@@ -484,6 +571,144 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
 
       {voiceOpen && (
         <VoiceMode onSend={handleVoiceTranscript} onClose={() => setVoiceOpen(false)} />
+      )}
+
+      {/* ── PIN gate for Mira Locked (with inline disclaimer) ── */}
+      {lockedPinOpen && (
+        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(6px)' }} onClick={() => setLockedPinOpen(false)}>
+          <div className="glass-strong rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.15)' }}>
+                <Lock size={18} style={{ color: '#f87171' }} />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Unlock Mira Locked</h3>
+                <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>Unrestricted model — PIN required</p>
+              </div>
+            </div>
+            <p className="text-xs leading-relaxed mb-4 px-1" style={{ color: 'var(--text-tertiary)' }}>
+              This model operates without content restrictions. By unlocking you confirm you are <strong>18+</strong> and
+              accept responsibility for all generated content.
+            </p>
+            <input
+              type="password"
+              inputMode="numeric"
+              value={lockedPinInput}
+              onChange={(e) => { setLockedPinInput(e.target.value.replace(/\D/g, '')); setLockedPinError(''); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (lockedPinInput === LOCKED_MODEL_PIN) {
+                    setLockedModelUnlocked(true);
+                    setLockedPinOpen(false);
+                    setSelectedModel('locked');
+                  } else {
+                    setLockedPinError('Incorrect PIN');
+                  }
+                }
+              }}
+              placeholder="Enter PIN..."
+              autoFocus
+              maxLength={8}
+              className="w-full glass-input rounded-xl px-4 py-3 text-sm text-center tracking-[0.5em] outline-none focus:ring-1 focus:ring-[var(--border)] mb-2"
+              style={{ color: 'var(--text-primary)' }}
+            />
+            {lockedPinError && <p className="text-xs text-red-400 text-center mb-2">{lockedPinError}</p>}
+            <div className="flex gap-2 mt-3">
+              <button onClick={() => setLockedPinOpen(false)} className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-all" style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}>Cancel</button>
+              <button
+                onClick={() => {
+                  if (lockedPinInput === LOCKED_MODEL_PIN) {
+                    setLockedModelUnlocked(true);
+                    setLockedPinOpen(false);
+                    setSelectedModel('locked');
+                  } else {
+                    setLockedPinError('Incorrect PIN');
+                  }
+                }}
+                className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-all hover:opacity-90"
+                style={{ background: 'rgba(239,68,68,0.2)', color: '#f87171', border: '1px solid rgba(239,68,68,0.35)' }}
+              >Unlock &amp; Enable</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Unrestricted content suggestion ── */}
+      {unrestrictedSuggestOpen && (
+        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(6px)' }} onClick={() => setUnrestrictedSuggestOpen(false)}>
+          <div className="glass-strong rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.15)' }}>
+                <Lock size={18} style={{ color: '#f87171' }} />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Switch to Mira Locked?</h3>
+                <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>This message may need the unrestricted model</p>
+              </div>
+            </div>
+            <p className="text-xs leading-relaxed mb-4 px-1" style={{ color: 'var(--text-tertiary)' }}>
+              Mira Locked operates without restrictions. Confirm you are <strong>18+</strong> and enter your PIN to enable it and send this message.
+            </p>
+            <input
+              type="password"
+              inputMode="numeric"
+              value={lockedPinInput}
+              onChange={(e) => { setLockedPinInput(e.target.value.replace(/\D/g, '')); setLockedPinError(''); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (lockedPinInput === LOCKED_MODEL_PIN) {
+                    setLockedModelUnlocked(true);
+                    setSelectedModel('locked');
+                    setUnrestrictedSuggestOpen(false);
+                    const msg = input.trim();
+                    const att = attachments;
+                    setInput('');
+                    setAttachments([]);
+                    onSend(msg, att);
+                  } else {
+                    setLockedPinError('Incorrect PIN');
+                  }
+                }
+              }}
+              placeholder="Enter PIN..."
+              autoFocus
+              maxLength={8}
+              className="w-full glass-input rounded-xl px-4 py-3 text-sm text-center tracking-[0.5em] outline-none focus:ring-1 focus:ring-[var(--border)] mb-2"
+              style={{ color: 'var(--text-primary)' }}
+            />
+            {lockedPinError && <p className="text-xs text-red-400 text-center mb-2">{lockedPinError}</p>}
+            <div className="flex gap-2 mt-3">
+              <button
+                onClick={() => {
+                  setUnrestrictedSuggestOpen(false);
+                  onSend(input.trim(), attachments);
+                  setInput('');
+                  setAttachments([]);
+                }}
+                className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-all"
+                style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}
+              >Send anyway</button>
+              <button
+                onClick={() => {
+                  if (lockedPinInput === LOCKED_MODEL_PIN) {
+                    setLockedModelUnlocked(true);
+                    setSelectedModel('locked');
+                    setUnrestrictedSuggestOpen(false);
+                    const msg = input.trim();
+                    const att = attachments;
+                    setInput('');
+                    setAttachments([]);
+                    onSend(msg, att);
+                  } else {
+                    setLockedPinError('Incorrect PIN');
+                  }
+                }}
+                className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-all hover:opacity-90"
+                style={{ background: 'rgba(239,68,68,0.2)', color: '#f87171', border: '1px solid rgba(239,68,68,0.35)' }}
+              >Unlock &amp; send</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

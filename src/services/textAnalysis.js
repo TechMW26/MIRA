@@ -1,14 +1,11 @@
 import { runChatCompletion } from './api.js';
 
-const ANALYSIS_SYSTEM_PROMPT = 'You are MIRA, a precise analysis assistant. Analyze the user input directly and return a clear, useful result.';
-
 export async function analyzeText(prompt) {
   if (!prompt || typeof prompt !== 'string') {
     throw new Error('Prompt must be a non-empty string');
   }
 
   return runChatCompletion({
-    systemPrompt: ANALYSIS_SYSTEM_PROMPT,
     messages: [{ role: 'user', content: prompt }],
   });
 }

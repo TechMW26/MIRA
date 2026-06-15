@@ -47,11 +47,13 @@ VITE_FIREBASE_DATABASE_URL=
 BLOB_READ_WRITE_TOKEN=
 
 # Ollama (text + vision chat)
-OLLAMA_API_URL=http://147.93.102.103:11434/api/generate
-OLLAMA_TEXT_MODEL=huihui_ai/deepseek-r1-abliterated:14b
-OLLAMA_VISION_MODEL=llama3.2-vision
-OLLAMA_MAX_TOKENS=2048
-OLLAMA_TIMEOUT_MS=90000
+OLLAMA_API_URL=http://147.93.102.103:11434/api/chat
+MIRA_MINI_MODEL=mira-mini
+MIRA_LITE_MODEL=mira-lite
+MIRA_SPEC_MODEL=mira-spec
+MIRA_VISION_MODEL=mira-vision
+OLLAMA_MAX_TOKENS=12000
+OLLAMA_TIMEOUT_MS=300000
 
 # Keep existing image/video generation pipeline
 POLLINATIONS_API_KEY=

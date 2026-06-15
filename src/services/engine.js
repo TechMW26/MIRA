@@ -191,83 +191,45 @@ export function interpretUserPrompt(text = '', hasImages = false) {
   };
 }
 
-// ── Model routing ──────────────────────────────────────────────
-function pickModel({ intent, complexity }, hasImages) {
-  void intent;
-  void complexity;
-  return hasImages ? 'llama3.2-vision' : 'llama3.2';
+function looksMultilingual(text = '') {
+  const value = String(text || '');
+  if (!value.trim()) return false;
+
+  // Non-latin scripts are a strong multilingual signal.
+  if (/[\u0400-\u04FF\u0600-\u06FF\u0900-\u097F\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(value)) {
+    return true;
+  }
+
+  // Common language hints for latin-script requests.
+  return /\b(in\s+(spanish|hindi|french|german|italian|portuguese|japanese|korean|arabic)|translate|traduce|traducir|traduire|uebersetze|übersetze|bahasa|espanol|español|francais|français|deutsch|portugues|português)\b/i.test(value);
 }
 
-// ── Prompt enhancement ─────────────────────────────────────────
-const TASK_DIRECTIVES = {
-  code: `\n\nCODE MASTERY MODE — You are operating as a senior staff engineer. Follow this methodology:
+// ── Model routing ──────────────────────────────────────────────
+function pickModel({ intent, complexity }, hasImages, selectedMode = 'auto', userText = '') {
+  if (hasImages) return 'vision';
 
-1. UNDERSTAND: Analyze the requirements thoroughly before writing any code. Identify constraints, edge cases, and architecture implications.
-2. PLAN: Outline the approach — data structures, algorithms, component design, and how pieces connect end-to-end.
-3. IMPLEMENT: Write complete, production-ready code. Not snippets — full working implementations.
-   - Use modern best practices for the relevant language/framework.
-   - Proper error handling, input validation, and type safety.
-   - Clean separation of concerns and modular structure.
-   - Security-conscious: sanitize inputs, avoid injection vectors, handle auth properly.
-4. VERIFY: Review your code for bugs, edge cases, performance issues, and potential improvements.
+  if (selectedMode === 'spec') return 'spec';
+  if (selectedMode === 'lite') return 'lite';
+  if (selectedMode === 'mini') return 'mini';
+  if (selectedMode === 'locked') return 'locked';
 
-- If fixing a bug: explain the root cause first, then provide the corrected code with context.
-- If refactoring: analyze layer by layer — architecture → logic → performance → style.
-- When multiple files need changes, provide ALL of them.
-- Add brief inline comments only where logic is non-obvious.`,
-
-  math: `\n\nMATH GUIDELINES:
-- Show your work step-by-step.
-- Use LaTeX notation wrapped in $ or $$ for equations.
-- Verify your answer at the end.`,
-
-  creative: `\n\nCREATIVE GUIDELINES:
-- Be vivid, original, and engaging.
-- Match the tone the user is asking for.
-- Avoid clichés.`,
-
-  high: `\n\nDEEP ANALYSIS MODE:
-- Think step by step before answering.
-- Consider multiple perspectives.
-- Structure your answer with clear sections.
-- Cite reasoning for each conclusion.`,
-};
-
-function enhanceSystemPrompt(basePrompt, classification, needsSearch = false) {
-  let enhanced = basePrompt;
-
-  // Inject current date & time
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-  const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-  enhanced += `\n\nCURRENT DATE & TIME: ${dateStr}, ${timeStr}`;
-
-  // Inject task-specific directives
-  if (TASK_DIRECTIVES[classification.intent]) {
-    enhanced += TASK_DIRECTIVES[classification.intent];
+  // Auto mode: prioritize quality for coding/reasoning, speed for lightweight multilingual chat.
+  if (intent === 'code' || intent === 'math') {
+    return complexity === 'high' ? 'spec' : 'lite';
   }
-
-  // For high-complexity, add chain-of-thought scaffolding
-  if (classification.complexity === 'high') {
-    enhanced += TASK_DIRECTIVES.high || '';
-    enhanced += '\n\nIMPORTANT: Take a deep breath and work through this methodically.';
-  }
-
-  // Web access directive
-  enhanced += '\n\nWEB ACCESS: You are connected to a live web-search system the host runs for you automatically — the user does not have to enable it. When a question needs current events, recent developments, prices, weather, live scores, release dates, or any factual claim you are not confident is accurate and up to date, and no web-search data is already provided, give what you reliably know and then clearly state the specific thing you lack current information on. The host detects that and will automatically fetch live results for you to answer with. Never claim you cannot browse the internet, and never invent facts to avoid admitting a gap.';
-
-  if (needsSearch) {
-    enhanced += '\nIMPORTANT: This query likely requires up-to-date information from the internet. Use the provided live search results when present; if none are provided, state plainly what current information you are missing so the host can fetch it automatically.';
-  }
-
-  return enhanced;
+  if (complexity === 'high') return 'spec';
+  if (complexity === 'medium') return 'lite';
+  if (looksMultilingual(userText)) return 'mini';
+  if (intent === 'general' || intent === 'creative') return 'mini';
+  return 'lite';
 }
 
 // ── Public API ─────────────────────────────────────────────────
-export function processQuery(userText, hasImages = false) {
+export function processQuery(userText, hasImages = false, options = {}) {
+  const { selectedMode = 'auto' } = options;
   const interpretation = interpretUserPrompt(userText, hasImages);
   const classification = interpretation.classification;
-  const model = pickModel(classification, hasImages);
+  const model = pickModel(classification, hasImages, selectedMode, userText);
   const searchNeeded = detectSearchNeed(userText, hasImages);
 
   return {
@@ -275,6 +237,5 @@ export function processQuery(userText, hasImages = false) {
     interpretation,
     model,
     needsSearch: searchNeeded,
-    enhanceSystemPrompt: (base) => enhanceSystemPrompt(base, classification, searchNeeded),
   };
 }

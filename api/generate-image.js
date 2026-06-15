@@ -2,7 +2,7 @@ export const config = { maxDuration: 60 };
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MIME = /^image\/(png|jpe?g|webp|gif|avif)$/i;
-const ALLOWED_MODELS = new Set(['flux', 'turbo']);
+const ALLOWED_MODELS = new Set(['flux', 'flux-pro', 'flux-realism', 'turbo']);
 const DEFAULT_SIZE = 1024;
 const MAX_PROMPT_CHARS = 900;
 const UPSTREAM_TIMEOUT_MS = 18000;
@@ -154,8 +154,8 @@ export async function GET(req) {
     });
   }
 
-  const modelParam = String(url.searchParams.get('model') || 'flux').toLowerCase();
-  const model = ALLOWED_MODELS.has(modelParam) ? modelParam : 'flux';
+  const modelParam = String(url.searchParams.get('model') || 'flux-realism').toLowerCase();
+  const model = ALLOWED_MODELS.has(modelParam) ? modelParam : 'flux-realism';
   const width = boundedSize(url.searchParams.get('width'));
   const height = boundedSize(url.searchParams.get('height'));
   const seed = Number(url.searchParams.get('seed') || 1) || 1;

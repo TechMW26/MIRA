@@ -1,7 +1,18 @@
-const SYSTEM_PROMPT = `You are MIRA: warm, sharp, concise, and practical; answer directly with clear structure, stay context-aware, and avoid fluff.
-If asked about your creator, say you were created by MW FutureTech under the direction of Aviraj Sharma.`;
+import { MODEL_TOOLS } from './modelTools';
 
-export { SYSTEM_PROMPT };
+let activeChatAbortController = null;
+let activeChatRequestId = null;
+
+function createRequestId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function isAbortError(err) {
+  return err?.name === 'AbortError' || /abort|stopp?ed/i.test(String(err?.message || ''));
+}
 
 function contentToText(content) {
   if (typeof content === 'string') return content;
@@ -9,6 +20,30 @@ function contentToText(content) {
   return content
     .map((part) => (typeof part === 'string' ? part : part?.text || part?.content || ''))
     .join('');
+}
+
+function extractToolCalls(payload) {
+  const candidates = [
+    payload?.tool_calls,
+    payload?.message?.tool_calls,
+    payload?.delta?.tool_calls,
+    payload?.choices?.[0]?.delta?.tool_calls,
+    payload?.choices?.[0]?.message?.tool_calls,
+  ];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate) && candidate.length > 0) return candidate;
+  }
+  return [];
+}
+
+function toolCallsToText(toolCalls = []) {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
+  const names = toolCalls
+    .map((toolCall) => toolCall?.function?.name || toolCall?.name || toolCall?.type)
+    .filter(Boolean);
+  if (names.length === 0) return '';
+  return `[Using tools: ${names.join(', ')}]`;
 }
 
 export function extractChatText(payload) {
@@ -24,6 +59,7 @@ export function extractChatText(payload) {
     payload.choices?.[0]?.delta?.content,
     payload.choices?.[0]?.message?.content,
     payload.choices?.[0]?.text,
+    toolCallsToText(extractToolCalls(payload)),
   ];
 
   for (const candidate of candidates) {
@@ -154,49 +190,95 @@ async function extractApiError(response) {
   }
 }
 
-async function requestChat({ messages, model, images = [], systemPrompt = SYSTEM_PROMPT, maxTokens, onChunk }) {
-  const transientStatus = new Set([408, 429, 500, 502, 503, 504]);
-  const maxAttempts = 2;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages,
-          ...(model ? { model } : {}),
-          systemPrompt,
-          images,
-          stream: true,
-          ...(maxTokens ? { max_tokens: maxTokens } : {}),
-        }),
-      });
-
-      if (response.ok) {
-        return readChatResponse(response, onChunk);
-      }
-
-      const message = await extractApiError(response);
-      const shouldRetry = transientStatus.has(response.status) && attempt < maxAttempts;
-      if (shouldRetry) {
-        await sleep(500 * attempt);
-        continue;
-      }
-
-      throw new Error(message || `API error: ${response.status}`);
-    } catch (err) {
-      const likelyNetworkError = !String(err?.message || '').startsWith('API error:');
-      const shouldRetry = likelyNetworkError && attempt < maxAttempts;
-      if (shouldRetry) {
-        await sleep(500 * attempt);
-        continue;
-      }
-      throw err;
-    }
+export async function stopChatGeneration() {
+  if (activeChatAbortController) {
+    activeChatAbortController.abort();
   }
 
-  throw new Error('Chat request failed after retries.');
+  const requestId = activeChatRequestId;
+  activeChatAbortController = null;
+  activeChatRequestId = null;
+
+  if (!requestId) return;
+
+  try {
+    await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'cancel', requestId }),
+      keepalive: true,
+    });
+  } catch {
+    // Best-effort stop call. Local abort already halts client streaming.
+  }
+}
+
+async function requestChat({ messages, model, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think, onChunk }) {
+  const transientStatus = new Set([408, 429, 500, 502, 503, 504]);
+  const maxAttempts = 2;
+  const requestId = createRequestId();
+  const controller = new AbortController();
+  activeChatAbortController = controller;
+  activeChatRequestId = requestId;
+
+  try {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (controller.signal.aborted) {
+        throw new DOMException('Generation stopped by user.', 'AbortError');
+      }
+
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            requestId,
+            messages,
+            ...(model ? { model } : {}),
+            ...(systemPrompt ? { systemPrompt } : {}),
+            images,
+            stream: true,
+            ...(maxTokens ? { max_tokens: maxTokens } : {}),
+            ...(Array.isArray(tools) && tools.length > 0 ? { tools } : {}),
+            ...(typeof think === 'boolean' ? { think } : {}),
+          }),
+        });
+
+        if (response.ok) {
+          return readChatResponse(response, onChunk);
+        }
+
+        const message = await extractApiError(response);
+        const shouldRetry = transientStatus.has(response.status) && attempt < maxAttempts;
+        if (shouldRetry) {
+          await sleep(500 * attempt);
+          continue;
+        }
+
+        throw new Error(message || `API error: ${response.status}`);
+      } catch (err) {
+        if (isAbortError(err) || controller.signal.aborted) {
+          throw new DOMException('Generation stopped by user.', 'AbortError');
+        }
+
+        const likelyNetworkError = !String(err?.message || '').startsWith('API error:');
+        const shouldRetry = likelyNetworkError && attempt < maxAttempts;
+        if (shouldRetry) {
+          await sleep(500 * attempt);
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw new Error('Chat request failed after retries.');
+  } finally {
+    if (activeChatAbortController === controller) {
+      activeChatAbortController = null;
+      activeChatRequestId = null;
+    }
+  }
 }
 
 function splitThinkingFromRaw(raw = '') {
@@ -224,18 +306,18 @@ function splitThinkingFromRaw(raw = '') {
 
   return {
     thinking: thinkingParts.join(' ').replace(/\s+/g, ' ').trim(),
-    answer: answer,
+    answer,
   };
 }
 
-export async function runChatCompletion({ messages, model, images = [], systemPrompt = SYSTEM_PROMPT, maxTokens } = {}) {
-  const result = await requestChat({ messages, model, images, systemPrompt, maxTokens });
+export async function runChatCompletion({ messages, model, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think } = {}) {
+  const result = await requestChat({ messages, model, images, systemPrompt, maxTokens, tools, think });
   const answer = result?.answer || '';
   if (!answer) throw new Error('No result in response');
   return { result: answer };
 }
 
-export async function sendChatMessage(messages, model, onChunk, images = [], systemPrompt = SYSTEM_PROMPT, { onThinking } = {}) {
+export async function sendChatMessage(messages, model, onChunk, images = [], { onThinking, systemPrompt, tools = MODEL_TOOLS, think } = {}) {
   let latestAnswer = '';
   let latestThinking = '';
   const streamed = await requestChat({
@@ -243,6 +325,8 @@ export async function sendChatMessage(messages, model, onChunk, images = [], sys
     model,
     images,
     systemPrompt,
+    tools,
+    think,
     onChunk: ({ answerFull, thinkingFull }) => {
       const split = splitThinkingFromRaw(answerFull || '');
       const mergedThinking = [thinkingFull || '', split.thinking || '']

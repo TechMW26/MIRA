@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Check, Volume2, FileText, FileCode, File, X, ExternalLink, Download, RefreshCw, Pencil, Globe } from 'lucide-react';
+import { Copy, Check, Volume2, FileText, FileCode, File, X, ExternalLink, Download, RefreshCw, Pencil, Globe, EyeOff, Cpu, ChevronDown, Lock } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
@@ -42,8 +42,24 @@ function enhanceImagePrompt(prompt = '') {
   return `${base}, ${missing.join(', ')}`;
 }
 
-// Fallback model chain — start with the reliable `flux`, then try `turbo` as a backup.
-const IMAGE_MODEL_CHAIN = ['flux', 'turbo'];
+const HYPERREALISM_SIGNAL_RE = /\b(hyper[-\s]?real(?:ism)?|photo[-\s]?real(?:istic)?|ultra[-\s]?realistic|dslr|cinematic photo|raw photo|natural skin|85mm|bokeh)\b/i;
+const DEFAULT_IMAGE_MODEL_CHAIN = ['flux-pro', 'flux-realism', 'flux', 'turbo'];
+const HYPERREAL_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'flux', 'turbo'];
+
+const UNRESTRICTED_SIGNAL_RE = /\b(nude|naked|explicit|uncensored|adult content|erotic|pornographic|xxx|18\+|lewd|sexual content|generate.*naked|make.*nude|draw.*explicit)\b/i;
+function looksUnrestrictedContent(text) {
+  return UNRESTRICTED_SIGNAL_RE.test(String(text || ''));
+}
+
+const MODEL_OPTIONS = [
+  { value: 'auto',   label: 'Auto',       sub: 'Smart routing' },
+  { value: 'mini',   label: 'Mira Mini',  sub: 'Ultra-fast chat' },
+  { value: 'lite',   label: 'Mira Lite',  sub: 'Fast reasoning' },
+  { value: 'spec',   label: 'Mira Spec',  sub: 'Deep coding' },
+  { value: 'locked', label: 'Mira Locked', sub: 'Unrestricted · PIN required', requiresPin: true },
+];
+
+const LOCKED_PIN = '1512';
 const MAX_TRANSIENT_RETRIES = 5; // retry same URL several times before advancing chain
 const MAX_FULL_RETRY_CYCLES = 2; // rerun full model chain a couple times before showing hard failure
 const GENERATED_IMAGE_SIZE = '1024';
@@ -57,9 +73,16 @@ function compactImagePrompt(prompt = '') {
   return compact.slice(0, MAX_GENERATED_PROMPT_CHARS).replace(/\s+\S*$/, '').trim();
 }
 
-function buildGeneratedImageUrl(prompt, modelIndex = 0, cacheKey = '0-0') {
+function getImageModelChain(prompt = '') {
+  return HYPERREALISM_SIGNAL_RE.test(String(prompt || ''))
+    ? HYPERREAL_IMAGE_MODEL_CHAIN
+    : DEFAULT_IMAGE_MODEL_CHAIN;
+}
+
+function buildGeneratedImageUrl(prompt, modelChain, modelIndex = 0, cacheKey = '0-0') {
   const enhanced = compactImagePrompt(enhanceImagePrompt(prompt));
-  const model = IMAGE_MODEL_CHAIN[Math.min(modelIndex, IMAGE_MODEL_CHAIN.length - 1)];
+  const chain = Array.isArray(modelChain) && modelChain.length ? modelChain : DEFAULT_IMAGE_MODEL_CHAIN;
+  const model = chain[Math.min(modelIndex, chain.length - 1)];
   const seed = Math.abs(hashString(enhanced)) % 1000000;
   const params = new URLSearchParams({
     prompt: enhanced,
@@ -137,6 +160,18 @@ function formatLabel(format) {
   if (format === 'docx') return 'DOCX';
   if (format === 'pptx') return 'PPTX';
   return 'PDF';
+}
+
+function formatModelUsedLabel(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return '';
+  if (normalized === 'search') return 'SEARCH';
+  if (normalized === 'auto') return 'AUTO';
+  if (normalized === 'mini' || normalized === 'mira-mini') return 'MIRA MINI';
+  if (normalized === 'lite' || normalized === 'mira-lite') return 'MIRA LITE';
+  if (normalized === 'spec' || normalized === 'mira-spec') return 'MIRA SPEC';
+  if (normalized === 'vision' || normalized === 'mira-vision') return 'MIRA VISION';
+  return normalized.toUpperCase();
 }
 
 function getFileIcon(name) {
@@ -279,9 +314,6 @@ function ThinkingSection({ content, isActive }) {
         <div className="thinking-header">
           <span className="thinking-sparkle">✦</span>
           <span className="thinking-label">Thinking</span>
-          <div className="thinking-pulse-bar">
-            <div className="thinking-pulse-bar-inner" />
-          </div>
         </div>
         <div ref={scrollRef} className="thinking-scroll">
           <div className="thinking-lines">
@@ -289,10 +321,9 @@ function ThinkingSection({ content, isActive }) {
               <div
                 key={i}
                 className="thinking-line"
-                style={{ animationDelay: `${Math.min(i * 0.05, 2)}s` }}
               >
                 <span className="thinking-line-marker">›</span>
-                <span className="thinking-line-text thinking-line-ghost">{line}</span>
+                <span className="thinking-line-text">{line}</span>
               </div>
             ))}
           </div>
@@ -358,11 +389,13 @@ function GeneratedImageCard({ prompt }) {
   const [fullRetryCycle, setFullRetryCycle] = useState(0);
   const [status, setStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
   const [open, setOpen] = useState(false);
+  const [blurred, setBlurred] = useState(true);
   const transientTimerRef = useRef(null);
+  const modelChain = useMemo(() => getImageModelChain(prompt), [prompt]);
 
   const imageUrl = useMemo(
-    () => buildGeneratedImageUrl(prompt, modelIndex, `${retryNonce}-${transientAttempt}`),
-    [prompt, modelIndex, retryNonce, transientAttempt]
+    () => buildGeneratedImageUrl(prompt, modelChain, modelIndex, `${retryNonce}-${transientAttempt}`),
+    [prompt, modelChain, modelIndex, retryNonce, transientAttempt]
   );
 
   // Reset to loading whenever we point at a new URL
@@ -387,7 +420,7 @@ function GeneratedImageCard({ prompt }) {
       return;
     }
     // Same URL exhausted — advance to the next model in the chain.
-    if (modelIndex < IMAGE_MODEL_CHAIN.length - 1) {
+    if (modelIndex < modelChain.length - 1) {
       setTransientAttempt(0);
       setModelIndex((i) => i + 1);
       return;
@@ -406,7 +439,7 @@ function GeneratedImageCard({ prompt }) {
     }
 
     setStatus('error');
-  }, [fullRetryCycle, modelIndex, transientAttempt]);
+  }, [fullRetryCycle, modelChain.length, modelIndex, transientAttempt]);
 
   const handleImgLoad = useCallback(() => {
     if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
@@ -438,13 +471,19 @@ function GeneratedImageCard({ prompt }) {
     <div className="generated-image-card not-prose">
       <div
         className={`generated-image-frame status-${status}`}
-        onClick={() => status === 'ready' && setOpen(true)}
+        onClick={() => {
+          if (status !== 'ready') return;
+          if (blurred) { setBlurred(false); return; }
+          setOpen(true);
+        }}
         role={status === 'ready' ? 'button' : undefined}
         tabIndex={status === 'ready' ? 0 : -1}
         onKeyDown={(e) => {
-          if (status === 'ready' && (e.key === 'Enter' || e.key === ' ')) setOpen(true);
+          if (status === 'ready' && (e.key === 'Enter' || e.key === ' ')) {
+            if (blurred) setBlurred(false); else setOpen(true);
+          }
         }}
-        style={{ cursor: status === 'ready' ? 'zoom-in' : 'default' }}
+        style={{ cursor: status === 'ready' ? 'pointer' : 'default' }}
       >
         {status !== 'error' && (
           <img
@@ -454,8 +493,16 @@ function GeneratedImageCard({ prompt }) {
             loading="lazy"
             onLoad={handleImgLoad}
             onError={handleImgError}
-            style={{ opacity: status === 'ready' ? 1 : 0 }}
+            style={{ opacity: status === 'ready' ? 1 : 0, filter: blurred && status === 'ready' ? 'blur(22px)' : 'none', transition: 'filter 0.4s ease' }}
           />
+        )}
+
+        {status === 'ready' && blurred && (
+          <div className="generated-image-blur-overlay">
+            <div className="generated-image-blur-icon"><EyeOff size={28} strokeWidth={1.5} /></div>
+            <span className="generated-image-blur-label">Click to reveal</span>
+            <span className="generated-image-blur-sub">Sensitive content — blurred by default</span>
+          </div>
         )}
 
         {status === 'loading' && (
@@ -477,14 +524,20 @@ function GeneratedImageCard({ prompt }) {
       <div className="generated-image-meta">
         <span className="generated-image-label">Generated image</span>
         <p>{prompt}</p>
-        {status === 'ready' && (
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            className="generated-image-open"
-          >
-            Open full image
+        {status === 'ready' && blurred && (
+          <button type="button" onClick={() => setBlurred(false)} className="generated-image-open">
+            Click to reveal image
           </button>
+        )}
+        {status === 'ready' && !blurred && (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button type="button" onClick={() => setOpen(true)} className="generated-image-open">
+              Open full image
+            </button>
+            <button type="button" onClick={() => setBlurred(true)} className="generated-image-open" style={{ opacity: 0.6 }}>
+              Re-blur
+            </button>
+          </div>
         )}
       </div>
 
@@ -630,20 +683,61 @@ function DocumentDownloadAction({ format, exporting, exportError, onExport }) {
 
 function EditPromptModal({ open, initialValue, onClose, onSave }) {
   const [value, setValue] = useState(initialValue || '');
+  const [selectedModel, setSelectedModel] = useState('auto');
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState('');
+  const [pinGateOpen, setPinGateOpen] = useState(false);
+  const [pendingModel, setPendingModel] = useState(null);
+
+  const isUnrestricted = looksUnrestrictedContent(value);
 
   useEffect(() => {
-    if (open) setValue(initialValue || '');
+    if (open) {
+      setValue(initialValue || '');
+      // Pre-select locked model if content looks unrestricted
+      if (looksUnrestrictedContent(initialValue || '')) {
+        setSelectedModel('locked');
+      } else {
+        setSelectedModel('auto');
+      }
+    }
   }, [open, initialValue]);
 
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (event) => {
-      if (event.key === 'Escape') onClose();
-      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') onSave(value);
+      if (event.key === 'Escape') { onClose(); }
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') handleResend();
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose, onSave, value]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, onClose, value, selectedModel]);
+
+  function handleResend() {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return;
+    const effectiveModel = isUnrestricted && selectedModel !== 'locked' ? 'locked' : selectedModel;
+    if (effectiveModel === 'locked') {
+      // skip pin if already the user set it
+    }
+    onSave(trimmed, effectiveModel);
+  }
+
+  function handleModelClick(opt) {
+    if (opt.requiresPin) {
+      setPendingModel(opt.value);
+      setPinInput('');
+      setPinError('');
+      setPinGateOpen(true);
+    } else {
+      setSelectedModel(opt.value);
+    }
+    setModelPickerOpen(false);
+  }
+
+  const selectedLabel = MODEL_OPTIONS.find((o) => o.value === selectedModel)?.label || 'Auto';
 
   if (!open) return null;
 
@@ -664,6 +758,13 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
           </button>
         </div>
 
+        {isUnrestricted && selectedModel !== 'locked' && (
+          <div className="mb-3 px-3 py-2 rounded-xl flex items-center gap-2 text-xs" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#fca5a5' }}>
+            <Lock size={12} />
+            This message looks like unrestricted content. Mira Locked is recommended.
+          </div>
+        )}
+
         <textarea
           value={value}
           onChange={(e) => setValue(e.target.value)}
@@ -672,25 +773,113 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
           style={{ background: 'var(--glass-bg)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
         />
 
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-xl px-4 py-2 text-sm font-medium"
-            style={{ background: 'var(--hover-bg)', color: 'var(--text-primary)' }}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => onSave(value)}
-            className="rounded-xl px-4 py-2 text-sm font-medium"
-            style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
-          >
-            Resend
-          </button>
+        <div className="mt-4 flex items-center justify-between gap-2 flex-wrap">
+          {/* Model selector */}
+          <div className="relative" style={{ zIndex: 400 }}>
+            <button
+              type="button"
+              onClick={() => setModelPickerOpen((v) => !v)}
+              className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium"
+              style={{ background: 'var(--glass-bg)', border: '1px solid var(--hud-cyan-dim)', color: 'var(--hud-cyan-bright)' }}
+            >
+              <Cpu size={12} />
+              <span>{selectedLabel}</span>
+              <ChevronDown size={11} className={modelPickerOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
+            </button>
+            {modelPickerOpen && (
+              <div
+                className="absolute bottom-full mb-2 left-0 rounded-xl py-1 shadow-2xl min-w-[190px]"
+                style={{ background: 'rgba(2,16,22,0.97)', border: '1px solid var(--hud-cyan-dim)', zIndex: 410 }}
+                onMouseLeave={() => setModelPickerOpen(false)}
+              >
+                {MODEL_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => handleModelClick(opt)}
+                    className="w-full flex flex-col items-start px-3 py-2 text-xs hover:opacity-80 transition-opacity"
+                    style={{
+                      background: selectedModel === opt.value ? 'rgba(94,234,212,0.08)' : 'transparent',
+                      color: selectedModel === opt.value ? 'var(--hud-cyan-bright)' : 'var(--text-secondary)',
+                    }}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      {opt.requiresPin && <Lock size={10} />}
+                      {opt.label}
+                    </span>
+                    <span style={{ color: 'var(--text-tertiary)', fontSize: '0.62rem' }}>{opt.sub}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl px-4 py-2 text-sm font-medium"
+              style={{ background: 'var(--hover-bg)', color: 'var(--text-primary)' }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleResend}
+              className="rounded-xl px-4 py-2 text-sm font-medium"
+              style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
+            >
+              Resend
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* PIN gate for locked model selection */}
+      {pinGateOpen && (
+        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4" onClick={() => setPinGateOpen(false)}>
+          <div className="glass-strong rounded-2xl p-6 w-full max-w-xs shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.15)' }}>
+                <Lock size={18} style={{ color: '#f87171' }} />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Unlock Mira Locked</h3>
+                <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>Unrestricted model — PIN required</p>
+              </div>
+            </div>
+            <input
+              type="password"
+              inputMode="numeric"
+              value={pinInput}
+              onChange={(e) => { setPinInput(e.target.value.replace(/\D/g, '')); setPinError(''); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (pinInput === LOCKED_PIN) { setSelectedModel(pendingModel); setPinGateOpen(false); }
+                  else setPinError('Incorrect PIN');
+                }
+              }}
+              placeholder="Enter PIN..."
+              autoFocus
+              maxLength={8}
+              className="w-full glass-input rounded-xl px-4 py-3 text-sm text-center tracking-[0.5em] outline-none mb-2"
+              style={{ color: 'var(--text-primary)' }}
+            />
+            {pinError && <p className="text-xs text-red-400 text-center mb-2">{pinError}</p>}
+            <div className="flex gap-2 mt-3">
+              <button onClick={() => setPinGateOpen(false)} className="flex-1 py-2.5 rounded-xl text-sm font-medium" style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}>Cancel</button>
+              <button
+                onClick={() => {
+                  if (pinInput === LOCKED_PIN) { setSelectedModel(pendingModel); setPinGateOpen(false); }
+                  else setPinError('Incorrect PIN');
+                }}
+                className="flex-1 py-2.5 rounded-xl text-sm font-medium hover:opacity-90"
+                style={{ background: 'rgba(239,68,68,0.2)', color: '#f87171', border: '1px solid rgba(239,68,68,0.35)' }}
+              >Unlock</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>,
     document.body
   );
@@ -720,6 +909,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
   }, []);
   const imagePrompt = !isUser ? extractImagePrompt(message.content) : '';
   const videoPrompt = !isUser ? extractVideoPrompt(message.content) : '';
+  const modelUsedLabel = !isUser ? formatModelUsedLabel(message.modelUsed || message.model) : '';
   const searchingBubbleActive = !isUser && isLast && isSearching && message.content === '' && !message.thinkingContent;
   const suggestedExportFormat = !isUser && !message.isStreaming && !imagePrompt && !videoPrompt
     ? getSuggestedExportFormat(message)
@@ -765,12 +955,12 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
     onRetry(message, webSearch);
   }, [isUser, message, onRetry, webSearch]);
 
-  const handleEditSave = useCallback((nextValue) => {
+  const handleEditSave = useCallback((nextValue, modelOverride) => {
     if (!isUser || typeof onEdit !== 'function') return;
     const trimmed = String(nextValue || '').trim();
     if (!trimmed) return;
     setShowEditModal(false);
-    onEdit(message, trimmed, webSearch);
+    onEdit(message, trimmed, webSearch, modelOverride);
   }, [isUser, message, onEdit, webSearch]);
 
   const markdownComponents = useMemo(() => ({
@@ -908,9 +1098,10 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
             </div>
           </div>
         ) : (
-          <div className="hud-chat-bubble hud-chat-bubble-assistant">
+          <div className={`hud-chat-bubble hud-chat-bubble-assistant${(message.isStreaming || message.isThinkingActive || searchingBubbleActive) ? ' is-active' : ''}`}>
             <div className="hud-chat-bubble-label">
               {searchingBubbleActive ? 'MIRA · SEARCHING' : message.isStreaming ? 'MIRA · THINKING' : 'MIRA'}
+              {modelUsedLabel ? ` · ${modelUsedLabel}` : ''}
             </div>
             <div className="prose prose-base max-w-none prose-headings:font-bold prose-p:leading-relaxed prose-li:leading-relaxed" style={{ color: 'var(--text-primary)' }}>
               {message.thinkingContent && (
