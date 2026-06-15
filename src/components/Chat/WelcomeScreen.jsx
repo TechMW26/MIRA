@@ -466,9 +466,8 @@ function TemplateForm({ template, onSubmit, onClose }) {
   );
 }
 
-export default function WelcomeScreen({ onSend }) {
+export default function WelcomeScreen({ onSend, onIconHover }) {
   const [selectedTemplate, setSelectedTemplate] = useState(null);
-  const [iconAttractor, setIconAttractor] = useState(null);
   const { selectedModel } = useChatContext();
 
   // Fixed orbit lineup matching the reference HUD mockup. Each entry pairs
@@ -511,7 +510,7 @@ export default function WelcomeScreen({ onSend }) {
       <ToolOrbit
         tools={orbitTools}
         onSelect={setSelectedTemplate}
-        onHoverChange={setIconAttractor}
+        onHoverChange={onIconHover}
       />
     </>
   );

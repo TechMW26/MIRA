@@ -86,6 +86,7 @@ export default function ChatWindow() {
   const [panel, setPanel] = useState(null); // 'browser' | 'canvas' | 'tasks' | 'tools' | 'prompts'
   const [showShare, setShowShare] = useState(false);
   const [chatFontSize, setChatFontSize] = useState(getStoredFontSize);
+  const [iconAttractor, setIconAttractor] = useState(null);
   const scrollAreaRef = useRef(null);
   const autoScrollRef = useRef(true);
 
@@ -149,7 +150,7 @@ export default function ChatWindow() {
       {/* Particle background — always rendered, scattered when messages appear */}
       <div className="fixed inset-0 pointer-events-none z-0">
         <ParticleGlobe 
-          iconAttractor={null}
+          iconAttractor={iconAttractor}
           locked={selectedModel === 'locked'}
           hasMessages={messages.length > 0}
         />
@@ -161,7 +162,10 @@ export default function ChatWindow() {
         <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden hud-scroll-area" style={{ fontSize: chatFontSize }}>
           <div className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 pb-44 gap-6 px-4 w-full min-w-0`}>
             {showingWelcome ? (
-              <WelcomeScreen onSend={(p, atts = []) => sendToChat(p, atts, webSearch)} />
+              <WelcomeScreen
+                onSend={(p, atts = []) => sendToChat(p, atts, webSearch)}
+                onIconHover={setIconAttractor}
+              />
             ) : (
               displayMessages.map((msg, i) => (
                 <MessageBubble
