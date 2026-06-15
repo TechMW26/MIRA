@@ -544,11 +544,13 @@ function ToolOrbit({ tools, onSelect, onHoverChange }) {
   const centerX = vp.w / 2;
   const centerY = vp.h / 2;
   const vmin = Math.min(vp.w, vp.h);
-  // Orbit sits ~1.6x the sphere radius so the icons hug the globe closely
-  // while still clearing its corona glow.
-  // Keep the ring outside the sphere but capped so the top/bottom icons stay
-  // clear of the floating header and composer bars.
-  const orbitRadius = Math.max(120, Math.min(vmin * 0.26, vp.h / 2 - 130));
+  // Match ParticleGlobe.globeRadius() exactly so the icon ring keeps a
+  // constant proportional distance from the sphere at every screen size.
+  const globeR = Math.max(110, Math.min(vmin * 0.18, 260));
+  // Orbit ring hugs the sphere tightly (~1.45x globe radius). The floor and
+  // viewport cap keep the icons from overlapping the corona on tiny screens
+  // or colliding with the floating header / composer on tall layouts.
+  const orbitRadius = Math.max(globeR + 50, Math.min(globeR * 1.45, vp.h / 2 - 90));
   const ringD = orbitRadius * 2;
 
   return (

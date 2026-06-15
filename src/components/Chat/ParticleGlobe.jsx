@@ -55,6 +55,11 @@ export default function ParticleGlobe({
     const projY = new Float32Array(n);
     const projZ = new Float32Array(n);
     const projR = new Float32Array(n); // squared distance from spin axis (rim factor)
+    // Per-particle smoothed displacement (motion dampening) — target offsets
+    // from the projected base position are eased into these arrays each frame
+    // so the cursor / icon attraction flows instead of snapping.
+    const dispX = new Float32Array(n);
+    const dispY = new Float32Array(n);
     const order = new Array(n);
 
     const goldenAngle = Math.PI * (3 - Math.sqrt(5));
@@ -90,12 +95,13 @@ export default function ParticleGlobe({
     let redLerp = 0;
     let raf = 0;
 
-    // Globe radius tracks the CSS clamp on .particle-globe-wrap so the sphere
-    // keeps a steady size even though the canvas now spans the whole stage.
+    // Globe radius scales continuously with viewport min-dimension so the
+    // sphere always feels proportional to the screen. Kept in sync with
+    // `WelcomeScreen` `ToolOrbit` (orbitRadius ≈ globeRadius × 1.7) so the
+    // gap between particles and icons is constant across screen sizes.
     const globeRadius = () => {
       const vmin = Math.min(window.innerWidth, window.innerHeight);
-      const wrap = Math.max(240, Math.min(vmin * 0.44, 400));
-      return wrap * 0.36;
+      return Math.max(110, Math.min(vmin * 0.18, 260));
     };
 
     const handlePointerMove = (event) => {
@@ -158,7 +164,9 @@ export default function ParticleGlobe({
       const nowMs = performance.now();
       const pointerActive = mouseInVicinity || nowMs - lastMouseMove < 260;
       const targetInfluence = pointerActive ? 1 : 0;
-      mouseInfluence += (targetInfluence - mouseInfluence) * 0.12;
+      // Slower lerp = motion dampening so the influence ramps up smoothly
+      // instead of snapping when the pointer enters / leaves.
+      mouseInfluence += (targetInfluence - mouseInfluence) * 0.07;
       if (mouseInfluence < 0.002) mouseInfluence = 0;
 
       const hasIconAttractor = activeIconAttractor
@@ -175,8 +183,8 @@ export default function ParticleGlobe({
         targetMouseX = cx;
         targetMouseY = cy;
       }
-      mouseX += (targetMouseX - mouseX) * 0.14;
-      mouseY += (targetMouseY - mouseY) * 0.14;
+      mouseX += (targetMouseX - mouseX) * 0.09;
+      mouseY += (targetMouseY - mouseY) * 0.09;
 
       ctx.clearRect(0, 0, width, height);
 
@@ -218,43 +226,92 @@ export default function ParticleGlobe({
         let px = cx + x * R * wobble;
         let py = cy + y * R * wobble;
 
+        // ── Build TARGET displacement for this frame, then smooth into the
+        // persistent dispX/dispY (motion dampening) so flow feels fluid.
+        let targetDX = 0;
+        let targetDY = 0;
+
         if (mouseInfluence > 0) {
           const dx = mouseX - px;
           const dy = mouseY - py;
           const dist = Math.hypot(dx, dy) || 1;
-          const vicinity = Math.max(220, R * 1.9);
+          // Broader catchment so more distant particles are recruited into
+          // the cluster, but a much tighter focal point so they tuck in
+          // close around the cursor instead of orbiting it from far out.
+          const vicinity = Math.max(160, R * 1.55) * 1.2;
           if (dist < vicinity) {
+            // Tight focal "comfort disc" — particles inside this small zone
+            // get a soft tangential swirl only, so the cluster reads as a
+            // crisp focal point, not a diffuse blob.
+            const comfort = Math.max(14, R * 0.11);
             const norm = 1 - dist / vicinity;
-            const pull = norm * norm * (14 + R * 0.14) * mouseInfluence;
+            // Stronger pull (≈1.7× previous) so the recruitment from the
+            // wider catchment feels decisive.
+            const pull = Math.pow(norm, 1.4) * (48 + R * 0.46) * mouseInfluence;
             const depthFactor = 0.55 + ((z + 1) / 2) * 0.6;
-            px += (dx / dist) * pull * depthFactor;
-            py += (dy / dist) * pull * depthFactor;
+            if (dist > comfort) {
+              // Map distance so the "target" is the comfort-disc edge, not
+              // the cursor itself. Pull is also gated so particles never
+              // overshoot inside the disc.
+              const travel = dist - comfort;
+              const step = Math.min(pull * depthFactor, travel * 0.85);
+              targetDX += (dx / dist) * step;
+              targetDY += (dy / dist) * step;
+            } else {
+              // Inside the comfort disc: gentle TANGENTIAL drift only. This
+              // keeps the cluster lively and spread out instead of stacked.
+              const tangentX = -dy / dist;
+              const tangentY = dx / dist;
+              const swirlDir = (i % 2 === 0 ? 1 : -1);
+              const swirl = (0.35 + (1 - dist / comfort) * 0.4) * (4 + R * 0.05) * mouseInfluence;
+              targetDX += tangentX * swirl * swirlDir;
+              targetDY += tangentY * swirl * swirlDir;
+            }
           }
         }
 
-        // Hovering tool icons creates a stronger local attractor where
-        // particles arc toward the icon, orbit briefly, then naturally fold
-        // back into the globe circulation once hover ends.
+        // Hovering a tool icon: particles should ARC AROUND the icon, not
+        // pile onto it. We combine an outer attraction ring (draw them in),
+        // a tangential swirl (orbit), and a hard repulsion bubble inside the
+        // icon radius so dots clearly wrap around the glyph.
         if (iconInfluence > 0) {
           const dx = attractorX - px;
           const dy = attractorY - py;
           const dist = Math.hypot(dx, dy) || 1;
-          const iconVicinity = Math.max(260, R * 2.35);
+          const iconVicinity = Math.max(280, R * 2.6);
           if (dist < iconVicinity) {
             const norm = 1 - dist / iconVicinity;
             const depthFactor = 0.68 + ((z + 1) / 2) * 0.62;
-            const pull = Math.pow(norm, 1.5) * (22 + R * 0.2) * iconInfluence;
             const tangentX = -dy / dist;
             const tangentY = dx / dist;
             const swirlDir = (i % 2 === 0 ? 1 : -1);
-            const orbit = (0.65 + norm) * (5 + R * 0.07) * iconInfluence;
+            const orbit = (0.5 + norm) * (8 + R * 0.1) * iconInfluence;
+            targetDX += tangentX * orbit * swirlDir;
+            targetDY += tangentY * orbit * swirlDir;
 
-            px += (dx / dist) * pull * depthFactor;
-            py += (dy / dist) * pull * depthFactor;
-            px += tangentX * orbit * swirlDir;
-            py += tangentY * orbit * swirlDir;
+            // Clear zone around the icon — push particles outward so they
+            // visibly wrap around it instead of covering the glyph.
+            const iconClearRadius = 46;
+            if (dist < iconClearRadius) {
+              const clearNorm = 1 - dist / iconClearRadius;
+              const push = clearNorm * clearNorm * (24 + R * 0.22) * iconInfluence;
+              targetDX -= (dx / dist) * push;
+              targetDY -= (dy / dist) * push;
+            } else {
+              // Mild inward pull from the outer ring into the swirl region.
+              const pull = Math.pow(norm, 1.8) * (10 + R * 0.08) * iconInfluence;
+              targetDX += (dx / dist) * pull * depthFactor;
+              targetDY += (dy / dist) * pull * depthFactor;
+            }
           }
         }
+
+        // Motion dampening: lerp this particle's smoothed displacement toward
+        // the new target. Lower factor = more inertia / smoother flow.
+        dispX[i] += (targetDX - dispX[i]) * 0.18;
+        dispY[i] += (targetDY - dispY[i]) * 0.18;
+        px += dispX[i];
+        py += dispY[i];
 
         projX[i] = px;
         projY[i] = py;
