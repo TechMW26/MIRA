@@ -27,6 +27,11 @@ import path from 'path';
 })();
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+const GENERATED_IMAGE_UPSTREAM_TIMEOUT_MS = 18000;
+const GENERATED_IMAGE_RETRY_ATTEMPTS = 3;
+const GENERATED_IMAGE_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
+const GENERATED_IMAGE_ALT_SEARCH_TIMEOUT_MS = 12000;
+const GENERATED_IMAGE_SEARCH_STOPWORDS = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'for', 'with', 'and', 'or', 'to', 'from', 'by', 'into', 'split-shot', 'photograph', 'photo', 'image', 'stunning', 'majestic', 'crystal-clear']);
 const ANCHOR_STOP = new Set(['the','a','an','of','to','for','in','on','with','and','or','but','is','are','was','were','what','how','why','when','where','this','that','it','its','they','them','about','more','can','you','tell','please','show','give','find','search','get','some','image','images','photo','picture','video','videos','media','device','product','object','thing','system','technology']);
 
 function normalizeSearchText(value = '') {
@@ -988,6 +993,112 @@ function boundedGeneratedSize(value) {
   return Math.max(512, Math.min(1280, Math.round(size)));
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchGeneratedImageWithRetries(target) {
+  let lastResponse = null;
+  let lastError = null;
+  const pollinationsKey = String(process.env.POLLINATIONS_API_KEY || '').trim();
+
+  for (let attempt = 0; attempt < GENERATED_IMAGE_RETRY_ATTEMPTS; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GENERATED_IMAGE_UPSTREAM_TIMEOUT_MS);
+    try {
+      const upstream = await fetch(target, {
+        signal: controller.signal,
+        redirect: 'follow',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; MIRA-GeneratedImage/1.0)',
+          'Accept': 'image/avif,image/webp,image/png,image/jpeg,image/*;q=0.9,*/*;q=0.5',
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
+          ...(pollinationsKey ? { Authorization: `Bearer ${pollinationsKey}` } : {}),
+        },
+      });
+      clearTimeout(timeout);
+
+      if (upstream.ok) return upstream;
+      lastResponse = upstream;
+
+      if (!GENERATED_IMAGE_RETRYABLE_STATUS.has(upstream.status) || attempt === GENERATED_IMAGE_RETRY_ATTEMPTS - 1) {
+        return upstream;
+      }
+
+      await sleep(900 + (attempt * 900));
+    } catch (err) {
+      clearTimeout(timeout);
+      lastError = err;
+      if (attempt === GENERATED_IMAGE_RETRY_ATTEMPTS - 1) break;
+      await sleep(900 + (attempt * 900));
+    }
+  }
+
+  if (lastResponse) return lastResponse;
+  if (lastError) throw lastError;
+  throw new Error('Image generation failed');
+}
+
+async function fetchSearchFallbackImage(prompt) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GENERATED_IMAGE_ALT_SEARCH_TIMEOUT_MS);
+  try {
+    const words = String(prompt || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .split(/\s+/)
+      .filter((word) => word.length > 2 && !GENERATED_IMAGE_SEARCH_STOPWORDS.has(word));
+    const compact = words.slice(0, 7).join(' ').trim();
+    const queries = [String(prompt || '').trim(), compact, 'elephant swimming', 'wildlife underwater']
+      .filter(Boolean)
+      .filter((query, index, arr) => arr.indexOf(query) === index);
+
+    let urls = [];
+    for (const query of queries) {
+      const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&gsrlimit=8&prop=imageinfo&iiprop=url|mime&format=json&origin=*`;
+      const searchRes = await fetch(searchUrl, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; MIRA-ImageFallback/1.0)',
+          'Accept-Language': 'en-US,en;q=0.9',
+          Accept: 'application/json',
+        },
+      });
+      if (!searchRes.ok) continue;
+      const payload = await searchRes.json().catch(() => ({}));
+      const pages = Object.values(payload?.query?.pages || {});
+      urls = pages
+        .map((page) => page?.imageinfo?.[0])
+        .filter((info) => info?.url && IMG_ALLOWED_MIME.test(String(info?.mime || '').trim()))
+        .map((info) => info.url)
+        .slice(0, 5);
+      if (urls.length) break;
+    }
+
+    for (const imageUrl of urls) {
+      const imageRes = await fetch(imageUrl, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; MIRA-ImageFallback/1.0)',
+          'Accept': 'image/avif,image/webp,image/png,image/jpeg,image/*;q=0.9,*/*;q=0.5',
+        },
+      });
+      if (!imageRes.ok) continue;
+      const ct = imageRes.headers.get('content-type') || '';
+      if (!IMG_ALLOWED_MIME.test(ct.split(';')[0].trim())) continue;
+      const buffer = Buffer.from(await imageRes.arrayBuffer());
+      if (!buffer.byteLength || buffer.byteLength > 10 * 1024 * 1024) continue;
+      return { buffer, contentType: ct };
+    }
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function handleGeneratedImage(req, res) {
   try {
     const parsed = new URL(req.url, 'http://localhost');
@@ -1008,28 +1119,39 @@ async function handleGeneratedImage(req, res) {
       model,
       seed: String(seed),
     });
-    const target = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?${params.toString()}`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 55000);
-    const upstream = await fetch(target, {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; MIRA-GeneratedImage/1.0)',
-        'Accept': 'image/avif,image/webp,image/png,image/jpeg,image/*;q=0.9,*/*;q=0.5',
-      },
-    });
-    clearTimeout(timeout);
+    const key = String(process.env.POLLINATIONS_API_KEY || '').trim();
+    if (key) params.set('key', key);
+    const target = `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?${params.toString()}`;
+    const upstream = await fetchGeneratedImageWithRetries(target);
     if (!upstream.ok) {
-      res.writeHead(502); res.end(JSON.stringify({ error: `Upstream ${upstream.status}` })); return;
+      if (upstream.status === 402 || upstream.status === 403 || upstream.status === 429) {
+        const fallback = await fetchSearchFallbackImage(prompt).catch(() => null);
+        if (fallback?.buffer) {
+          res.writeHead(200, {
+            'Content-Type': fallback.contentType,
+            'Cache-Control': 'public, max-age=21600',
+            'Access-Control-Allow-Origin': '*',
+            'X-MIRA-Image-Source': 'search-fallback',
+          });
+          res.end(fallback.buffer);
+          return;
+        }
+      }
+      res.writeHead(502, { 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: `Upstream ${upstream.status}` }));
+      return;
     }
     const ct = upstream.headers.get('content-type') || '';
     if (!IMG_ALLOWED_MIME.test(ct.split(';')[0].trim())) {
-      res.writeHead(415); res.end(JSON.stringify({ error: `Unsupported content-type: ${ct}` })); return;
+      res.writeHead(415, { 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: `Unsupported content-type: ${ct}` }));
+      return;
     }
     const buffer = Buffer.from(await upstream.arrayBuffer());
     if (buffer.byteLength > 10 * 1024 * 1024) {
-      res.writeHead(413); res.end(JSON.stringify({ error: 'Image too large' })); return;
+      res.writeHead(413, { 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'Image too large' }));
+      return;
     }
     res.writeHead(200, {
       'Content-Type': ct,
@@ -1038,7 +1160,174 @@ async function handleGeneratedImage(req, res) {
     });
     res.end(buffer);
   } catch (err) {
-    res.writeHead(504); res.end(JSON.stringify({ error: err?.name === 'AbortError' ? 'Image generation timed out' : (err?.message || 'Image generation failed') }));
+    res.writeHead(504, { 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: err?.name === 'AbortError' ? 'Image generation timed out' : (err?.message || 'Image generation failed') }));
+  }
+}
+
+// === Generated video proxy ===
+const GEN_VIDEO_MODELS = new Set(['wan-pro', 'wan-pro-1080p']);
+const GEN_VIDEO_MAX_PROMPT = 900;
+const GEN_VIDEO_RETRY_ATTEMPTS = 3;
+const GEN_VIDEO_TIMEOUT_MS = 60000;
+const GEN_VIDEO_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
+const GEN_VIDEO_ALLOWED_MIME = /^video\/(mp4|webm|ogg|quicktime)$/i;
+const GEN_VIDEO_MAX_BYTES = 80 * 1024 * 1024;
+
+function compactGeneratedVideoPrompt(value = '') {
+  const compact = String(value || '').replace(/\s+/g, ' ').trim();
+  if (compact.length <= GEN_VIDEO_MAX_PROMPT) return compact;
+  return compact.slice(0, GEN_VIDEO_MAX_PROMPT).replace(/\s+\S*$/, '').trim();
+}
+
+function boundedVideoDuration(value) {
+  const duration = Number(value || 5);
+  if (!Number.isFinite(duration)) return 5;
+  return Math.max(3, Math.min(12, Math.round(duration)));
+}
+
+function resolveVideoUrlFromPayload(payload = {}) {
+  if (!payload || typeof payload !== 'object') return '';
+  return [
+    payload.url,
+    payload.video,
+    payload.video_url,
+    payload.output?.url,
+    payload.result?.url,
+    payload.data?.url,
+    payload.choices?.[0]?.url,
+    payload.choices?.[0]?.message?.content,
+  ].find((value) => /^https?:\/\//i.test(String(value || '').trim())) || '';
+}
+
+async function fetchGeneratedVideoWithRetries(target, key = '') {
+  let lastResponse = null;
+  let lastError = null;
+  for (let attempt = 0; attempt < GEN_VIDEO_RETRY_ATTEMPTS; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GEN_VIDEO_TIMEOUT_MS);
+    try {
+      const upstream = await fetch(target, {
+        method: 'GET',
+        signal: controller.signal,
+        redirect: 'follow',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; MIRA-GeneratedVideo/1.0)',
+          'Accept': 'video/mp4,video/webm,application/json;q=0.9,*/*;q=0.5',
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
+          ...(key ? { Authorization: `Bearer ${key}` } : {}),
+        },
+      });
+      clearTimeout(timeout);
+
+      if (upstream.ok) return upstream;
+      lastResponse = upstream;
+      if (!GEN_VIDEO_RETRYABLE_STATUS.has(upstream.status) || attempt === GEN_VIDEO_RETRY_ATTEMPTS - 1) {
+        return upstream;
+      }
+      await sleep(1200 + (attempt * 1000));
+    } catch (err) {
+      clearTimeout(timeout);
+      lastError = err;
+      if (attempt === GEN_VIDEO_RETRY_ATTEMPTS - 1) break;
+      await sleep(1200 + (attempt * 1000));
+    }
+  }
+
+  if (lastResponse) return lastResponse;
+  if (lastError) throw lastError;
+  throw new Error('Video generation failed');
+}
+
+async function handleGeneratedVideo(req, res) {
+  try {
+    const parsed = new URL(req.url, 'http://localhost');
+    const prompt = compactGeneratedVideoPrompt(parsed.searchParams.get('prompt') || '');
+    if (!prompt) {
+      res.writeHead(400); res.end(JSON.stringify({ error: 'Missing prompt' })); return;
+    }
+
+    const requestedModel = String(parsed.searchParams.get('model') || process.env.POLLINATIONS_VIDEO_MODEL || 'wan-pro').toLowerCase();
+    const model = GEN_VIDEO_MODELS.has(requestedModel) ? requestedModel : 'wan-pro';
+    const duration = boundedVideoDuration(parsed.searchParams.get('duration'));
+    const resolution = String(parsed.searchParams.get('resolution') || '1080p').toLowerCase();
+    const seed = Number(parsed.searchParams.get('seed') || 1) || 1;
+    const key = String(process.env.POLLINATIONS_API_KEY || '').trim();
+
+    const params = new URLSearchParams({
+      model,
+      duration: String(duration),
+      resolution,
+      seed: String(seed),
+      nologo: 'true',
+      enhance: 'true',
+    });
+    if (key) params.set('key', key);
+    const target = `https://gen.pollinations.ai/video/${encodeURIComponent(prompt)}?${params.toString()}`;
+
+    const upstream = await fetchGeneratedVideoWithRetries(target, key);
+    if (!upstream.ok) {
+      res.writeHead(502, { 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: `Upstream ${upstream.status}` }));
+      return;
+    }
+
+    const contentType = (upstream.headers.get('content-type') || '').split(';')[0].trim();
+    if (GEN_VIDEO_ALLOWED_MIME.test(contentType)) {
+      const buffer = Buffer.from(await upstream.arrayBuffer());
+      if (!buffer.byteLength || buffer.byteLength > GEN_VIDEO_MAX_BYTES) {
+        res.writeHead(413, { 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'Video too large' }));
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=3600',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(buffer);
+      return;
+    }
+
+    const payload = await upstream.json().catch(() => ({}));
+    const videoUrl = resolveVideoUrlFromPayload(payload);
+    if (!videoUrl) {
+      res.writeHead(502, { 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'Video URL not returned by upstream' }));
+      return;
+    }
+
+    const remote = await fetchGeneratedVideoWithRetries(videoUrl, key);
+    if (!remote.ok) {
+      res.writeHead(502, { 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: `Video fetch failed ${remote.status}` }));
+      return;
+    }
+
+    const remoteType = (remote.headers.get('content-type') || '').split(';')[0].trim();
+    if (!GEN_VIDEO_ALLOWED_MIME.test(remoteType)) {
+      res.writeHead(415, { 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: `Unsupported content-type: ${remoteType}` }));
+      return;
+    }
+
+    const remoteBuffer = Buffer.from(await remote.arrayBuffer());
+    if (!remoteBuffer.byteLength || remoteBuffer.byteLength > GEN_VIDEO_MAX_BYTES) {
+      res.writeHead(413, { 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'Video too large' }));
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': remoteType,
+      'Cache-Control': 'public, max-age=3600',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(remoteBuffer);
+  } catch (err) {
+    res.writeHead(504, { 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: err?.name === 'AbortError' ? 'Video generation timed out' : (err?.message || 'Video generation failed') }));
   }
 }
 
@@ -1059,6 +1348,12 @@ const server = http.createServer(async (req, res) => {
   // GET /api/generate-image?prompt=... — generated image bytes
   if (req.method === 'GET' && req.url?.startsWith('/api/generate-image')) {
     await handleGeneratedImage(req, res);
+    return;
+  }
+
+  // GET /api/generate-video?prompt=... — generated video bytes
+  if (req.method === 'GET' && req.url?.startsWith('/api/generate-video')) {
+    await handleGeneratedVideo(req, res);
     return;
   }
 

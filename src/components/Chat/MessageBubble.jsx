@@ -13,9 +13,15 @@ import { exportDocument, sanitizeDocumentContent } from '../../utils/documentExp
 import { cleanSpeechText, createSpeechUtterance, pickPreferredVoice, findVoiceById, getPreferredVoiceId } from '../../utils/tts';
 
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN:\s*([\s\S]*?)\]/i;
+const VIDEO_GEN_PATTERN = /\[VIDEO_GEN:\s*([\s\S]*?)\]/i;
 
 function extractImagePrompt(content = '') {
   const match = String(content).match(IMAGE_GEN_PATTERN);
+  return match?.[1]?.trim() || '';
+}
+
+function extractVideoPrompt(content = '') {
+  const match = String(content).match(VIDEO_GEN_PATTERN);
   return match?.[1]?.trim() || '';
 }
 
@@ -38,8 +44,11 @@ function enhanceImagePrompt(prompt = '') {
 
 // Fallback model chain — start with the reliable `flux`, then try `turbo` as a backup.
 const IMAGE_MODEL_CHAIN = ['flux', 'turbo'];
-const MAX_TRANSIENT_RETRIES = 2; // retry same URL up to 2x before advancing chain
+const MAX_TRANSIENT_RETRIES = 5; // retry same URL several times before advancing chain
+const MAX_FULL_RETRY_CYCLES = 2; // rerun full model chain a couple times before showing hard failure
 const GENERATED_IMAGE_SIZE = '1024';
+const GENERATED_VIDEO_DURATION = '5';
+const GENERATED_VIDEO_RESOLUTION = '1080p';
 const MAX_GENERATED_PROMPT_CHARS = 900;
 
 function compactImagePrompt(prompt = '') {
@@ -61,6 +70,18 @@ function buildGeneratedImageUrl(prompt, modelIndex = 0, cacheKey = '0-0') {
     r: cacheKey,
   });
   return `/api/generate-image?${params.toString()}`;
+}
+
+function buildGeneratedVideoUrl(prompt, cacheKey = '0') {
+  const enhanced = compactImagePrompt(prompt);
+  const params = new URLSearchParams({
+    prompt: enhanced,
+    model: 'wan-pro',
+    duration: GENERATED_VIDEO_DURATION,
+    resolution: GENERATED_VIDEO_RESOLUTION,
+    r: cacheKey,
+  });
+  return `/api/generate-video?${params.toString()}`;
 }
 
 function hashString(value = '') {
@@ -359,6 +380,7 @@ function GeneratedImageCard({ prompt }) {
   const [modelIndex, setModelIndex] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
   const [transientAttempt, setTransientAttempt] = useState(0);
+  const [fullRetryCycle, setFullRetryCycle] = useState(0);
   const [status, setStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
   const [open, setOpen] = useState(false);
   const transientTimerRef = useRef(null);
@@ -379,10 +401,11 @@ function GeneratedImageCard({ prompt }) {
   }, []);
 
   const handleImgError = useCallback(() => {
+    if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
     // First, retry the same URL a couple times with backoff — Pollinations
     // frequently 502s on cold-start and succeeds on the second hit.
     if (transientAttempt < MAX_TRANSIENT_RETRIES) {
-      const delay = 600 * (transientAttempt + 1);
+      const delay = 1000 + (transientAttempt * 900);
       transientTimerRef.current = setTimeout(() => {
         setTransientAttempt((n) => n + 1);
       }, delay);
@@ -394,10 +417,25 @@ function GeneratedImageCard({ prompt }) {
       setModelIndex((i) => i + 1);
       return;
     }
+
+    // Full model chain exhausted — run another delayed cycle before failing.
+    if (fullRetryCycle < MAX_FULL_RETRY_CYCLES) {
+      const delay = 2000 + (fullRetryCycle * 2200);
+      transientTimerRef.current = setTimeout(() => {
+        setModelIndex(0);
+        setTransientAttempt(0);
+        setRetryNonce((n) => n + 1);
+        setFullRetryCycle((n) => n + 1);
+      }, delay);
+      return;
+    }
+
     setStatus('error');
-  }, [modelIndex, transientAttempt]);
+  }, [fullRetryCycle, modelIndex, transientAttempt]);
 
   const handleImgLoad = useCallback(() => {
+    if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
+    setFullRetryCycle(0);
     setStatus('ready');
   }, []);
 
@@ -405,6 +443,7 @@ function GeneratedImageCard({ prompt }) {
     if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
     setModelIndex(0);
     setTransientAttempt(0);
+    setFullRetryCycle(0);
     setRetryNonce((n) => n + 1);
   }, []);
 
@@ -531,6 +570,67 @@ function GeneratedImageCard({ prompt }) {
   );
 }
 
+function GeneratedVideoCard({ prompt }) {
+  const [retryNonce, setRetryNonce] = useState(0);
+  const [status, setStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
+
+  const videoUrl = useMemo(
+    () => buildGeneratedVideoUrl(prompt, String(retryNonce)),
+    [prompt, retryNonce]
+  );
+
+  useEffect(() => {
+    setStatus('loading');
+  }, [videoUrl]);
+
+  const handleRetry = useCallback(() => {
+    setRetryNonce((n) => n + 1);
+  }, []);
+
+  return (
+    <div className="generated-image-card generated-video-card not-prose">
+      <div className={`generated-image-frame generated-video-frame status-${status}`}>
+        <video
+          key={videoUrl}
+          src={videoUrl}
+          controls
+          playsInline
+          preload="metadata"
+          onCanPlay={() => setStatus('ready')}
+          onError={() => setStatus('error')}
+          style={{ opacity: status === 'ready' ? 1 : 0 }}
+        />
+
+        {status === 'loading' && (
+          <div className="generated-image-loader">
+            <div className="generated-image-spinner" />
+            <span>Generating video…</span>
+          </div>
+        )}
+
+        {status === 'error' && (
+          <div className="generated-image-loader generated-image-errored">
+            <span>Video failed to generate.</span>
+            <button type="button" onClick={handleRetry} className="generated-image-retry">
+              Retry
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="generated-image-meta">
+        <span className="generated-image-label">Generated video</span>
+        <p>{prompt}</p>
+        {status === 'ready' && (
+          <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="generated-image-open">
+            Open video in new tab
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DocumentDownloadAction({ format, exporting, exportError, onExport }) {
   if (!format) return null;
   const label = formatLabel(format);
@@ -644,8 +744,9 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
     return () => window.speechSynthesis.removeEventListener?.('voiceschanged', refreshVoices);
   }, []);
   const imagePrompt = !isUser ? extractImagePrompt(message.content) : '';
+  const videoPrompt = !isUser ? extractVideoPrompt(message.content) : '';
   const searchingBubbleActive = !isUser && isLast && isSearching && message.content === '' && !message.thinkingContent;
-  const suggestedExportFormat = !isUser && !message.isStreaming && !imagePrompt
+  const suggestedExportFormat = !isUser && !message.isStreaming && !imagePrompt && !videoPrompt
     ? getSuggestedExportFormat(message)
     : '';
 
@@ -845,6 +946,8 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
               )}
               {imagePrompt ? (
                 <GeneratedImageCard prompt={imagePrompt} />
+              ) : videoPrompt ? (
+                <GeneratedVideoCard prompt={videoPrompt} />
               ) : message.isStreaming && message.content ? (
                 <ParticleText text={message.content} active />
               ) : (

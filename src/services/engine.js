@@ -48,6 +48,12 @@ const COMPLEXITY_SIGNALS = {
     /\b(edit|modify|retouch|enhance|upscale|change|replace|remove|add)\b.*\b(image|picture|photo|background|object|person|logo)\b/i,
     /\b(image|picture|photo|illustration|artwork|poster|logo|wallpaper|banner|thumbnail)\s+of\b/i,
   ],
+  video: [
+    /\b(generate|create|make|produce|render)\b.*\b(video|clip|movie|animation|cinematic|trailer|reel|short)\b/i,
+    /\b(video|clip|movie|animation|trailer|reel|short)\b.*\b(of|about|showing|depicting|with)\b/i,
+    /\b(animate|animation|motion)\b.*\b(scene|shot|sequence|visual|character)\b/i,
+    /\b(turn|convert|transform)\b.*\b(into|to)\b.*\b(video|animation|clip)\b/i,
+  ],
 };
 
 // ── Search / Internet detection ────────────────────────────────
@@ -112,6 +118,17 @@ function classifyQuery(text) {
     return { intent: 'code', complexity };
   }
 
+  let isVideoMatch = false;
+  for (const rx of COMPLEXITY_SIGNALS.video) {
+    if (rx.test(text)) { isVideoMatch = true; break; }
+  }
+  if (isVideoMatch) {
+    const hasCodeContext = IMAGE_NEGATIVE_SIGNALS.some(rx => rx.test(text));
+    if (!hasCodeContext) {
+      return { intent: 'video', complexity: 'low' };
+    }
+  }
+
   // Check image patterns first
   let isImageMatch = false;
   for (const rx of COMPLEXITY_SIGNALS.image) {
@@ -161,13 +178,16 @@ export function interpretUserPrompt(text = '', hasImages = false) {
   const classification = classifyQuery(text);
   const codeIntent = detectCodeIntent(text);
   const imageIntent = classification.intent === 'image' && !codeIntent;
+  const videoIntent = classification.intent === 'video' && !codeIntent;
+  const resolvedIntent = codeIntent ? 'code' : classification.intent;
   return {
-    intent: codeIntent ? 'code' : classification.intent,
+    intent: resolvedIntent,
     classification: codeIntent ? { ...classification, intent: 'code' } : classification,
     codeIntent,
     imageIntent,
+    videoIntent,
     hasImages,
-    route: codeIntent ? 'code' : imageIntent ? 'image' : 'chat',
+    route: codeIntent ? 'code' : videoIntent ? 'video' : imageIntent ? 'image' : 'chat',
   };
 }
 

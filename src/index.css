@@ -449,6 +449,21 @@ body {
   transition: opacity 0.35s ease;
 }
 
+.generated-video-frame {
+  aspect-ratio: 16 / 9;
+}
+
+.generated-video-frame video {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: #000;
+  transition: opacity 0.35s ease;
+}
+
 .generated-image-loader {
   position: absolute;
   inset: 0;
