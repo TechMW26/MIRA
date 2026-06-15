@@ -148,3 +148,29 @@ export function buildUserContextPrompt({ profile, conversation, messages = [] } 
   return sections.join('\n\n');
 }
 
+// ── Token-efficient adaptive context builder ──
+// Only emits the heavy "THE USER YOU ARE TALKING TO" block when the user
+// message references personal info. Otherwise sends minimal or no context.
+// The model can also write back to the knowledge bank via [REMEMBER: key=value].
+export function buildAdaptiveContext({ profile, conversation, messages = [], mode = 'minimal', learnedFacts = '' } = {}) {
+  if (mode === 'none') return '';
+
+  const sections = [];
+
+  if (mode === 'minimal') {
+    const name = profile?.displayName?.trim();
+    if (name) {
+      sections.push(`Active user: ${name}. You can write facts to user memory by emitting [REMEMBER: key=value] anywhere in your reply (it will be stripped before display).`);
+    }
+    if (learnedFacts) sections.push(learnedFacts);
+    return sections.join('\n\n');
+  }
+
+  // mode === 'full' — full context, but trim conversation recap aggressively
+  const full = buildUserContextPrompt({ profile, conversation, messages });
+  if (full) sections.push(full);
+  if (learnedFacts) sections.push(learnedFacts);
+  sections.push('You can write new facts to user memory by emitting [REMEMBER: key=value] inline (it will be stripped from the visible reply).');
+  return sections.join('\n\n');
+}
+

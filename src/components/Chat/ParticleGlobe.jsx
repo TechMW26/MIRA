@@ -444,11 +444,14 @@ export default function ParticleGlobe({
       // No pulsation: static, bright core that acts as a gravitational anchor
       const orbR = R * 0.08;
       
+      // Dim the orb by 50% when chat is active to avoid interfering with messages
+      const orbDimFactor = hasChats ? 0.5 : 1.0;
+      
       // SUPER bright corona — the black hole's event horizon glow
       const corona = ctx.createRadialGradient(cx, cy, 0, cx, cy, orbR * 6);
-      corona.addColorStop(0, `rgba(255, 255, 255, ${0.7 + energy * 0.2})`);
-      corona.addColorStop(0.15, `rgba(${redLerp > 0.5 ? '255, 150, 150' : '200, 255, 255'}, ${0.55 + energy * 0.15})`);
-      corona.addColorStop(0.45, `rgba(${r1}, ${g1}, ${b1}, ${0.28 + energy * 0.12})`);
+      corona.addColorStop(0, `rgba(255, 255, 255, ${(0.7 + energy * 0.2) * orbDimFactor})`);
+      corona.addColorStop(0.15, `rgba(${redLerp > 0.5 ? '255, 150, 150' : '200, 255, 255'}, ${(0.55 + energy * 0.15) * orbDimFactor})`);
+      corona.addColorStop(0.45, `rgba(${r1}, ${g1}, ${b1}, ${(0.28 + energy * 0.12) * orbDimFactor})`);
       corona.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.globalCompositeOperation = 'lighter';
       ctx.fillStyle = corona;
@@ -459,10 +462,10 @@ export default function ParticleGlobe({
 
       // Bright, luminous core — pure white hot singularity
       const orbGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, orbR);
-      orbGrad.addColorStop(0, '#ffffff');
-      orbGrad.addColorStop(0.3, '#ffffff');
-      orbGrad.addColorStop(0.7, redLerp > 0.5 ? '#ff9999' : '#80ffff');
-      orbGrad.addColorStop(1, `rgb(${r1}, ${g1}, ${b1})`);
+      orbGrad.addColorStop(0, `rgba(255, 255, 255, ${orbDimFactor})`);
+      orbGrad.addColorStop(0.3, `rgba(255, 255, 255, ${orbDimFactor})`);
+      orbGrad.addColorStop(0.7, redLerp > 0.5 ? `rgba(255, 153, 153, ${orbDimFactor})` : `rgba(128, 255, 255, ${orbDimFactor})`);
+      orbGrad.addColorStop(1, `rgba(${r1}, ${g1}, ${b1}, ${orbDimFactor})`);
       ctx.fillStyle = orbGrad;
       ctx.beginPath();
       ctx.arc(cx, cy, orbR, 0, Math.PI * 2);

@@ -15,7 +15,14 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useChatContext } from '../contexts/ChatContext';
 import useUserProfile from './useUserProfile';
-import { generateSmartTitle, buildUserContextPrompt } from '../utils/helpers';
+import { generateSmartTitle, buildAdaptiveContext } from '../utils/helpers';
+import {
+  cacheProfile,
+  decideContextMode,
+  buildLearnedFactsBlock,
+  processRememberMarkers,
+} from '../services/knowledgeBank';
+import { makeCacheKey, getCachedResponse, setCachedResponse } from '../services/responseCache';
 import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
@@ -818,16 +825,21 @@ export default function useChat() {
 
         const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: simpleGreeting });
 
-        // Always give the model a system block describing WHO it is talking to
-        // and a short recap of this conversation, so it stays consistent even
-        // after history truncation.
+        // ── Adaptive user context (token-efficient) ──
+        // Cache profile locally so heuristic + future sessions can use it.
+        cacheProfile(profile);
         const currentConversation = Array.isArray(chatConversations)
           ? chatConversations.find((c) => c?.id === convId)
           : null;
-        const userSystemPrompt = buildUserContextPrompt({
+        const isFirstTurn = (historySource?.length || 0) === 0;
+        const contextMode = decideContextMode(content, isFirstTurn);
+        const learnedFactsBlock = buildLearnedFactsBlock();
+        const userSystemPrompt = buildAdaptiveContext({
           profile,
           conversation: currentConversation,
           messages: historySource,
+          mode: contextMode,
+          learnedFacts: learnedFactsBlock,
         });
 
         if (replaceMessageId) {
@@ -1160,6 +1172,20 @@ export default function useChat() {
           let fullText = '';
           let requestFailed = false;
           let requestAborted = false;
+
+          // ── Response cache check ──
+          const cacheKey = makeCacheKey({
+            messages: history,
+            model: chosenModel,
+            systemPrompt: userSystemPrompt,
+            images,
+          });
+          const cached = cacheKey ? getCachedResponse(cacheKey) : null;
+          if (cached && !abortRef.current) {
+            fullText = cached;
+            setStreamingContent(cached);
+            setIsSearching(false);
+          } else {
           try {
             await sendChatMessage(
               history,
@@ -1188,6 +1214,11 @@ export default function useChat() {
               requestFailed = true;
               fullText = fullText || `Sorry, something went wrong: ${err.message}`;
             }
+          }
+          // Cache successful responses
+          if (cacheKey && fullText && !requestFailed && !requestAborted) {
+            setCachedResponse(cacheKey, fullText);
+          }
           }
 
           if (requestAborted || abortRef.current) {
@@ -1277,6 +1308,9 @@ export default function useChat() {
           }
 
           if (fullText) {
+            // Strip + persist [REMEMBER: key=value] markers before display
+            fullText = processRememberMarkers(fullText);
+
             const requestedFormat = requestedDocumentFormat;
             let titleSource = fullText;
             if (requestedFormat) {
