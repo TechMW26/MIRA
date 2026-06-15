@@ -721,9 +721,16 @@ export async function sendChatMessage(messages, model, onChunk, images = [], sys
     .filter(Boolean)
     .join('\n')
     .trim();
-  const finalAnswer = split.answer || latestAnswer;
+  const rawWithoutThinkTags = String(streamed?.answer || '')
+    .replace(/<thinking>/gi, '')
+    .replace(/<\/thinking>/gi, '')
+    .replace(/<think>/gi, '')
+    .replace(/<\/think>/gi, '')
+    .trim();
+  const finalAnswer = split.answer || latestAnswer || rawWithoutThinkTags;
 
   if (finalThinking) onThinking?.(finalThinking);
   if (finalAnswer) return finalAnswer;
+  if (finalThinking) return finalThinking;
   throw new Error('No result in response');
 }

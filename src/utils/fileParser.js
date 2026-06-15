@@ -1,4 +1,5 @@
 // Lazy-load heavy parsers only when needed
+import JSZip from 'jszip';
 
 function cleanExtractedText(text) {
   return String(text || '')
@@ -49,8 +50,6 @@ async function extractDOCX(file) {
 
 async function extractDOCXXmlText(arrayBuffer) {
   try {
-    const JSZipModule = await import('jszip');
-    const JSZip = JSZipModule.default || JSZipModule;
     const zip = await JSZip.loadAsync(arrayBuffer);
     const xmlPaths = Object.keys(zip.files)
       .filter((path) => /^word\/(document|footnotes|endnotes|comments|header\d+|footer\d+)\.xml$/.test(path))
