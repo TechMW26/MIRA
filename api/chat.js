@@ -1,4 +1,8 @@
-export const config = { maxDuration: 60 };
+// Vercel hard cap: Hobby = 60s, Pro = 300s, Enterprise = 900s.
+// Reasoning streams (especially mira-spec / mira-locked with `think`) can run
+// well past 60s, so we ask for the maximum the plan allows. Vercel clamps this
+// down silently if the plan can't grant it — no deployment error.
+export const config = { maxDuration: 300 };
 
 const OLLAMA_API_URL = (process.env.OLLAMA_API_URL || 'http://147.93.102.103:11434/api/generate').trim();
 const MIRA_MINI_MODEL = (process.env.MIRA_MINI_MODEL || 'mira-mini').trim();
