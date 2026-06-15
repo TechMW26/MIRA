@@ -162,19 +162,32 @@ export default function ParticleGlobe({
       const edgeTarget = hasChats ? 1 : 0;
       edgeScatter += (edgeTarget - edgeScatter) * 0.08;  // Smooth animation
 
-      rotation += 0.0016 + energy * 0.004;
+      // Only rotate when NOT thinking — stops spinning during cognitive activity
+      if (!isThinking) {
+        rotation += 0.0016 + energy * 0.004;
+      }
       pulse += 0.04 + energy * 0.05;
 
       const cx = width / 2;
       const cy = height / 2;
       const R = globeRadius();
       const nowMs = performance.now();
-      const pointerActive = mouseInVicinity || nowMs - lastMouseMove < 260;
-      const targetInfluence = pointerActive ? 1 : 0;
-      // Slower lerp = motion dampening so the influence ramps up smoothly
-      // instead of snapping when the pointer enters / leaves.
-      mouseInfluence += (targetInfluence - mouseInfluence) * 0.07;
-      if (mouseInfluence < 0.002) mouseInfluence = 0;
+      
+      // In chat mode, disable MOUSE tracking but keep all autonomous behavior
+      // (thinking bursts, rotation, oscillation, etc.)
+      if (!hasChats) {
+        const pointerActive = mouseInVicinity || nowMs - lastMouseMove < 260;
+        const targetInfluence = pointerActive ? 1 : 0;
+        // Slower lerp = motion dampening so the influence ramps up smoothly
+        // instead of snapping when the pointer enters / leaves.
+        mouseInfluence += (targetInfluence - mouseInfluence) * 0.07;
+        if (mouseInfluence < 0.002) mouseInfluence = 0;
+      } else {
+        // In chat mode, fade out mouse tracking (cursor won't pull particles)
+        // but all thinking/cognitive behavior remains autonomous
+        mouseInfluence += (0 - mouseInfluence) * 0.07;
+        if (mouseInfluence < 0.002) mouseInfluence = 0;
+      }
 
       const hasIconAttractor = activeIconAttractor
         && Number.isFinite(activeIconAttractor.x)
@@ -229,9 +242,13 @@ export default function ParticleGlobe({
           Math.sin(pulse * speed[i] + phase[i]) * (0.012 + ripple * 0.04) +
           ripple * 0.05 +
           burst;
+        
+        // Reduce spread by 10% when thinking to keep particles more compact
+        const spreadFactor = isThinking ? 0.9 : 1.0;
+        const adjustedWobble = wobble * spreadFactor;
 
-        let px = cx + x * R * wobble;
-        let py = cy + y * R * wobble;
+        let px = cx + x * R * adjustedWobble;
+        let py = cy + y * R * adjustedWobble;
 
         // NEW: Apply edge scatter — push particles outward toward screen edges
         // The stronger they scatter, the more they move toward the edge
@@ -324,6 +341,33 @@ export default function ParticleGlobe({
           }
         }
 
+        // ── Black hole gravity ──
+        // When thinking, the center becomes an active gravitational anchor
+        if (isThinking) {
+          const dx = -px; // Vector from particle toward center
+          const dy = -py;
+          const dist = Math.hypot(dx, dy) || 1;
+          const blackholeVicinity = R * 1.8; // Pull zone extends fairly wide
+          
+          if (dist < blackholeVicinity) {
+            const norm = 1 - Math.min(1, dist / blackholeVicinity);
+            const depthFactor = 0.6 + ((z + 1) / 2) * 0.5;
+            
+            // Strong inward pull — particles spiral toward the black hole
+            const gravity = Math.pow(norm, 1.3) * (28 + R * 0.35) * scatter;
+            targetDX += (dx / dist) * gravity * depthFactor;
+            targetDY += (dy / dist) * gravity * depthFactor;
+            
+            // Vortex/swirl around the black hole — makes it feel alive and autonomous
+            const tangentX = -dy / dist;
+            const tangentY = dx / dist;
+            const swirlDir = (i % 2 === 0 ? 1 : -1);
+            const vortex = norm * (6 + R * 0.08) * scatter;
+            targetDX += tangentX * vortex * swirlDir;
+            targetDY += tangentY * vortex * swirlDir;
+          }
+        }
+
         // Motion dampening: lerp this particle's smoothed displacement toward
         // the new target. Lower factor = more inertia / smoother flow.
         dispX[i] += (targetDX - dispX[i]) * 0.18;
@@ -396,23 +440,28 @@ export default function ParticleGlobe({
       }
       ctx.restore();
 
-      // ── Power orb (bright nucleus) ──
-      const orbR = R * (0.08 + Math.sin(pulse * 0.9) * 0.01 + energy * 0.035);
-      const corona = ctx.createRadialGradient(cx, cy, 0, cx, cy, orbR * 5);
-      corona.addColorStop(0, `rgba(255, 255, 255, ${0.5 + energy * 0.25})`);
-      corona.addColorStop(0.3, `rgba(${redLerp > 0.5 ? '255, 200, 200' : '186, 252, 251'}, ${0.34 + energy * 0.16})`);
-      corona.addColorStop(0.65, `rgba(${r1}, ${g1}, ${b1}, ${0.14 + energy * 0.08})`);
+      // ── Black Hole nucleus — bright, static, and active ──
+      // No pulsation: static, bright core that acts as a gravitational anchor
+      const orbR = R * 0.08;
+      
+      // SUPER bright corona — the black hole's event horizon glow
+      const corona = ctx.createRadialGradient(cx, cy, 0, cx, cy, orbR * 6);
+      corona.addColorStop(0, `rgba(255, 255, 255, ${0.7 + energy * 0.2})`);
+      corona.addColorStop(0.15, `rgba(${redLerp > 0.5 ? '255, 150, 150' : '200, 255, 255'}, ${0.55 + energy * 0.15})`);
+      corona.addColorStop(0.45, `rgba(${r1}, ${g1}, ${b1}, ${0.28 + energy * 0.12})`);
       corona.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.globalCompositeOperation = 'lighter';
       ctx.fillStyle = corona;
       ctx.beginPath();
-      ctx.arc(cx, cy, orbR * 5, 0, Math.PI * 2);
+      ctx.arc(cx, cy, orbR * 6, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalCompositeOperation = 'source-over';
 
+      // Bright, luminous core — pure white hot singularity
       const orbGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, orbR);
       orbGrad.addColorStop(0, '#ffffff');
-      orbGrad.addColorStop(0.55, redLerp > 0.5 ? '#ffb3b3' : '#bafcfb');
+      orbGrad.addColorStop(0.3, '#ffffff');
+      orbGrad.addColorStop(0.7, redLerp > 0.5 ? '#ff9999' : '#80ffff');
       orbGrad.addColorStop(1, `rgb(${r1}, ${g1}, ${b1})`);
       ctx.fillStyle = orbGrad;
       ctx.beginPath();
