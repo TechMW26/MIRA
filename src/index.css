@@ -651,6 +651,90 @@ body[data-locked='true'].mira-hud-active {
     var(--bg-primary);
 }
 
+/* ── Locked mode: kill ALL cyan tints (text, glass, panels, composer) ── */
+body[data-locked='true'] {
+  /* Text leans warm so the message bar, sidebar entries, hints all read red. */
+  --text-primary: #ffe6e6;
+  --text-secondary: #f3b8b8;
+  --text-tertiary: #b87878;
+  /* Surface tokens — red-tinted near-black instead of cyan-tinted near-black. */
+  --glass-bg: rgba(20, 4, 6, 0.68);
+  --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --input-bg: rgba(22, 6, 8, 0.78);
+  --hud-bg: rgba(14, 4, 6, 0.75);
+  --overlay-bg: rgba(10, 0, 0, 0.7);
+}
+/* Sidebar drawer + every glass surface (cyan rgba(2,14,20) → red rgba(22,4,6)) */
+body[data-locked='true'] .mira-sidebar .glass,
+body[data-locked='true'] .mira-sidebar .glass-strong,
+body[data-locked='true'] .mira-sidebar .glass-input {
+  background: rgba(22, 4, 6, 0.78);
+  border-color: rgba(248, 113, 113, 0.22);
+}
+/* HUD chips / buttons / panels / composer / tool strip / dropdowns */
+body[data-locked='true'] .hud-chip,
+body[data-locked='true'] .hud-btn,
+body[data-locked='true'] .hud-composer,
+body[data-locked='true'] .hud-tool {
+  background: rgba(22, 4, 6, 0.32);
+}
+body[data-locked='true'] .hud-panel {
+  background: rgba(20, 4, 6, 0.28);
+}
+body[data-locked='true'] .hud-composer:focus-within {
+  border-color: rgba(248, 113, 113, 0.55);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.08), 0 0 40px -10px rgba(248, 113, 113, 0.45);
+}
+body[data-locked='true'] .composer-icon-btn { color: rgba(248, 113, 113, 0.55); }
+body[data-locked='true'] .composer-icon-btn:hover {
+  background: rgba(248, 113, 113, 0.08);
+  color: #fca5a5;
+}
+/* Tool palette tooltips + popovers + any other rgba(2,1x,2x,a) surfaces */
+body[data-locked='true'] .tool-node-tip,
+body[data-locked='true'] .tool-node {
+  background: rgba(22, 4, 6, 0.92);
+  border-color: rgba(248, 113, 113, 0.22);
+}
+/* Override every remaining cyan-tinted stylesheet background. These selectors
+   are explicit because [style*=] cannot match colours set in stylesheets. */
+body[data-locked='true'] .composer-model-popover {
+  background: rgba(22, 4, 6, 0.96);
+  border-color: rgba(248, 113, 113, 0.22);
+}
+body[data-locked='true'] .composer-model-option:hover,
+body[data-locked='true'] .composer-model-option[data-active='true'] {
+  background: rgba(248, 113, 113, 0.1);
+  color: #fca5a5;
+}
+body[data-locked='true'] .hud-tool {
+  border-color: rgba(248, 113, 113, 0.22);
+  color: rgba(248, 113, 113, 0.55);
+}
+body[data-locked='true'] .hud-tool-tip {
+  background: rgba(22, 4, 6, 0.85);
+  border-color: rgba(248, 113, 113, 0.22);
+  color: #fca5a5;
+}
+body[data-locked='true'] .hud-voice-popover {
+  background: rgba(22, 4, 6, 0.95);
+  border-color: rgba(248, 113, 113, 0.22);
+}
+body[data-locked='true'] .hud-chat-bubble {
+  background: rgba(22, 4, 6, 0.6);
+}
+body[data-locked='true'] .hud-composer {
+  border-color: rgba(248, 113, 113, 0.22);
+}
+body[data-locked='true'] .composer-model-btn {
+  background: transparent;
+}
+/* Selection colour shouldn't fall back to a teal browser default */
+body[data-locked='true'] ::selection {
+  background: rgba(248, 113, 113, 0.35);
+  color: #fff;
+}
+
 /* ── Unrestricted mode composer warning banner ── */
 .nsfw-banner {
   display: flex;
