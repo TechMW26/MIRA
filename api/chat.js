@@ -1,8 +1,8 @@
 export const config = { maxDuration: 60 };
 
-const OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'http://147.93.102.103:11434/api/generate';
-const OLLAMA_TEXT_MODEL = process.env.OLLAMA_TEXT_MODEL || 'huihui_ai/deepseek-r1-abliterated:14b';
-const OLLAMA_VISION_MODEL = process.env.OLLAMA_VISION_MODEL || 'llama3.2-vision';
+const OLLAMA_API_URL = (process.env.OLLAMA_API_URL || 'http://147.93.102.103:11434/api/generate').trim();
+const OLLAMA_TEXT_MODEL = (process.env.OLLAMA_TEXT_MODEL || 'huihui_ai/deepseek-r1-abliterated:14b').trim();
+const OLLAMA_VISION_MODEL = (process.env.OLLAMA_VISION_MODEL || 'llama3.2-vision').trim();
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 2048);
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);
 
@@ -76,6 +76,51 @@ function jsonResponse(payload, status = 200) {
   });
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchOllamaWithRetry(payload) {
+  const transientStatus = new Set([408, 429, 500, 502, 503, 504]);
+  const maxAttempts = 2;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+    try {
+      const upstream = await fetch(OLLAMA_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (upstream.ok) return upstream;
+
+      const errorText = await upstream.text().catch(() => '');
+      lastError = { status: upstream.status, message: errorText || `Ollama upstream error (${upstream.status}).` };
+      if (transientStatus.has(upstream.status) && attempt < maxAttempts) {
+        await sleep(350 * attempt);
+        continue;
+      }
+
+      return jsonResponse({ error: `Ollama upstream error (${upstream.status}).` }, upstream.status);
+    } catch (err) {
+      clearTimeout(timeout);
+      const message = err?.name === 'AbortError' ? 'Ollama request timed out.' : (err?.message || 'Chat request failed.');
+      lastError = { status: 500, message };
+      if (attempt < maxAttempts) {
+        await sleep(350 * attempt);
+        continue;
+      }
+    }
+  }
+
+  return jsonResponse({ error: lastError?.message || 'Chat request failed.' }, lastError?.status || 500);
+}
+
 export async function POST(req) {
   try {
     // Enforce request body size cap.
@@ -100,31 +145,18 @@ export async function POST(req) {
     const effectiveModel = hasImages ? OLLAMA_VISION_MODEL : OLLAMA_TEXT_MODEL;
     if (!OLLAMA_API_URL) return jsonResponse({ error: 'OLLAMA_API_URL is not configured.' }, 500);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
-    let upstream;
-    try {
-      upstream = await fetch(OLLAMA_API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: effectiveModel,
-          prompt,
-          ...(hasImages ? { images: promptImages } : {}),
-          stream: body.stream !== false,
-          options: { num_predict: safeMax },
-        }),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
+    const upstreamOrResponse = await fetchOllamaWithRetry({
+      model: effectiveModel,
+      prompt,
+      ...(hasImages ? { images: promptImages } : {}),
+      stream: body.stream !== false,
+      options: { num_predict: safeMax },
+    });
 
-    if (!upstream.ok) {
-      const errorText = await upstream.text().catch(() => '');
-      console.error('Upstream chat error:', upstream.status, errorText?.slice(0, 500));
-      return jsonResponse({ error: `Ollama upstream error (${upstream.status}).` }, upstream.status);
+    if (!upstreamOrResponse.ok) {
+      return upstreamOrResponse;
     }
+    const upstream = upstreamOrResponse;
 
     return new Response(upstream.body, {
       status: 200,

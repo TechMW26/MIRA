@@ -169,11 +169,58 @@ function buildResultAnchoredImageQuery(results = [], anchorScope = null, fallbac
 }
 
 // === Ollama chat configuration ===
-const OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'http://147.93.102.103:11434/api/generate';
-const OLLAMA_TEXT_MODEL = process.env.OLLAMA_TEXT_MODEL || 'huihui_ai/deepseek-r1-abliterated:14b';
-const OLLAMA_VISION_MODEL = process.env.OLLAMA_VISION_MODEL || 'llama3.2-vision';
+const OLLAMA_API_URL = (process.env.OLLAMA_API_URL || 'http://147.93.102.103:11434/api/generate').trim();
+const OLLAMA_TEXT_MODEL = (process.env.OLLAMA_TEXT_MODEL || 'huihui_ai/deepseek-r1-abliterated:14b').trim();
+const OLLAMA_VISION_MODEL = (process.env.OLLAMA_VISION_MODEL || 'llama3.2-vision').trim();
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 2048);
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchOllamaWithRetry(payload) {
+  const transientStatus = new Set([408, 429, 500, 502, 503, 504]);
+  const maxAttempts = 2;
+  let lastStatus = 500;
+  let lastMessage = 'Chat request failed.';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+    try {
+      const upstream = await fetch(OLLAMA_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (upstream.ok) return upstream;
+
+      const errorText = await upstream.text().catch(() => '');
+      lastStatus = upstream.status;
+      lastMessage = errorText || `Ollama API error: ${upstream.status}`;
+      if (transientStatus.has(upstream.status) && attempt < maxAttempts) {
+        await sleep(350 * attempt);
+        continue;
+      }
+      return { errorStatus: lastStatus, errorMessage: lastMessage };
+    } catch (err) {
+      clearTimeout(timeout);
+      lastStatus = 500;
+      lastMessage = err.name === 'AbortError' ? `Ollama API timeout after ${OLLAMA_TIMEOUT_MS}ms` : (err.message || 'Chat request failed.');
+      if (attempt < maxAttempts) {
+        await sleep(350 * attempt);
+        continue;
+      }
+      return { errorStatus: lastStatus, errorMessage: lastMessage };
+    }
+  }
+
+  return { errorStatus: lastStatus, errorMessage: lastMessage };
+}
 
 function toOllamaPrompt(messages = []) {
   return (Array.isArray(messages) ? messages : [])
@@ -260,29 +307,21 @@ async function handleChat(body, res) {
     return;
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
   try {
-    const upstream = await fetch(OLLAMA_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: effectiveModel,
-        prompt,
-        ...(hasImages ? { images: promptImages } : {}),
-        stream: payload.stream !== false,
-        options: { num_predict: safeMax },
-      }),
-      signal: controller.signal,
+    const upstreamOrError = await fetchOllamaWithRetry({
+      model: effectiveModel,
+      prompt,
+      ...(hasImages ? { images: promptImages } : {}),
+      stream: payload.stream !== false,
+      options: { num_predict: safeMax },
     });
-    clearTimeout(timeout);
 
-    if (!upstream.ok) {
-      const errorText = await upstream.text().catch(() => '');
-      res.writeHead(upstream.status, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: errorText || `Ollama API error: ${upstream.status}` }));
+    if (upstreamOrError?.errorStatus) {
+      res.writeHead(upstreamOrError.errorStatus, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: upstreamOrError.errorMessage }));
       return;
     }
+    const upstream = upstreamOrError;
 
     res.writeHead(200, {
       'Content-Type': upstream.headers.get('Content-Type') || 'text/event-stream',
@@ -295,7 +334,7 @@ async function handleChat(body, res) {
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: message }));
   } finally {
-    clearTimeout(timeout);
+    // no-op: retry helper handles connect timeout lifecycle per attempt
   }
 }
 
