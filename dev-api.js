@@ -173,7 +173,7 @@ const OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'http://147.93.102.103:1143
 const OLLAMA_TEXT_MODEL = process.env.OLLAMA_TEXT_MODEL || 'huihui_ai/deepseek-r1-abliterated:14b';
 const OLLAMA_VISION_MODEL = process.env.OLLAMA_VISION_MODEL || 'llama3.2-vision';
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 2048);
-const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 90000);
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);
 
 function toOllamaPrompt(messages = []) {
   return (Array.isArray(messages) ? messages : [])
@@ -275,6 +275,7 @@ async function handleChat(body, res) {
       }),
       signal: controller.signal,
     });
+    clearTimeout(timeout);
 
     if (!upstream.ok) {
       const errorText = await upstream.text().catch(() => '');
