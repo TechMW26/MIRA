@@ -113,7 +113,7 @@ function parseStreamData(data) {
   }
 }
 
-async function readChatResponse(response, onChunk) {
+async function readChatResponse(response, onChunk, signal) {
   const reader = response.body?.getReader();
   if (!reader) {
     const text = await response.text();
@@ -129,6 +129,12 @@ async function readChatResponse(response, onChunk) {
     }
     return { answer, thinking: parsed.thinking || '' };
   }
+
+  const onAbort = () => {
+    try { reader.cancel(); } catch { /* ignore */ }
+  };
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener?.('abort', onAbort, { once: true });
 
   const decoder = new TextDecoder();
   let buffer = '';
@@ -151,26 +157,33 @@ async function readChatResponse(response, onChunk) {
     });
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        throw new DOMException('Generation stopped by user.', 'AbortError');
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('event:') || trimmed.startsWith('id:')) continue;
-      const data = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('event:') || trimmed.startsWith('id:')) continue;
+        const data = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
+        append(parseStreamData(data));
+      }
+    }
+
+    const remainder = buffer.trim();
+    if (remainder) {
+      const data = remainder.startsWith('data:') ? remainder.slice(5).trim() : remainder;
       append(parseStreamData(data));
     }
-  }
-
-  const remainder = buffer.trim();
-  if (remainder) {
-    const data = remainder.startsWith('data:') ? remainder.slice(5).trim() : remainder;
-    append(parseStreamData(data));
+  } finally {
+    signal?.removeEventListener?.('abort', onAbort);
   }
 
   return { answer: fullAnswer, thinking: fullThinking };
@@ -190,26 +203,45 @@ async function extractApiError(response) {
   }
 }
 
-export async function stopChatGeneration() {
-  if (activeChatAbortController) {
-    activeChatAbortController.abort();
-  }
-
+export function stopChatGeneration() {
+  const controller = activeChatAbortController;
   const requestId = activeChatRequestId;
   activeChatAbortController = null;
   activeChatRequestId = null;
 
+  // 1) Abort the in-flight client fetch synchronously. Closing this TCP
+  //    connection makes our server fire its `req.signal`/`req.close`
+  //    listener, which in turn aborts the upstream Ollama fetch.
+  if (controller && !controller.signal.aborted) {
+    try { controller.abort(); } catch { /* ignore */ }
+  }
+
+  // 2) Belt-and-braces: also POST a cancel request keyed by requestId.
+  //    This covers cases where the server-side close listener is missed
+  //    (e.g. proxy buffering, serverless edge). The server uses the id
+  //    to look up the in-flight controller and abort it.
   if (!requestId) return;
 
+  const payload = JSON.stringify({ action: 'cancel', requestId });
   try {
-    await fetch('/api/chat', {
+    if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+      const blob = new Blob([payload], { type: 'application/json' });
+      navigator.sendBeacon('/api/chat', blob);
+      return;
+    }
+  } catch {
+    // fall through to fetch
+  }
+
+  try {
+    fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'cancel', requestId }),
+      body: payload,
       keepalive: true,
-    });
+    }).catch(() => {});
   } catch {
-    // Best-effort stop call. Local abort already halts client streaming.
+    // ignore — local abort has already stopped client streaming.
   }
 }
 
@@ -246,7 +278,7 @@ async function requestChat({ messages, model, images = [], systemPrompt, maxToke
         });
 
         if (response.ok) {
-          return readChatResponse(response, onChunk);
+          return readChatResponse(response, onChunk, controller.signal);
         }
 
         const message = await extractApiError(response);

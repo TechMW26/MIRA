@@ -210,12 +210,25 @@ export async function POST(req) {
     const effectiveModel = resolveModelChoice(body.model, hasImages, forceLocked);
     if (!OLLAMA_API_URL) return jsonResponse({ error: 'OLLAMA_API_URL is not configured.' }, 500);
     const requestId = String(body.requestId || '').trim();
-    const requestController = requestId ? new AbortController() : null;
-    if (requestId && requestController) {
+    const requestController = new AbortController();
+    if (requestId) {
       ACTIVE_CHAT_REQUESTS.set(requestId, requestController);
       setTimeout(() => {
         ACTIVE_CHAT_REQUESTS.delete(requestId);
       }, ACTIVE_CHAT_REQUEST_TTL_MS);
+    }
+
+    // Critical: abort the upstream Ollama fetch as soon as the client
+    // disconnects (Stop pressed, tab closed, navigation, etc.).
+    // Ollama has no per-request cancel endpoint; closing the HTTP request
+    // to it is the supported way to stop generation.
+    if (req?.signal && typeof req.signal.addEventListener === 'function') {
+      const onClientAbort = () => {
+        if (!requestController.signal.aborted) requestController.abort();
+        if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+      };
+      if (req.signal.aborted) onClientAbort();
+      else req.signal.addEventListener('abort', onClientAbort, { once: true });
     }
 
     const chatMessages = hasImages
@@ -231,7 +244,7 @@ export async function POST(req) {
         stream: body.stream !== false,
         options: { num_predict: safeMax },
       },
-      requestController?.signal,
+      requestController.signal,
     );
 
     if (!upstreamOrResponse.ok) {
@@ -240,7 +253,46 @@ export async function POST(req) {
     }
     const upstream = upstreamOrResponse;
 
-    return new Response(upstream.body, {
+    // Re-emit the upstream stream so we can abort it mid-flight when the
+    // upstream controller is aborted (closes the upstream socket immediately).
+    const proxiedBody = new ReadableStream({
+      async start(streamController) {
+        const reader = upstream.body?.getReader();
+        if (!reader) {
+          streamController.close();
+          return;
+        }
+        const onAbort = () => {
+          try { reader.cancel(); } catch { /* ignore */ }
+          try { streamController.close(); } catch { /* ignore */ }
+        };
+        if (requestController.signal.aborted) {
+          onAbort();
+          return;
+        }
+        requestController.signal.addEventListener('abort', onAbort, { once: true });
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (requestController.signal.aborted) break;
+            streamController.enqueue(value);
+          }
+        } catch {
+          // Upstream connection closed or aborted; nothing to recover.
+        } finally {
+          requestController.signal.removeEventListener?.('abort', onAbort);
+          if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+          try { streamController.close(); } catch { /* ignore */ }
+        }
+      },
+      cancel() {
+        if (!requestController.signal.aborted) requestController.abort();
+        if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+      },
+    });
+
+    return new Response(proxiedBody, {
       status: 200,
       headers: {
         'Content-Type': upstream.headers.get('Content-Type') || 'text/event-stream',

@@ -324,22 +324,41 @@ function extractLastUserImages(messages = [], fallbackImages = []) {
     .filter(Boolean);
 }
 
-async function writeUpstreamBody(upstream, res) {
+async function writeUpstreamBody(upstream, res, abortSignal) {
   const reader = upstream.body?.getReader();
   if (!reader) {
     res.end(await upstream.text());
     return;
   }
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    res.write(Buffer.from(value));
+  const onAbort = () => {
+    try { reader.cancel(); } catch { /* ignore */ }
+    try { res.end(); } catch { /* ignore */ }
+  };
+  if (abortSignal?.aborted) {
+    onAbort();
+    return;
   }
-  res.end();
+  abortSignal?.addEventListener?.('abort', onAbort, { once: true });
+
+  try {
+    while (true) {
+      if (abortSignal?.aborted) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (abortSignal?.aborted) break;
+      const ok = res.write(Buffer.from(value));
+      if (!ok) await new Promise((resolve) => res.once('drain', resolve));
+    }
+  } catch {
+    // Upstream socket closed mid-stream (typically because we aborted it).
+  } finally {
+    abortSignal?.removeEventListener?.('abort', onAbort);
+    try { res.end(); } catch { /* ignore */ }
+  }
 }
 
-async function handleChat(body, res) {
+async function handleChat(body, res, req) {
   const payload = JSON.parse(body || '{}');
   if (payload?.action === 'cancel') {
     const requestId = String(payload?.requestId || '').trim();
@@ -374,13 +393,26 @@ async function handleChat(body, res) {
   const forceLocked = hasUnrestrictedSignals(messages);
   const effectiveModel = resolveModelChoice(payload.model, hasImages, forceLocked);
   const requestId = String(payload.requestId || '').trim();
-  const requestController = requestId ? new AbortController() : null;
-  if (requestId && requestController) {
+  const requestController = new AbortController();
+  if (requestId) {
     ACTIVE_CHAT_REQUESTS.set(requestId, requestController);
     setTimeout(() => {
       ACTIVE_CHAT_REQUESTS.delete(requestId);
     }, ACTIVE_CHAT_REQUEST_TTL_MS);
   }
+
+  // Critical: when the client disconnects (Stop pressed, page closed, etc.)
+  // abort the upstream Ollama fetch. Closing the request to Ollama is the
+  // supported way to actually halt generation. Without this, the upstream
+  // keeps generating tokens until the prompt completes.
+  const onClientDisconnect = () => {
+    if (!requestController.signal.aborted) requestController.abort();
+    if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+  };
+  req?.once?.('close', onClientDisconnect);
+  req?.once?.('aborted', onClientDisconnect);
+  res?.once?.('close', onClientDisconnect);
+
   if (!OLLAMA_API_URL) {
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'OLLAMA_API_URL is not configured.' }));
@@ -401,7 +433,7 @@ async function handleChat(body, res) {
         stream: payload.stream !== false,
         options: { num_predict: safeMax },
       },
-      requestController?.signal,
+      requestController.signal,
     );
 
     if (upstreamOrError?.errorStatus) {
@@ -417,7 +449,7 @@ async function handleChat(body, res) {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
-    await writeUpstreamBody(upstream, res);
+    await writeUpstreamBody(upstream, res, requestController.signal);
   } catch (err) {
     const message = err.name === 'AbortError' ? `Ollama API timeout after ${OLLAMA_TIMEOUT_MS}ms` : err.message;
     res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -1296,7 +1328,7 @@ const server = http.createServer(async (req, res) => {
   req.on('data', c => body += c);
   req.on('end', async () => {
     try {
-      if (req.url === '/api/chat') { await handleChat(body, res); return; }
+      if (req.url === '/api/chat') { await handleChat(body, res, req); return; }
 
       let result;
       if (req.url === '/api/scrape') result = await handleScrape(body);
