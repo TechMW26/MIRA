@@ -75,7 +75,7 @@ function getImageModelChain(prompt = '') {
     : DEFAULT_IMAGE_MODEL_CHAIN;
 }
 
-function buildGeneratedImageUrl(prompt, modelChain, modelIndex = 0, cacheKey = '0-0') {
+function buildGeneratedImageUrl(prompt, modelChain, modelIndex = 0, cacheKey = '0-0', unsafe = false) {
   const enhanced = compactImagePrompt(enhanceImagePrompt(prompt));
   const chain = Array.isArray(modelChain) && modelChain.length ? modelChain : DEFAULT_IMAGE_MODEL_CHAIN;
   const model = chain[Math.min(modelIndex, chain.length - 1)];
@@ -87,7 +87,7 @@ function buildGeneratedImageUrl(prompt, modelChain, modelIndex = 0, cacheKey = '
     model,
     seed: String(seed),
     r: cacheKey,
-    unsafe: (typeof document !== 'undefined' && document.body?.dataset?.locked === 'true') ? '1' : '0',
+    unsafe: unsafe ? '1' : '0',
   });
   return `/api/generate-image?${params.toString()}`;
 }
@@ -397,10 +397,11 @@ function GeneratedImageCard({ prompt, image }) {
   const persistedImageUrl = typeof image?.url === 'string' ? image.url.trim() : '';
   const hasPersistedImage = Boolean(persistedImageUrl);
   const [preferPersistedImage, setPreferPersistedImage] = useState(hasPersistedImage);
+  const unsafeForGeneration = imageMarkedNsfw;
 
   const generatedImageUrl = useMemo(
-    () => buildGeneratedImageUrl(prompt, modelChain, modelIndex, `${retryNonce}-${transientAttempt}`),
-    [prompt, modelChain, modelIndex, retryNonce, transientAttempt]
+    () => buildGeneratedImageUrl(prompt, modelChain, modelIndex, `${retryNonce}-${transientAttempt}`, unsafeForGeneration),
+    [prompt, modelChain, modelIndex, retryNonce, transientAttempt, unsafeForGeneration]
   );
 
   const imageUrl = useMemo(

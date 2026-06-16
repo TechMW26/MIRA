@@ -82,6 +82,8 @@ export default function Sidebar() {
   const [pinError, setPinError] = useState('');
   const [projectMenu, setProjectMenu] = useState(null);
   const sidebarRef = useRef(null);
+  const contextMenuRef = useRef(null);
+  const [moveMenuLeft, setMoveMenuLeft] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -121,9 +123,11 @@ export default function Sidebar() {
 
     const handleOutsidePointer = (event) => {
       const sidebarEl = sidebarRef.current;
+      const contextMenuEl = contextMenuRef.current;
       const target = event.target;
       if (!sidebarEl || !(target instanceof Node)) return;
       if (sidebarEl.contains(target)) return;
+      if (contextMenuEl && contextMenuEl.contains(target)) return;
       setSidebarOpen(false);
     };
 
@@ -280,7 +284,16 @@ export default function Sidebar() {
   function handleContextMenu(e, conv) {
     e.preventDefault();
     e.stopPropagation();
-    setContextMenu({ convId: conv.id, x: e.clientX, y: e.clientY, projectId: conv.projectId });
+    const menuWidth = 196;
+    const menuHeight = conv?.projectId ? 156 : 122;
+    const margin = 10;
+    const viewportW = typeof window !== 'undefined' ? window.innerWidth : e.clientX + menuWidth;
+    const viewportH = typeof window !== 'undefined' ? window.innerHeight : e.clientY + menuHeight;
+    const x = Math.max(margin, Math.min(e.clientX, viewportW - menuWidth - margin));
+    const y = Math.max(margin, Math.min(e.clientY, viewportH - menuHeight - margin));
+
+    setMoveMenuLeft(viewportW < 820 || x > viewportW - 360);
+    setContextMenu({ convId: conv.id, x, y, projectId: conv.projectId });
     setMoveToProjectMenu(null);
     setActiveMenu(null);
   }
@@ -561,6 +574,7 @@ export default function Sidebar() {
       {/* ── RIGHT-CLICK CONTEXT MENU ── */}
       {contextMenu && (
         <div
+          ref={contextMenuRef}
           className="fixed z-[100] glass rounded-xl shadow-2xl py-1 min-w-[180px] animate-fade-in"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={(e) => e.stopPropagation()}
@@ -576,7 +590,10 @@ export default function Sidebar() {
               <ChevronRight size={12} className="ml-auto" />
             </button>
             {moveToProjectMenu && (
-              <div className="absolute left-full top-0 ml-1 glass rounded-xl shadow-2xl py-1 min-w-[160px] animate-fade-in">
+              <div
+                className="absolute top-0 glass rounded-xl shadow-2xl py-1 min-w-[160px] animate-fade-in"
+                style={moveMenuLeft ? { right: 'calc(100% + 6px)' } : { left: 'calc(100% + 6px)' }}
+              >
                 {projects.length === 0 ? (
                   <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-tertiary)' }}>No projects yet</div>
                 ) : (

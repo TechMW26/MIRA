@@ -2051,6 +2051,12 @@ body.mira-hud-active {
 }
 
 @media (max-width: 640px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+
   .sidebar-mobile-trigger {
     left: max(8px, env(safe-area-inset-left, 0px));
     top: max(8px, env(safe-area-inset-top, 0px));
@@ -2146,7 +2152,7 @@ body.mira-hud-active {
     border-bottom: 0;
   }
   .hud-composer-textarea {
-    font-size: 0.9rem;
+    font-size: 16px;
     padding: 10px 2px !important;
   }
   .composer-model-btn {

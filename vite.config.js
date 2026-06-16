@@ -1,8 +1,31 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      injectRegister: 'auto',
+      includeAssets: [
+        'favicon.svg',
+        'mira-logo.png',
+        'icons/icon-192.png',
+        'icons/icon-512.png',
+        'icons/icon-512-maskable.png',
+        'icons/apple-touch-icon.png',
+      ],
+      manifest: false,
+      workbox: {
+        navigateFallbackDenylist: [/^\/api\//],
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+      },
+      devOptions: {
+        enabled: true,
+      },
+    }),
+  ],
   build: {
     chunkSizeWarningLimit: 3000,
   },

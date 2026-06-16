@@ -1346,7 +1346,7 @@ export default function useChat() {
                   userId: user.uid,
                   conversationId: convId,
                   messageId: assistantMsgId,
-                  allowNsfw: selectedModel === 'locked',
+                  allowNsfw: chosenModel === 'locked',
                 });
                 if (persistedImage?.url) {
                   generatedMediaForMessage = { images: [persistedImage] };
