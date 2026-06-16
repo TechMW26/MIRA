@@ -1552,7 +1552,7 @@ body.mira-hud-active {
 
 @media (min-width: 1025px) and (hover: hover) and (pointer: fine) {
   .sidebar-mobile-trigger {
-    display: none;
+    display: inline-flex;
   }
 }
 

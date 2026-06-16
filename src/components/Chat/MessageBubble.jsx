@@ -125,6 +125,27 @@ function nodeToText(node) {
   return '';
 }
 
+function normalizeMarkdownForDisplay(content = '') {
+  const raw = String(content || '');
+  if (!raw) return '';
+  // Avoid touching fenced code blocks.
+  if (raw.includes('```')) return raw;
+
+  const hasListMarkers = /(?:^|\s)(?:\d+\.\s+|[-*]\s+)/m.test(raw);
+  if (!hasListMarkers) return raw;
+
+  let normalized = raw.replace(/\r\n?/g, '\n');
+  // Promote inline heading separators into block markdown.
+  normalized = normalized.replace(/\s+---\s+(?=#{1,6}\s)/g, '\n\n---\n\n');
+  normalized = normalized.replace(/([^\n])\s+(#{1,6}\s+)/g, '$1\n\n$2');
+  // Break inline numbered points into separate markdown lines.
+  normalized = normalized.replace(/([^\n])\s+(\d+\.\s+)/g, '$1\n$2');
+  // Break inline bullet points into separate markdown lines.
+  normalized = normalized.replace(/([^\n])\s+-\s+(?=[A-Z0-9*])/g, '$1\n- ');
+
+  return normalized;
+}
+
 function normalizeExportFormat(value = '') {
   const lower = String(value).toLowerCase();
   if (/\bpdf\b/.test(lower)) return 'pdf';
@@ -997,6 +1018,11 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
     onEdit(message, trimmed, webSearch, modelOverride);
   }, [isUser, message, onEdit, webSearch]);
 
+  const formattedMarkdownContent = useMemo(
+    () => normalizeMarkdownForDisplay(message.content),
+    [message.content]
+  );
+
   const markdownComponents = useMemo(() => ({
     img({ src, alt }) {
       const s = typeof src === 'string' ? src.trim() : '';
@@ -1096,6 +1122,15 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
     td({ children }) {
       return <td className="px-4 py-2.5 text-sm" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)' }}>{children}</td>;
     },
+    ul({ children }) {
+      return <ul className="my-3 space-y-1 pl-6" style={{ listStyleType: 'disc' }}>{children}</ul>;
+    },
+    ol({ children }) {
+      return <ol className="my-3 space-y-1 pl-6" style={{ listStyleType: 'decimal' }}>{children}</ol>;
+    },
+    li({ children }) {
+      return <li className="pl-1" style={{ color: 'var(--text-primary)' }}>{children}</li>;
+    },
   }), [handleExport, suggestedExportFormat]);
 
   return (
@@ -1152,7 +1187,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
                 <ParticleText text={message.content} active />
               ) : (
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                  {message.content}
+                  {formattedMarkdownContent}
                 </ReactMarkdown>
               )}
               {suggestedExportFormat && (
