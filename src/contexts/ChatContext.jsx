@@ -45,6 +45,7 @@ export function ChatProvider({ children }) {
       return 'auto';
     }
   });
+  const [activeResponseModel, setActiveResponseModel] = useState(null);
 
   const setSelectedModel = useCallback((value) => {
     const next = ALLOWED_MODELS.has(value) ? value : 'auto';
@@ -110,6 +111,8 @@ export function ChatProvider({ children }) {
     isProjectUnlocked,
     selectedModel,
     setSelectedModel,
+    activeResponseModel,
+    setActiveResponseModel,
     lockedModelUnlocked,
     setLockedModelUnlocked,
     LOCKED_MODEL_PIN,

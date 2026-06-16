@@ -3,6 +3,7 @@ import { put, del } from '@vercel/blob';
 const RETENTION_DAYS = 30;
 const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const MAX_PROMPT_CHARS = 900;
+const NSFW_PROMPT_PATTERN = /\b(nude|nudity|naked|explicit|erotic|porn|pornographic|xxx|18\+|lewd|nsfw|genitals?|penis|vagina|sex|sexual|breasts?|nipples?)\b/i;
 
 function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -77,6 +78,10 @@ async function handlePersistImage(req, body) {
     unsafe,
   });
 
+  const promptMarkedNsfw = NSFW_PROMPT_PATTERN.test(prompt);
+  const nsfw = safety === 'unsafe' || promptMarkedNsfw;
+  const effectiveSafety = nsfw ? 'unsafe' : 'safe';
+
   const pathname = buildImagePath({ userId, conversationId, messageId });
   const blob = await put(pathname, bytes, {
     access: 'public',
@@ -93,8 +98,8 @@ async function handlePersistImage(req, body) {
       contentType,
       model,
       prompt,
-      safety,
-      nsfw: safety === 'unsafe',
+      safety: effectiveSafety,
+      nsfw,
       createdAt: Date.now(),
       expiresAt,
     },

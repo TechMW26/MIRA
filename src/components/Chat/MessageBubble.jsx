@@ -14,6 +14,7 @@ import { cleanSpeechText, createSpeechUtterance, pickPreferredVoice, findVoiceBy
 
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
 const VIDEO_GEN_PATTERN = /\[VIDEO_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
+const NSFW_PROMPT_PATTERN = /\b(nude|nudity|naked|explicit|erotic|porn|pornographic|xxx|18\+|lewd|nsfw|genitals?|penis|vagina|sex|sexual|breasts?|nipples?)\b/i;
 
 function extractImagePrompt(content = '') {
   const match = String(content).match(IMAGE_GEN_PATTERN);
@@ -385,19 +386,31 @@ function GeneratedImageCard({ prompt, image }) {
   const [fullRetryCycle, setFullRetryCycle] = useState(0);
   const [status, setStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
   const [open, setOpen] = useState(false);
-  const imageMarkedNsfw = Boolean(image?.nsfw || image?.safety === 'unsafe');
+  const imageMarkedNsfw = Boolean(
+    image?.nsfw
+    || String(image?.safety || '').toLowerCase() === 'unsafe'
+    || NSFW_PROMPT_PATTERN.test(String(prompt || ''))
+  );
   const [blurred, setBlurred] = useState(imageMarkedNsfw);
   const transientTimerRef = useRef(null);
   const modelChain = useMemo(() => getImageModelChain(prompt), [prompt]);
   const persistedImageUrl = typeof image?.url === 'string' ? image.url.trim() : '';
   const hasPersistedImage = Boolean(persistedImageUrl);
+  const [preferPersistedImage, setPreferPersistedImage] = useState(hasPersistedImage);
+
+  const generatedImageUrl = useMemo(
+    () => buildGeneratedImageUrl(prompt, modelChain, modelIndex, `${retryNonce}-${transientAttempt}`),
+    [prompt, modelChain, modelIndex, retryNonce, transientAttempt]
+  );
 
   const imageUrl = useMemo(
-    () => (hasPersistedImage
-      ? persistedImageUrl
-      : buildGeneratedImageUrl(prompt, modelChain, modelIndex, `${retryNonce}-${transientAttempt}`)),
-    [hasPersistedImage, persistedImageUrl, prompt, modelChain, modelIndex, retryNonce, transientAttempt]
+    () => (preferPersistedImage && hasPersistedImage ? persistedImageUrl : generatedImageUrl),
+    [preferPersistedImage, hasPersistedImage, persistedImageUrl, generatedImageUrl]
   );
+
+  useEffect(() => {
+    setPreferPersistedImage(hasPersistedImage);
+  }, [hasPersistedImage, persistedImageUrl]);
 
   // Reset to loading whenever we point at a new URL
   useEffect(() => {
@@ -414,8 +427,11 @@ function GeneratedImageCard({ prompt, image }) {
   }, []);
 
   const handleImgError = useCallback(() => {
-    if (hasPersistedImage) {
-      setStatus('error');
+    if (preferPersistedImage && hasPersistedImage) {
+      // Persisted Blob URLs may briefly fail after creation in production.
+      // Fall back to direct generation instead of hard-failing the card.
+      setPreferPersistedImage(false);
+      setStatus('loading');
       return;
     }
     if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
@@ -448,7 +464,7 @@ function GeneratedImageCard({ prompt, image }) {
     }
 
     setStatus('error');
-  }, [fullRetryCycle, hasPersistedImage, modelChain.length, modelIndex, transientAttempt]);
+  }, [fullRetryCycle, hasPersistedImage, modelChain.length, modelIndex, preferPersistedImage, transientAttempt]);
 
   const handleImgLoad = useCallback(() => {
     if (transientTimerRef.current) clearTimeout(transientTimerRef.current);

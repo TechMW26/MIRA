@@ -222,6 +222,7 @@ export default function Sidebar() {
     requirePin(project, 'verify', () => {
       setActiveProjectId(project.id);
       setCurrentConversationId(null);
+      setSidebarOpen(false);
     });
   }
 
@@ -305,7 +306,10 @@ export default function Sidebar() {
             return (
               <div
                 key={conv.id}
-                onClick={() => setCurrentConversationId(conv.id)}
+                onClick={() => {
+                  setCurrentConversationId(conv.id);
+                  setSidebarOpen(false);
+                }}
                 onContextMenu={(e) => handleContextMenu(e, conv)}
                 draggable={showDrag}
                 onDragStart={(e) => handleDragStart(e, conv.id)}
@@ -353,7 +357,11 @@ export default function Sidebar() {
             <div className="flex items-center gap-2.5">
               {activeProjectId ? (
                 <button
-                  onClick={() => { setActiveProjectId(null); setCurrentConversationId(null); }}
+                  onClick={() => {
+                    setActiveProjectId(null);
+                    setCurrentConversationId(null);
+                    setSidebarOpen(false);
+                  }}
                   className="p-1.5 rounded-xl transition-all hover:scale-105"
                   style={{ color: 'var(--text-secondary)' }}
                   title="Back to all chats"
@@ -374,7 +382,10 @@ export default function Sidebar() {
             </div>
             <div className="flex items-center gap-0.5">
               <button
-                onClick={() => { startNewChat(); }}
+                onClick={() => {
+                  startNewChat();
+                  setSidebarOpen(false);
+                }}
                 className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
                 style={{ color: 'var(--text-secondary)' }}
                 title="New chat"
@@ -520,14 +531,22 @@ export default function Sidebar() {
             {showUserMenu && (
               <div className="absolute bottom-full left-3 right-3 mb-2 glass rounded-xl shadow-2xl py-1 z-50 animate-fade-in" onClick={(e) => e.stopPropagation()}>
                 <button
-                  onClick={() => { setShowUserMenu(false); setShowSettings(true); }}
+                  onClick={() => {
+                    setShowUserMenu(false);
+                    setShowSettings(true);
+                    setSidebarOpen(false);
+                  }}
                   className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm transition-all rounded-lg"
                   style={{ color: 'var(--text-secondary)' }}
                 >
                   <Settings size={14} /> Settings
                 </button>
                 <button
-                  onClick={() => { setShowUserMenu(false); logout(); }}
+                  onClick={() => {
+                    setShowUserMenu(false);
+                    setSidebarOpen(false);
+                    logout();
+                  }}
                   className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm transition-all rounded-lg"
                   style={{ color: 'var(--text-secondary)' }}
                 >

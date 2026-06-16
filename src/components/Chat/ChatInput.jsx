@@ -306,7 +306,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   const hasShare = messages?.length > 0;
 
   return (
-    <div className="hud-composer-dock px-3 sm:px-6 lg:px-[180px] pb-3 sm:pb-5 pt-4 sm:pt-8 relative z-20">
+    <div className="hud-composer-dock mobile-composer-dock px-3 sm:px-6 lg:px-[180px] pb-3 sm:pb-5 pt-4 sm:pt-8 relative z-20">
       {selectedModel === 'locked' && (
         <div className="nsfw-banner max-w-2xl w-full mx-auto mb-2">
           <AlertTriangle size={13} />
@@ -314,7 +314,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
           <button type="button" onClick={() => setSelectedModel('auto')} className="nsfw-banner-dismiss">Disable</button>
         </div>
       )}      
-      <div className="max-w-2xl w-full mx-auto">
+      <div className="max-w-2xl w-full mx-auto composer-mobile-shell">
         <div className="chat-input-wrap relative">
           <div
             className="hud-composer chat-input-shell"

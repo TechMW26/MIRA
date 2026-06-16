@@ -15,6 +15,7 @@ export default function MainLayout() {
     activeProjectId,
     setActiveProjectId,
     selectedModel,
+    activeResponseModel,
   } = useChatContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const hasHydratedFromUrlRef = useRef(false);
@@ -27,13 +28,13 @@ export default function MainLayout() {
   }, []);
 
   useEffect(() => {
-    if (selectedModel === 'locked') {
+    if (selectedModel === 'locked' || activeResponseModel === 'locked') {
       document.body.setAttribute('data-locked', 'true');
     } else {
       document.body.removeAttribute('data-locked');
     }
     return () => document.body.removeAttribute('data-locked');
-  }, [selectedModel]);
+  }, [selectedModel, activeResponseModel]);
 
   // URL -> state sync (supports opening direct permalinks and browser back/forward).
   // We complete this hydration before allowing state -> URL writes to avoid first-load
@@ -80,7 +81,7 @@ export default function MainLayout() {
   }, [currentConversationId, activeProjectId, searchParams, setSearchParams]);
 
   return (
-    <div className="relative flex h-screen overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+    <div className="app-shell relative flex overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
       <Sidebar />
 
       <div className="flex-1 flex flex-col min-w-0 relative z-10">

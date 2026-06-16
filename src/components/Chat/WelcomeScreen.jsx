@@ -533,16 +533,26 @@ function ToolOrbit({ tools, onSelect, onHoverChange }) {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
+  const isMobile = vp.w <= 640;
   const centerX = vp.w / 2;
-  const centerY = vp.h / 2;
   const vmin = Math.min(vp.w, vp.h);
   // Match ParticleGlobe.globeRadius() exactly so the icon ring keeps a
   // constant proportional distance from the sphere at every screen size.
   const globeR = Math.max(110, Math.min(vmin * 0.18, 260));
+  const safeTop = isMobile ? 132 : 92;
+  const safeBottom = isMobile ? 210 : 120;
+  const preferredCenterY = vp.h * (isMobile ? 0.47 : 0.5);
+  const minCenterY = safeTop + globeR;
+  const maxCenterY = Math.max(minCenterY, vp.h - safeBottom - globeR);
+  const centerY = Math.max(minCenterY, Math.min(maxCenterY, preferredCenterY));
   // Orbit ring hugs the sphere tightly (~1.45x globe radius). The floor and
   // viewport cap keep the icons from overlapping the corona on tiny screens
   // or colliding with the floating header / composer on tall layouts.
-  const orbitRadius = Math.max(globeR + 50, Math.min(globeR * 1.45, vp.h / 2 - 90));
+  const topRoom = centerY - safeTop;
+  const bottomRoom = vp.h - safeBottom - centerY;
+  const verticalCap = Math.max(90, Math.min(topRoom, bottomRoom) - (isMobile ? 20 : 28));
+  const orbitRadius = Math.max(globeR + (isMobile ? 26 : 50), Math.min(globeR * 1.45, verticalCap));
+  const iconSize = isMobile ? 18 : 22;
   const ringD = orbitRadius * 2;
 
   return (
@@ -579,7 +589,7 @@ function ToolOrbit({ tools, onSelect, onHoverChange }) {
             style={{ left: `${x}px`, top: `${y}px` }}
             title={tool.label}
           >
-            <Icon size={22} strokeWidth={1.5} />
+            <Icon size={iconSize} strokeWidth={1.5} />
             <span className={`tool-node-tip ${placement}`}>{tool.label}</span>
           </button>
         );

@@ -734,6 +734,7 @@ export default function useChat() {
     isGenerating,
     setIsGenerating,
     setIsSearching,
+    setActiveResponseModel,
     activeProjectId,
     selectedModel,
   } = useChatContext();
@@ -805,9 +806,10 @@ export default function useChat() {
     stopChatGeneration();
     setIsGenerating(false);
     setIsSearching(false);
+    setActiveResponseModel(null);
     setStreamingContent('');
     setThinkingContent('');
-  }, [setIsGenerating, setIsSearching]);
+  }, [setActiveResponseModel, setIsGenerating, setIsSearching]);
 
   const pruneMessagesAfter = useCallback(async (convId, messageId, sourceMessages = messages) => {
     const index = sourceMessages.findIndex((message) => message.id === messageId);
@@ -871,6 +873,7 @@ export default function useChat() {
       if (effectiveSelectedModel === 'locked') {
         chosenModel = 'locked';
       }
+      setActiveResponseModel(chosenModel || null);
       let wantsImageGeneration = promptInterpretation.imageIntent === true;
       let wantsVideoGeneration = promptInterpretation.videoIntent === true;
       const simpleGreeting = !hasImages && attachments.length === 0 && !replaceMessageId && isSimpleGreeting(content);
@@ -1481,6 +1484,7 @@ export default function useChat() {
       } finally {
         setIsGenerating(false);
         setIsSearching(false);
+        setActiveResponseModel(null);
         setStreamingContent('');
         setThinkingContent('');
       }
@@ -1493,6 +1497,7 @@ export default function useChat() {
       setCurrentConversationId,
       setIsGenerating,
       setIsSearching,
+      setActiveResponseModel,
       activeProjectId,
       selectedModel,
       normalizeImageForUpload,
