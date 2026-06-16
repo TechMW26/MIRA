@@ -2006,6 +2006,16 @@ body.mira-hud-active {
 .mira-sidebar .rounded-lg,
 .mira-sidebar .rounded-md { border-radius: var(--radius-inner) !important; }
 
+@media (max-width: 1024px) {
+  .mira-sidebar {
+    top: max(env(safe-area-inset-top, 0px), 0px) !important;
+    bottom: max(env(safe-area-inset-bottom, 0px), 0px) !important;
+    left: max(env(safe-area-inset-left, 0px), 0px) !important;
+    right: max(env(safe-area-inset-right, 0px), 0px) !important;
+    height: auto !important;
+  }
+}
+
 .hud-chat-bubble img,
 .hud-chat-bubble video,
 .hud-chat-bubble .generated-image-frame,
