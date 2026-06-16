@@ -742,6 +742,7 @@ export default function useChat() {
   const [streamingContent, setStreamingContent] = useState('');
   const [thinkingContent, setThinkingContent] = useState('');
   const abortRef = useRef(false);
+  const lastStableAssistantByIdRef = useRef(new Map());
 
   const normalizeImageForUpload = useCallback(async (image) => {
     const raw = image.base64 || '';
@@ -796,7 +797,38 @@ export default function useChat() {
     }
 
     const unsub = subscribeMessages(currentConversationId, (msgs) => {
-      setMessages(msgs);
+      setMessages((previous) => {
+        const previousById = new Map((previous || []).map((msg) => [msg.id, msg]));
+        const next = (msgs || []).map((incoming) => {
+          if (!incoming?.id) return incoming;
+          const prev = previousById.get(incoming.id);
+          const stable = lastStableAssistantByIdRef.current.get(incoming.id);
+          const incomingContent = String(incoming.content || '');
+          const isAssistant = incoming.role === 'assistant';
+
+          if (isAssistant && incomingContent.trim()) {
+            lastStableAssistantByIdRef.current.set(incoming.id, incomingContent);
+          }
+
+          // Realtime snapshots can briefly emit empty assistant content during
+          // write propagation; keep the last stable finalized content.
+          if (
+            isAssistant
+            && !incomingContent.trim()
+            && !incoming.isStreaming
+            && (stable || String(prev?.content || '').trim())
+          ) {
+            return {
+              ...incoming,
+              content: stable || prev.content,
+            };
+          }
+
+          return incoming;
+        });
+
+        return next;
+      });
     });
     return unsub;
   }, [currentConversationId]);
@@ -1463,13 +1495,20 @@ export default function useChat() {
                 documentUpdate.exportError = exportErr?.message || 'Export failed';
               }
               await updateMessage(convId, assistantMsgId, documentUpdate);
+              setMessages((prev) => prev.map((msg) => (
+                msg.id === assistantMsgId ? { ...msg, ...documentUpdate } : msg
+              )));
             } else {
-              await updateMessage(convId, assistantMsgId, {
+              const assistantUpdate = {
                 content: fullText,
                 modelUsed: chosenModel,
                 ...(mediaForMessage ? { media: mediaForMessage } : {}),
                 ...(generatedMediaForMessage ? { generatedMedia: generatedMediaForMessage } : {}),
-              });
+              };
+              await updateMessage(convId, assistantMsgId, assistantUpdate);
+              setMessages((prev) => prev.map((msg) => (
+                msg.id === assistantMsgId ? { ...msg, ...assistantUpdate } : msg
+              )));
             }
 
             if (isNewChat) {
