@@ -453,7 +453,7 @@ function extractImageGenerationPrompt(content = '') {
   return prompt || '';
 }
 
-async function persistGeneratedImageAsset({ prompt, userId, conversationId, messageId }) {
+async function persistGeneratedImageAsset({ prompt, userId, conversationId, messageId, allowNsfw = false }) {
   const cleanPrompt = cleanImagePrompt(prompt);
   if (!cleanPrompt || !userId || !conversationId || !messageId) return null;
 
@@ -463,7 +463,8 @@ async function persistGeneratedImageAsset({ prompt, userId, conversationId, mess
     body: JSON.stringify({
       action: 'persist-image',
       prompt: cleanPrompt,
-      model: 'seedream-pro',
+      model: 'flux-realism',
+      unsafe: Boolean(allowNsfw),
       userId,
       conversationId,
       messageId,
@@ -1342,6 +1343,7 @@ export default function useChat() {
                   userId: user.uid,
                   conversationId: convId,
                   messageId: assistantMsgId,
+                  allowNsfw: selectedModel === 'locked',
                 });
                 if (persistedImage?.url) {
                   generatedMediaForMessage = { images: [persistedImage] };

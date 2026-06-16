@@ -43,8 +43,8 @@ function enhanceImagePrompt(prompt = '') {
 }
 
 const HYPERREALISM_SIGNAL_RE = /\b(hyper[-\s]?real(?:ism)?|photo[-\s]?real(?:istic)?|ultra[-\s]?realistic|dslr|cinematic photo|raw photo|natural skin|85mm|bokeh)\b/i;
-const DEFAULT_IMAGE_MODEL_CHAIN = ['seedream-pro'];
-const HYPERREAL_IMAGE_MODEL_CHAIN = ['seedream-pro'];
+const DEFAULT_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'seedream-pro'];
+const HYPERREAL_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'seedream-pro'];
 
 const MODEL_OPTIONS = [
   { value: 'auto',   label: 'Auto',       sub: 'Smart routing' },
@@ -55,8 +55,8 @@ const MODEL_OPTIONS = [
 ];
 
 const LOCKED_PIN = '1512';
-const MAX_TRANSIENT_RETRIES = 5; // retry same URL several times before advancing chain
-const MAX_FULL_RETRY_CYCLES = 2; // rerun full model chain a couple times before showing hard failure
+const MAX_TRANSIENT_RETRIES = 0; // server already retries upstream; avoid client-side request storms
+const MAX_FULL_RETRY_CYCLES = 1; // one extra full pass before hard failure
 const GENERATED_IMAGE_SIZE = '1280';
 const GENERATED_VIDEO_DURATION = '5';
 const GENERATED_VIDEO_RESOLUTION = '1080p';
@@ -86,6 +86,7 @@ function buildGeneratedImageUrl(prompt, modelChain, modelIndex = 0, cacheKey = '
     model,
     seed: String(seed),
     r: cacheKey,
+    unsafe: (typeof document !== 'undefined' && document.body?.dataset?.locked === 'true') ? '1' : '0',
   });
   return `/api/generate-image?${params.toString()}`;
 }
@@ -384,7 +385,8 @@ function GeneratedImageCard({ prompt, image }) {
   const [fullRetryCycle, setFullRetryCycle] = useState(0);
   const [status, setStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
   const [open, setOpen] = useState(false);
-  const [blurred, setBlurred] = useState(true);
+  const imageMarkedNsfw = Boolean(image?.nsfw || image?.safety === 'unsafe');
+  const [blurred, setBlurred] = useState(imageMarkedNsfw);
   const transientTimerRef = useRef(null);
   const modelChain = useMemo(() => getImageModelChain(prompt), [prompt]);
   const persistedImageUrl = typeof image?.url === 'string' ? image.url.trim() : '';
@@ -401,6 +403,10 @@ function GeneratedImageCard({ prompt, image }) {
   useEffect(() => {
     setStatus('loading');
   }, [imageUrl]);
+
+  useEffect(() => {
+    setBlurred(imageMarkedNsfw);
+  }, [imageMarkedNsfw, imageUrl]);
 
   // Clear any pending retry timer when the component unmounts.
   useEffect(() => () => {

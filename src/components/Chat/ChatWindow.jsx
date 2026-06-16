@@ -26,6 +26,18 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
     return stored && stored >= minWidth && stored <= maxWidth ? stored : defaultWidth;
   });
   const [resizing, setResizing] = useState(false);
+  const [isNarrowViewport, setIsNarrowViewport] = useState(() => (
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 1023px)').matches : false
+  ));
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const media = window.matchMedia('(max-width: 1023px)');
+    const onChange = () => setIsNarrowViewport(media.matches);
+    onChange();
+    media.addEventListener?.('change', onChange);
+    return () => media.removeEventListener?.('change', onChange);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(storageKey, String(width));
@@ -53,6 +65,16 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
+  }
+
+  if (isNarrowViewport) {
+    return (
+      <div className="fixed inset-0 z-50 flex animate-fade-in">
+        <div className="w-full h-full overflow-hidden glass-strong" style={{ borderLeft: '1px solid var(--hud-cyan-dim)' }}>
+          {children}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -160,7 +182,7 @@ export default function ChatWindow() {
 
       <div className="flex flex-col flex-1 min-w-0 min-h-0 relative z-10">
         <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden hud-scroll-area" style={{ fontSize: chatFontSize }}>
-          <div className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 pb-44 gap-6 px-4 w-full min-w-0`}>
+          <div className={`max-w-2xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 pb-44 gap-6 px-4 w-full min-w-0`}>
             {showingWelcome ? (
               <WelcomeScreen
                 onSend={(p, atts = []) => sendToChat(p, atts, webSearch)}

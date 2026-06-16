@@ -27,7 +27,7 @@ function buildImagePath({ userId, conversationId, messageId }) {
   return `generated/${uid}/${cid}/${ts}-${mid}.jpg`;
 }
 
-async function fetchGeneratedImage(req, { prompt, seed = 1, width = 1280, height = 1280, model = 'seedream-pro' }) {
+async function fetchGeneratedImage(req, { prompt, seed = 1, width = 1280, height = 1280, model = 'flux', unsafe = false }) {
   const origin = new URL(req.url).origin;
   const params = new URLSearchParams({
     prompt,
@@ -35,6 +35,7 @@ async function fetchGeneratedImage(req, { prompt, seed = 1, width = 1280, height
     seed: String(seed),
     width: String(width),
     height: String(height),
+    unsafe: unsafe ? '1' : '0',
   });
   const response = await fetch(`${origin}/api/generate-image?${params.toString()}`);
   if (!response.ok) {
@@ -42,11 +43,12 @@ async function fetchGeneratedImage(req, { prompt, seed = 1, width = 1280, height
     throw new Error(`Image generation failed (${response.status}) ${text}`.trim());
   }
   const contentType = response.headers.get('content-type') || 'image/jpeg';
+  const safety = String(response.headers.get('x-mira-safety') || '').toLowerCase() === 'unsafe' ? 'unsafe' : 'safe';
   const bytes = await response.arrayBuffer();
   if (!bytes || bytes.byteLength === 0) {
     throw new Error('Generated image is empty');
   }
-  return { bytes, contentType };
+  return { bytes, contentType, safety };
 }
 
 async function handlePersistImage(req, body) {
@@ -60,17 +62,19 @@ async function handlePersistImage(req, body) {
     return json({ error: 'userId, conversationId and messageId are required' }, 400);
   }
 
-  const model = String(body?.model || 'seedream-pro').trim().toLowerCase();
+  const model = String(body?.model || 'flux').trim().toLowerCase();
   const seed = Number(body?.seed || 1) || 1;
   const width = Number(body?.width || 1280) || 1280;
   const height = Number(body?.height || 1280) || 1280;
+  const unsafe = body?.unsafe === true || body?.unsafe === '1';
 
-  const { bytes, contentType } = await fetchGeneratedImage(req, {
+  const { bytes, contentType, safety } = await fetchGeneratedImage(req, {
     prompt,
     seed,
     width,
     height,
     model,
+    unsafe,
   });
 
   const pathname = buildImagePath({ userId, conversationId, messageId });
@@ -89,6 +93,8 @@ async function handlePersistImage(req, body) {
       contentType,
       model,
       prompt,
+      safety,
+      nsfw: safety === 'unsafe',
       createdAt: Date.now(),
       expiresAt,
     },

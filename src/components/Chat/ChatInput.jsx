@@ -306,78 +306,15 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   const hasShare = messages?.length > 0;
 
   return (
-    <div className="hud-composer-dock px-[180px] pb-5 pt-8 relative z-20">
+    <div className="hud-composer-dock px-3 sm:px-6 lg:px-[180px] pb-3 sm:pb-5 pt-4 sm:pt-8 relative z-20">
       {selectedModel === 'locked' && (
-        <div className="nsfw-banner max-w-2xl mx-auto mb-2">
+        <div className="nsfw-banner max-w-2xl w-full mx-auto mb-2">
           <AlertTriangle size={13} />
           <span>Unrestricted mode active — Mira Locked model is engaged. Content may be explicit.</span>
           <button type="button" onClick={() => setSelectedModel('auto')} className="nsfw-banner-dismiss">Disable</button>
         </div>
       )}      
-      <div className="max-w-2xl mx-auto">
-        <div className="hud-tool-strip">
-          {toolStrip.map(({ id, icon: Icon, title, active, onClick }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={onClick}
-              className="hud-tool"
-              data-active={active || undefined}
-              title={title}
-            >
-              <Icon size={15} />
-              <span className="hud-tool-tip">{title}</span>
-            </button>
-          ))}
-
-          {voices.length > 0 && (
-            <div className="relative hud-popover-anchor">
-              <button
-                type="button"
-                onClick={() => setVoicePickerOpen((v) => !v)}
-                className="hud-tool"
-                data-active={voicePickerOpen || undefined}
-                title={preferredVoice ? formatVoiceLabel(preferredVoice) : 'Voice'}
-              >
-                <Volume2 size={15} />
-                <span className="hud-tool-tip">Voice</span>
-              </button>
-              {voicePickerOpen && (
-                <div className="hud-voice-popover" onMouseLeave={() => setVoicePickerOpen(false)}>
-                  <select
-                    value={selectedVoiceId || ''}
-                    onChange={handleVoiceChange}
-                    className="bg-transparent text-[11px] outline-none w-full uppercase tracking-wider"
-                    style={{ color: 'var(--text-primary)' }}
-                  >
-                    <option value="">Best available</option>
-                    {voiceOptions.map((voice) => {
-                      const id = getVoiceKey(voice);
-                      return (
-                        <option key={id} value={id}>
-                          {formatVoiceLabel(voice)}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-              )}
-            </div>
-          )}
-
-          {hasShare && (
-            <button
-              type="button"
-              onClick={onShare}
-              className="hud-tool"
-              title="Share"
-            >
-              <Share2 size={15} />
-              <span className="hud-tool-tip">Share</span>
-            </button>
-          )}
-        </div>
-
+      <div className="max-w-2xl w-full mx-auto">
         <div className="chat-input-wrap relative">
           <div
             className="hud-composer chat-input-shell"
@@ -387,6 +324,69 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
             onDrop={onDrop}
             style={{ flexDirection: 'column', alignItems: 'stretch', padding: '4px 8px 4px 18px' }}
           >
+            <div className="hud-tool-strip hud-tool-strip-inside">
+              {toolStrip.map(({ id, icon: Icon, title, active, onClick }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={onClick}
+                  className="hud-tool"
+                  data-active={active || undefined}
+                  title={title}
+                >
+                  <Icon size={15} />
+                  <span className="hud-tool-tip">{title}</span>
+                </button>
+              ))}
+
+              {voices.length > 0 && (
+                <div className="relative hud-popover-anchor">
+                  <button
+                    type="button"
+                    onClick={() => setVoicePickerOpen((v) => !v)}
+                    className="hud-tool"
+                    data-active={voicePickerOpen || undefined}
+                    title={preferredVoice ? formatVoiceLabel(preferredVoice) : 'Voice'}
+                  >
+                    <Volume2 size={15} />
+                    <span className="hud-tool-tip">Voice</span>
+                  </button>
+                  {voicePickerOpen && (
+                    <div className="hud-voice-popover" onMouseLeave={() => setVoicePickerOpen(false)}>
+                      <select
+                        value={selectedVoiceId || ''}
+                        onChange={handleVoiceChange}
+                        className="bg-transparent text-[11px] outline-none w-full uppercase tracking-wider"
+                        style={{ color: 'var(--text-primary)' }}
+                      >
+                        <option value="">Best available</option>
+                        {voiceOptions.map((voice) => {
+                          const id = getVoiceKey(voice);
+                          return (
+                            <option key={id} value={id}>
+                              {formatVoiceLabel(voice)}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {hasShare && (
+                <button
+                  type="button"
+                  onClick={onShare}
+                  className="hud-tool"
+                  title="Share"
+                >
+                  <Share2 size={15} />
+                  <span className="hud-tool-tip">Share</span>
+                </button>
+              )}
+            </div>
+
             {dragging && (
               <div
                 className="absolute inset-0 z-20 flex flex-col items-center justify-center pointer-events-none"
@@ -444,7 +444,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
               </div>
             )}
 
-            <div className="flex items-center gap-1.5 w-full">
+            <div className="flex items-center gap-1 sm:gap-1.5 w-full">
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -465,7 +465,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                   title={`Model: ${selectedModelLabel}`}
                 >
                   <Cpu size={14} />
-                  <span>{selectedModelLabel}</span>
+                  <span className="hidden sm:inline">{selectedModelLabel}</span>
                   <ChevronDown size={14} className={`transition-transform ${modelPickerOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {modelPickerOpen && (
