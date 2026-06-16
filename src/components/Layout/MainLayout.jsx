@@ -18,7 +18,7 @@ export default function MainLayout() {
     activeResponseModel,
   } = useChatContext();
   const [searchParams, setSearchParams] = useSearchParams();
-  const hasHydratedFromUrlRef = useRef(false);
+  const hasResetSessionRef = useRef(false);
 
   useEffect(() => {
     document.body.classList.add('mira-hud', 'mira-hud-active');
@@ -36,41 +36,21 @@ export default function MainLayout() {
     return () => document.body.removeAttribute('data-locked');
   }, [selectedModel, activeResponseModel]);
 
-  // URL -> state sync (supports opening direct permalinks and browser back/forward).
-  // We complete this hydration before allowing state -> URL writes to avoid first-load
-  // races that can force stale `?c=` params back onto `/`.
+  // App reopen should always start a fresh session.
   useEffect(() => {
-    const urlConversationId = searchParams.get('c') || null;
-    const urlProjectId = searchParams.get('p') || null;
+    if (hasResetSessionRef.current) return;
+    hasResetSessionRef.current = true;
 
-    setCurrentConversationId(urlConversationId);
-    setActiveProjectId(urlProjectId);
-    hasHydratedFromUrlRef.current = true;
-  }, [searchParams, setCurrentConversationId, setActiveProjectId]);
-
-  // State -> URL sync (ensures every chat has a shareable permalink).
-  useEffect(() => {
-    if (!hasHydratedFromUrlRef.current) return;
+    setCurrentConversationId(null);
+    setActiveProjectId(null);
 
     const next = new URLSearchParams(searchParams);
     let changed = false;
-
-    if (currentConversationId) {
-      if (next.get('c') !== currentConversationId) {
-        next.set('c', currentConversationId);
-        changed = true;
-      }
-    } else if (next.has('c')) {
+    if (next.has('c')) {
       next.delete('c');
       changed = true;
     }
-
-    if (activeProjectId) {
-      if (next.get('p') !== activeProjectId) {
-        next.set('p', activeProjectId);
-        changed = true;
-      }
-    } else if (next.has('p')) {
+    if (next.has('p')) {
       next.delete('p');
       changed = true;
     }
@@ -78,7 +58,7 @@ export default function MainLayout() {
     if (changed) {
       setSearchParams(next, { replace: true });
     }
-  }, [currentConversationId, activeProjectId, searchParams, setSearchParams]);
+  }, [searchParams, setSearchParams, setCurrentConversationId, setActiveProjectId]);
 
   return (
     <div className="app-shell relative flex overflow-hidden" style={{ background: 'var(--bg-primary)' }}>

@@ -92,6 +92,11 @@ function buildGeneratedImageUrl(prompt, modelChain, modelIndex = 0, cacheKey = '
   return `/api/generate-image?${params.toString()}`;
 }
 
+function buildStoredImageProxyUrl(url = '', cacheKey = '0') {
+  const params = new URLSearchParams({ url: String(url || ''), r: String(cacheKey || '0') });
+  return `/api/image?${params.toString()}`;
+}
+
 function buildGeneratedVideoUrl(prompt, cacheKey = '0') {
   const enhanced = compactImagePrompt(prompt);
   const params = new URLSearchParams({
@@ -396,7 +401,8 @@ function GeneratedImageCard({ prompt, image }) {
   const modelChain = useMemo(() => getImageModelChain(prompt), [prompt]);
   const persistedImageUrl = typeof image?.url === 'string' ? image.url.trim() : '';
   const hasPersistedImage = Boolean(persistedImageUrl);
-  const [preferPersistedImage, setPreferPersistedImage] = useState(hasPersistedImage);
+  const [persistedLoadMode, setPersistedLoadMode] = useState('direct'); // 'direct' | 'proxy'
+  const [persistedRetryNonce, setPersistedRetryNonce] = useState(0);
   const unsafeForGeneration = imageMarkedNsfw;
 
   const generatedImageUrl = useMemo(
@@ -404,13 +410,23 @@ function GeneratedImageCard({ prompt, image }) {
     [prompt, modelChain, modelIndex, retryNonce, transientAttempt, unsafeForGeneration]
   );
 
+  const persistedImageSource = useMemo(() => {
+    if (!hasPersistedImage) return '';
+    if (persistedLoadMode === 'proxy') {
+      return buildStoredImageProxyUrl(persistedImageUrl, persistedRetryNonce);
+    }
+    const divider = persistedImageUrl.includes('?') ? '&' : '?';
+    return `${persistedImageUrl}${divider}r=${persistedRetryNonce}`;
+  }, [hasPersistedImage, persistedImageUrl, persistedLoadMode, persistedRetryNonce]);
+
   const imageUrl = useMemo(
-    () => (preferPersistedImage && hasPersistedImage ? persistedImageUrl : generatedImageUrl),
-    [preferPersistedImage, hasPersistedImage, persistedImageUrl, generatedImageUrl]
+    () => (hasPersistedImage ? persistedImageSource : generatedImageUrl),
+    [hasPersistedImage, persistedImageSource, generatedImageUrl]
   );
 
   useEffect(() => {
-    setPreferPersistedImage(hasPersistedImage);
+    setPersistedLoadMode('direct');
+    setPersistedRetryNonce(0);
   }, [hasPersistedImage, persistedImageUrl]);
 
   // Reset to loading whenever we point at a new URL
@@ -428,11 +444,15 @@ function GeneratedImageCard({ prompt, image }) {
   }, []);
 
   const handleImgError = useCallback(() => {
-    if (preferPersistedImage && hasPersistedImage) {
-      // Persisted Blob URLs may briefly fail after creation in production.
-      // Fall back to direct generation instead of hard-failing the card.
-      setPreferPersistedImage(false);
-      setStatus('loading');
+    if (hasPersistedImage) {
+      // Never regenerate older images. If the direct blob URL fails, retry once
+      // through the image proxy to avoid CDN/CORS edge failures.
+      if (persistedLoadMode === 'direct') {
+        setPersistedLoadMode('proxy');
+        setStatus('loading');
+        return;
+      }
+      setStatus('error');
       return;
     }
     if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
@@ -465,7 +485,7 @@ function GeneratedImageCard({ prompt, image }) {
     }
 
     setStatus('error');
-  }, [fullRetryCycle, hasPersistedImage, modelChain.length, modelIndex, preferPersistedImage, transientAttempt]);
+  }, [fullRetryCycle, hasPersistedImage, modelChain.length, modelIndex, persistedLoadMode, transientAttempt]);
 
   const handleImgLoad = useCallback(() => {
     if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
@@ -475,11 +495,17 @@ function GeneratedImageCard({ prompt, image }) {
 
   const handleRetry = useCallback(() => {
     if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
+    if (hasPersistedImage) {
+      setPersistedLoadMode('direct');
+      setPersistedRetryNonce((n) => n + 1);
+      setStatus('loading');
+      return;
+    }
     setModelIndex(0);
     setTransientAttempt(0);
     setFullRetryCycle(0);
     setRetryNonce((n) => n + 1);
-  }, []);
+  }, [hasPersistedImage]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -541,7 +567,7 @@ function GeneratedImageCard({ prompt, image }) {
         {status === 'error' && (
           <div className="generated-image-loader generated-image-errored">
             <span>Image failed to generate.</span>
-            <button type="button" onClick={handleRetry} className="generated-image-retry" disabled={hasPersistedImage}>
+            <button type="button" onClick={handleRetry} className="generated-image-retry">
               Retry
             </button>
           </div>

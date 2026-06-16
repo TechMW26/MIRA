@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { getGlobeLayout } from '../../utils/globeLayout';
 
 /**
  * ParticleGlobe — a reactive particle sphere centered on a glowing power
@@ -97,15 +98,6 @@ export default function ParticleGlobe({
     let redLerp = 0;
     let raf = 0;
 
-    // Globe radius scales continuously with viewport min-dimension so the
-    // sphere always feels proportional to the screen. Kept in sync with
-    // `WelcomeScreen` `ToolOrbit` (orbitRadius ≈ globeRadius × 1.7) so the
-    // gap between particles and icons is constant across screen sizes.
-    const globeRadius = () => {
-      const vmin = Math.min(window.innerWidth, window.innerHeight);
-      return Math.max(110, Math.min(vmin * 0.18, 260));
-    };
-
     const handlePointerMove = (event) => {
       const rect = canvas.getBoundingClientRect();
       targetMouseX = event.clientX - rect.left;
@@ -168,9 +160,10 @@ export default function ParticleGlobe({
       }
       pulse += 0.04 + energy * 0.05;
 
-      const cx = width / 2;
-      const cy = height / 2;
-      const R = globeRadius();
+      const layout = getGlobeLayout(width, height);
+      const cx = layout.centerX;
+      const cy = layout.centerY;
+      const R = layout.globeRadius;
       const nowMs = performance.now();
       
       // In chat mode, disable MOUSE tracking but keep all autonomous behavior

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 import { useChatContext } from '../../contexts/ChatContext';
+import { getGlobeLayout } from '../../utils/globeLayout';
 
 const ATTACH_ACCEPT = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic';
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'heic']);
@@ -533,27 +534,8 @@ function ToolOrbit({ tools, onSelect, onHoverChange }) {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  const isMobile = vp.w <= 640;
-  const centerX = vp.w / 2;
-  const vmin = Math.min(vp.w, vp.h);
-  // Match ParticleGlobe.globeRadius() exactly so the icon ring keeps a
-  // constant proportional distance from the sphere at every screen size.
-  const globeR = Math.max(110, Math.min(vmin * 0.18, 260));
-  const safeTop = isMobile ? 132 : 92;
-  const safeBottom = isMobile ? 210 : 120;
-  const preferredCenterY = vp.h * (isMobile ? 0.47 : 0.5);
-  const minCenterY = safeTop + globeR;
-  const maxCenterY = Math.max(minCenterY, vp.h - safeBottom - globeR);
-  const centerY = Math.max(minCenterY, Math.min(maxCenterY, preferredCenterY));
-  // Orbit ring hugs the sphere tightly (~1.45x globe radius). The floor and
-  // viewport cap keep the icons from overlapping the corona on tiny screens
-  // or colliding with the floating header / composer on tall layouts.
-  const topRoom = centerY - safeTop;
-  const bottomRoom = vp.h - safeBottom - centerY;
-  const verticalCap = Math.max(90, Math.min(topRoom, bottomRoom) - (isMobile ? 20 : 28));
-  const orbitRadius = Math.max(globeR + (isMobile ? 26 : 50), Math.min(globeR * 1.45, verticalCap));
-  const iconSize = isMobile ? 18 : 22;
-  const ringD = orbitRadius * 2;
+  const layout = useMemo(() => getGlobeLayout(vp.w, vp.h), [vp.w, vp.h]);
+  const { centerX, centerY, orbitRadius, iconSize, ringDiameter: ringD } = layout;
 
   return (
     <div className="welcome-orbit-layer">
