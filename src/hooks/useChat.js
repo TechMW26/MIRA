@@ -1288,7 +1288,14 @@ export default function useChat() {
                 }
               }
               let searchQuery = textResearchMediaScope?.query || buildContextualSearchQuery(content);
-              const shouldAttachRelatedMedia = wantsMediaGallery || shouldUseVisualAnchor || shouldAttachContextualMedia || Boolean(textResearchMediaScope);
+              // Only attach a related-media gallery when the user has actually
+              // signalled they want media (explicit "videos/images/...", an
+              // image attachment, or a "this device" follow-up). Plain
+              // text-research questions like "what is X" / "tell me about X"
+              // must NOT trigger an auto media gallery — search engines return
+              // off-topic YouTube/image results for bare nouns and pollute the
+              // reply with irrelevant embeds.
+              const shouldAttachRelatedMedia = wantsMediaGallery || shouldUseVisualAnchor || shouldAttachContextualMedia;
               const includeMedia = shouldAttachRelatedMedia;
               const visualScope = visualSearchAnchor ? buildVisualSearchScope(visualSearchAnchor, content) : null;
               const searchPayload = { query: searchQuery, includeMedia };

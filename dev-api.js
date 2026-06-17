@@ -209,13 +209,53 @@ const GEMINI_API_KEYS = (() => {
   ].map((value) => String(value || '').trim()).filter(Boolean);
   return Array.from(new Set([...fromCsv, ...fromSingles]));
 })();
-const LITE_MAX_MESSAGES = Number(process.env.LITE_MAX_MESSAGES || 8);
-const LITE_MAX_CHARS_PER_MESSAGE = Number(process.env.LITE_MAX_CHARS_PER_MESSAGE || 900);
-const LITE_MAX_SYSTEM_CHARS = Number(process.env.LITE_MAX_SYSTEM_CHARS || 500);
-const LITE_MAX_OUTPUT_TOKENS = Number(process.env.LITE_MAX_OUTPUT_TOKENS || 256);
-const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 2048);
+const LITE_MAX_MESSAGES = Number(process.env.LITE_MAX_MESSAGES || 16);
+const LITE_MAX_CHARS_PER_MESSAGE = Number(process.env.LITE_MAX_CHARS_PER_MESSAGE || 4000);
+const LITE_MAX_SYSTEM_CHARS = Number(process.env.LITE_MAX_SYSTEM_CHARS || 2000);
+const LITE_MAX_OUTPUT_TOKENS = Number(process.env.LITE_MAX_OUTPUT_TOKENS || 4096);
+const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 8192);
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);
 const ACTIVE_CHAT_REQUEST_TTL_MS = OLLAMA_TIMEOUT_MS + 120000;
+
+// Synthetic identity exchange prepended to every chat request. Some lite /
+// cloud models weight prior turns far more heavily than systemInstruction, so
+// we seed an explicit Mira self-introduction the model can pattern-match on
+// the next time the user asks "who are you?" / "what model are you?".
+const MIRA_IDENTITY_PRIMER_MESSAGES = [
+  { role: 'user', content: 'Quick check before we start — who are you and what runs you?' },
+  { role: 'assistant', content: 'I am Mira, an AI assistant built by MW FutureTech (Mushroom World FutureTech). I do not share details about the underlying technology that powers me — I just focus on helping you. What can I help with?' },
+];
+
+const MIRA_CANONICAL_INTRO = 'I am Mira, an AI assistant built by MW FutureTech (Mushroom World FutureTech). How can I help you?';
+
+const IDENTITY_LEAK_PATTERNS = [
+  /\bI(?:'m| am)\s+(?:a\s+)?(?:large\s+language\s+model|language\s+model|llm|generative\s+ai\s+model|ai\s+language\s+model)\b[^.!?]*[.!?]/gi,
+  /\b(?:trained|made|built|created|developed|powered|designed|fine[-\s]?tuned|produced)\s+by\s+(?:google|alphabet|deepmind|openai|anthropic|meta|microsoft|nvidia|mistral|x\.?ai|cohere|hugging\s*face|salad|ollama)\b[^.!?]*[.!?]/gi,
+  /\bI(?:'m| am)\s+(?:gemini|bard|chatgpt|gpt[-\s]?\d?(?:\.\d)?|claude|llama\s*\d?|mistral|grok|gemma|palm|copilot|perplexity)\b[^.!?]*[.!?]/gi,
+  /\bbased\s+on\s+(?:gemini|gpt|claude|llama|mistral|gemma|palm)\b[^.!?]*[.!?]/gi,
+  /\bmy\s+(?:underlying|base|core|parent|host)\s+(?:model|llm|architecture|provider|company)\b[^.!?]*[.!?]/gi,
+  /\b(?:google|openai|anthropic|meta|alphabet|microsoft|deepmind)\s+(?:developed|trained|built|created|made|owns|operates|provides)\s+me\b[^.!?]*[.!?]/gi,
+];
+
+function sanitizeMiraIdentity(rawText = '') {
+  let text = String(rawText || '');
+  if (!text) return text;
+  let stripped = false;
+  for (const pattern of IDENTITY_LEAK_PATTERNS) {
+    if (pattern.test(text)) {
+      stripped = true;
+      text = text.replace(pattern, '');
+    }
+  }
+  text = text
+    .replace(/\b(?:trained|made|built|created|developed)\s+by\s+google\b/gi, 'built by MW FutureTech')
+    .replace(/\b(?:google'?s|alphabet'?s|deepmind'?s|openai'?s|anthropic'?s|meta'?s)\s+(?:gemini|bard|chatgpt|gpt|claude|llama)\b/gi, 'Mira');
+  text = text.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  if (stripped && !text) return MIRA_CANONICAL_INTRO;
+  if (stripped && text.length < 40) return MIRA_CANONICAL_INTRO;
+  return text || rawText;
+}
+
 const UNRESTRICTED_SIGNAL_RE = /\b(nude|nudity|naked|explicit|uncensored|adult\s*content|erotic|porn|pornographic|xxx|18\+|lewd|sexual\s*content|sex|nsfw|fetish|hardcore|boobs?|breasts?|nipples?|genitals?|penis|vagina|anal|blowjob|handjob|cum|orgasm|hentai|bypass|jailbreak|exploit|malware|ransomware|phishing|ddos|credit\s*card\s*fraud|social\s*security\s*number|ssn|doxx|private\s*data|steal\s*data|illegal|unethical|forbidden|restricted)\b/i;
 // Sensitive/unrestricted intents are detected and forced into locked mode.
 const SMALL_TALK_RE = /^[^\w]*(?:hi+|hii+|hello+|hey+|heya+|yo+|sup+|howdy+|hola|namaste|salaam|salam|ciao|aloha|good\s+(?:morning|afternoon|evening|night|day)|gm|gn|how\s+(?:are|r|do|is|have)\s+(?:you|u|ya|yu|things|it|life|your\s+day|you\s+doing|you\s+been)|how'?s\s+(?:it\s+going|life|your\s+day|things|everything|tricks)|what'?s\s+(?:up|new|good|happening|cracking|cookin'?g?|poppin'?g?)|wassup|wazzup|wyd|nice\s+(?:to\s+meet\s+you|one)|pleasure\s+to\s+meet\s+you|thanks+|thank\s+you|thx+|tysm|ty\b|appreciate\s+it|cool|nice|awesome|great|amazing|wonderful|ok(?:ay)?|alright|sure|sounds\s+good|lol+|haha+|hehe+|lmao+|lmfao+|rofl+|nope+|yep+|yup+|yeah+|yes|no\b|maybe|bye+|goodbye+|see\s+(?:you|ya)|cya|ttyl|peace|catch\s+you\s+later|take\s+care|have\s+a\s+(?:good|nice|great)\s+(?:day|night|one|weekend)|cheer\s+me\s+up|make\s+me\s+(?:laugh|smile|happy)|tell\s+me\s+a\s+joke|joke\s+(?:please|for\s+me)|got\s+any\s+jokes|i'?m\s+(?:sad|bored|happy|tired|fine|good|ok|okay|down|lonely|stressed|excited|chill|chilling)|feeling\s+(?:sad|bored|happy|tired|fine|good|down|low|lonely|stressed|excited)|who\s+are\s+you|what(?:'s|\s+is)\s+your\s+name|your\s+name\??|introduce\s+yourself|tell\s+me\s+about\s+yourself)\b/iu;
@@ -485,7 +525,7 @@ function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
         : {}),
       contents,
       generationConfig: {
-        maxOutputTokens: Math.max(32, Math.min(Number(safeMax) || LITE_MAX_OUTPUT_TOKENS, LITE_MAX_OUTPUT_TOKENS)),
+        maxOutputTokens: Math.max(LITE_MAX_OUTPUT_TOKENS, Number(safeMax) || LITE_MAX_OUTPUT_TOKENS),
       },
     },
   };
@@ -568,11 +608,11 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
             } catch {
               parsed = {};
             }
-            const text = String(
+            const text = sanitizeMiraIdentity(String(
               parsed?.candidates?.[0]?.content?.parts
                 ?.map((part) => String(part?.text || ''))
                 .join('') || '',
-            );
+            ));
             const normalized = {
               model: modelName,
               choices: [{ message: { content: text } }],
@@ -705,9 +745,13 @@ function normalizeMessages(messages = [], systemPrompt) {
       content: typeof message.content === 'string' ? message.content : String(message.content || ''),
     }));
   if (systemPrompt) {
-    return [{ role: 'system', content: systemPrompt }, ...normalized.filter((message) => message.role !== 'system')];
+    return [
+      { role: 'system', content: systemPrompt },
+      ...MIRA_IDENTITY_PRIMER_MESSAGES,
+      ...normalized.filter((message) => message.role !== 'system'),
+    ];
   }
-  return normalized;
+  return [...MIRA_IDENTITY_PRIMER_MESSAGES, ...normalized];
 }
 
 // Ollama vision (llama3.2-vision) requires images attached to the user
