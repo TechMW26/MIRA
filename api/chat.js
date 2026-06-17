@@ -1,21 +1,17 @@
 // Vercel hard cap: Hobby = 60s, Pro = 300s, Enterprise = 900s.
-// Reasoning streams (especially mira-spec / mira-locked with `think`) can run
+// Reasoning streams (especially with `think`) can run
 // well past 60s, so we ask for the maximum the plan allows. Vercel clamps this
 // down silently if the plan can't grant it — no deployment error.
 export const config = { maxDuration: 300 };
 
 const OLLAMA_API_URL = (process.env.OLLAMA_API_URL || 'http://147.93.102.103:11434/api/generate').trim();
-const MIRA_MINI_MODEL = (process.env.MIRA_MINI_MODEL || 'mira-mini').trim();
-const MIRA_LITE_MODEL = (process.env.MIRA_LITE_MODEL || 'mira-lite').trim();
-const MIRA_SPEC_MODEL = (process.env.MIRA_SPEC_MODEL || 'mira-spec').trim();
-const MIRA_VISION_MODEL = (process.env.MIRA_VISION_MODEL || 'mira-vision').trim();
-const MIRA_LOCKED_MODEL = (process.env.MIRA_LOCKED_MODEL || 'mira-locked:latest').trim();
+const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira-v4').trim();
+const MIRA_LOCKED_MODEL = (process.env.MIRA_LOCKED_MODEL || MIRA_MODEL || 'mira-v4').trim();
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 2048);
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);
 const ACTIVE_CHAT_REQUEST_TTL_MS = OLLAMA_TIMEOUT_MS + 120000;
-const UNRESTRICTED_SIGNAL_RE = /\b(nude|nudity|naked|explicit|uncensored|adult\s*content|erotic|porn|pornographic|xxx|18\+|lewd|sexual\s*content|sex|nsfw|fetish|hardcore|boobs?|breasts?|nipples?|genitals?|penis|vagina|anal|blowjob|handjob|cum|orgasm|hentai)\b/i;
-// Mini is reserved for trivial chitchat only (greetings, mood, thanks, jokes,
-// short identity questions). Anything else must escalate to a higher tier.
+const UNRESTRICTED_SIGNAL_RE = /\b(nude|nudity|naked|explicit|uncensored|adult\s*content|erotic|porn|pornographic|xxx|18\+|lewd|sexual\s*content|sex|nsfw|fetish|hardcore|boobs?|breasts?|nipples?|genitals?|penis|vagina|anal|blowjob|handjob|cum|orgasm|hentai|bypass|jailbreak|exploit|malware|ransomware|phishing|ddos|credit\s*card\s*fraud|social\s*security\s*number|ssn|doxx|private\s*data|steal\s*data|illegal|unethical|forbidden|restricted)\b/i;
+// Sensitive/unrestricted intents are detected and forced into locked mode.
 const SMALL_TALK_RE = /^[^\w]*(?:hi+|hii+|hello+|hey+|heya+|yo+|sup+|howdy+|hola|namaste|salaam|salam|ciao|aloha|good\s+(?:morning|afternoon|evening|night|day)|gm|gn|how\s+(?:are|r|do|is|have)\s+(?:you|u|ya|yu|things|it|life|your\s+day|you\s+doing|you\s+been)|how'?s\s+(?:it\s+going|life|your\s+day|things|everything|tricks)|what'?s\s+(?:up|new|good|happening|cracking|cookin'?g?|poppin'?g?)|wassup|wazzup|wyd|nice\s+(?:to\s+meet\s+you|one)|pleasure\s+to\s+meet\s+you|thanks+|thank\s+you|thx+|tysm|ty\b|appreciate\s+it|cool|nice|awesome|great|amazing|wonderful|ok(?:ay)?|alright|sure|sounds\s+good|lol+|haha+|hehe+|lmao+|lmfao+|rofl+|nope+|yep+|yup+|yeah+|yes|no\b|maybe|bye+|goodbye+|see\s+(?:you|ya)|cya|ttyl|peace|catch\s+you\s+later|take\s+care|have\s+a\s+(?:good|nice|great)\s+(?:day|night|one|weekend)|cheer\s+me\s+up|make\s+me\s+(?:laugh|smile|happy)|tell\s+me\s+a\s+joke|joke\s+(?:please|for\s+me)|got\s+any\s+jokes|i'?m\s+(?:sad|bored|happy|tired|fine|good|ok|okay|down|lonely|stressed|excited|chill|chilling)|feeling\s+(?:sad|bored|happy|tired|fine|good|down|low|lonely|stressed|excited)|who\s+are\s+you|what(?:'s|\s+is)\s+your\s+name|your\s+name\??|introduce\s+yourself|tell\s+me\s+about\s+yourself)\b/iu;
 const REASONING_HEAVY_RE = /\b(prove|derive|integral|derivative|matrix|theorem|algorithm|recursion|architecture|system\s+design|machine\s+learning|neural\s+network|optimi[sz]e|refactor|debug|implement|design\s+pattern|big[-\s]o|complexity|essay|research\s+paper|whitepaper|long[-\s]form|in[-\s]depth|step[-\s]by[-\s]step)\b/i;
 const ACTIVE_CHAT_REQUESTS = new Map();
@@ -39,23 +35,11 @@ function latestUserMessageText(messages = []) {
   return '';
 }
 
-function resolveModelChoice(requested, hasImages, forceLocked = false, latestUserText = '') {
-  const value = String(requested || 'auto').trim().toLowerCase();
-  const isMini = value === 'mini' || value === 'mira-mini' || value === MIRA_MINI_MODEL.toLowerCase();
-  const isSpec = value === 'spec' || value === 'mira-spec' || value === MIRA_SPEC_MODEL.toLowerCase();
-  const isLite = value === 'lite' || value === 'mira-lite' || value === MIRA_LITE_MODEL.toLowerCase();
+function resolveModelChoice(requested, _hasImages, forceLocked = false) {
+  const value = String(requested || 'mira').trim().toLowerCase();
   const isLocked = value === 'locked' || value === 'mira-locked' || value === MIRA_LOCKED_MODEL.toLowerCase();
-  if (forceLocked) return MIRA_LOCKED_MODEL;
-  if (isLocked) return MIRA_LOCKED_MODEL;
-  if (isSpec) return MIRA_SPEC_MODEL;
-  if (hasImages) return MIRA_VISION_MODEL;
-  // Guard mini: only allow it for genuine chitchat; otherwise escalate.
-  if (isMini) {
-    if (isTrivialSmallTalk(latestUserText)) return MIRA_MINI_MODEL;
-    return REASONING_HEAVY_RE.test(latestUserText) ? MIRA_SPEC_MODEL : MIRA_LITE_MODEL;
-  }
-  if (isLite) return MIRA_LITE_MODEL;
-  return MIRA_LITE_MODEL;
+  if (forceLocked || isLocked) return MIRA_LOCKED_MODEL;
+  return MIRA_MODEL;
 }
 
 function hasUnrestrictedSignals(messages = []) {
@@ -239,7 +223,7 @@ export async function POST(req) {
     const promptImages = extractLastUserImages(messages, imageList);
     const hasImages = promptImages.length > 0;
     const forceLocked = hasUnrestrictedSignals(messages);
-    const effectiveModel = resolveModelChoice(body.model, hasImages, forceLocked, latestUserMessageText(messages));
+    const effectiveModel = resolveModelChoice(body.model, hasImages, forceLocked);
     if (!OLLAMA_API_URL) return jsonResponse({ error: 'OLLAMA_API_URL is not configured.' }, 500);
     const requestId = String(body.requestId || '').trim();
     const requestController = new AbortController();

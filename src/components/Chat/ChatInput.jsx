@@ -150,15 +150,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   const voiceOptions = voices
     .slice()
     .sort((a, b) => (a.lang || '').localeCompare(b.lang || '') || (a.name || '').localeCompare(b.name || ''));
-  const selectedModelLabel = selectedModel === 'auto'
-    ? 'Auto'
-    : selectedModel === 'mini'
-      ? 'Mira Mini'
-      : selectedModel === 'spec'
-        ? 'Mira Spec'
-        : selectedModel === 'locked'
-          ? 'Mira Locked'
-          : 'Mira Lite';
+  const selectedModelLabel = selectedModel === 'locked' ? 'Mira Locked' : 'Mira';
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -311,7 +303,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
         <div className="nsfw-banner max-w-2xl w-full mx-auto mb-2">
           <AlertTriangle size={13} />
           <span>Unrestricted mode active — Mira Locked model is engaged. Content may be explicit.</span>
-          <button type="button" onClick={() => setSelectedModel('auto')} className="nsfw-banner-dismiss">Disable</button>
+          <button type="button" onClick={() => setSelectedModel('mira')} className="nsfw-banner-dismiss">Disable</button>
         </div>
       )}      
       <div className="max-w-2xl w-full mx-auto composer-mobile-shell">
@@ -461,7 +453,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                   type="button"
                   onClick={() => setModelPickerOpen((v) => !v)}
                   className="composer-model-btn"
-                  data-active={selectedModel !== 'auto' || modelPickerOpen || undefined}
+                  data-active={selectedModel !== 'mira' || modelPickerOpen || undefined}
                   title={`Model: ${selectedModelLabel}`}
                 >
                   <Cpu size={14} />
@@ -470,21 +462,9 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                 </button>
                 {modelPickerOpen && (
                   <div className="composer-model-popover" onMouseLeave={() => setModelPickerOpen(false)}>
-                    <button type="button" className="composer-model-option" data-active={selectedModel === 'auto' || undefined} onClick={() => { setSelectedModel('auto'); setModelPickerOpen(false); }}>
-                      <span>Auto</span>
-                      <small>Smart routing</small>
-                    </button>
-                    <button type="button" className="composer-model-option" data-active={selectedModel === 'mini' || undefined} onClick={() => { setSelectedModel('mini'); setModelPickerOpen(false); }}>
-                      <span>Mira Mini</span>
-                      <small>Ultra-fast chat</small>
-                    </button>
-                    <button type="button" className="composer-model-option" data-active={selectedModel === 'lite' || undefined} onClick={() => { setSelectedModel('lite'); setModelPickerOpen(false); }}>
-                      <span>Mira Lite</span>
-                      <small>Fast reasoning</small>
-                    </button>
-                    <button type="button" className="composer-model-option" data-active={selectedModel === 'spec' || undefined} onClick={() => { setSelectedModel('spec'); setModelPickerOpen(false); }}>
-                      <span>Mira Spec</span>
-                      <small>Deep coding</small>
+                    <button type="button" className="composer-model-option" data-active={selectedModel === 'mira' || undefined} onClick={() => { setSelectedModel('mira'); setModelPickerOpen(false); }}>
+                      <span>Mira</span>
+                      <small>Primary model</small>
                     </button>
                     <div style={{ borderTop: '1px solid var(--hud-cyan-dim)', margin: '4px 0' }} />
                     <button

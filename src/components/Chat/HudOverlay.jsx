@@ -1,5 +1,5 @@
 import React from 'react';
-import { Menu } from 'lucide-react';
+import { Menu, X } from 'lucide-react';
 import { useChatContext } from '../../contexts/ChatContext';
 
 /**
@@ -8,7 +8,7 @@ import { useChatContext } from '../../contexts/ChatContext';
  * 38px-tall baseline. Bottom chrome is now handled by the composer dock glow.
  */
 export default function HudOverlay() {
-  const { setSidebarOpen } = useChatContext();
+  const { sidebarOpen, setSidebarOpen } = useChatContext();
 
   return (
     <>
@@ -25,12 +25,12 @@ export default function HudOverlay() {
 
       <button
         type="button"
-        onClick={() => setSidebarOpen(true)}
-        className="hud-btn sidebar-mobile-trigger"
-        title="Open sidebar"
-        aria-label="Open sidebar"
+        onClick={() => setSidebarOpen(!sidebarOpen)}
+        className="sidebar-mobile-trigger"
+        title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
+        aria-label={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
       >
-        <Menu size={16} />
+        {sidebarOpen ? <X size={18} /> : <Menu size={18} />}
       </button>
 
     </>

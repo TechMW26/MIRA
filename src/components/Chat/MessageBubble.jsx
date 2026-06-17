@@ -48,10 +48,7 @@ const DEFAULT_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'seedream-pro'];
 const HYPERREAL_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'seedream-pro'];
 
 const MODEL_OPTIONS = [
-  { value: 'auto',   label: 'Auto',       sub: 'Smart routing' },
-  { value: 'mini',   label: 'Mira Mini',  sub: 'Ultra-fast chat' },
-  { value: 'lite',   label: 'Mira Lite',  sub: 'Fast reasoning' },
-  { value: 'spec',   label: 'Mira Spec',  sub: 'Deep coding' },
+  { value: 'mira',   label: 'Mira',       sub: 'Primary model' },
   { value: 'locked', label: 'Mira Locked', sub: 'Unrestricted · PIN required', requiresPin: true },
 ];
 
@@ -189,11 +186,10 @@ function formatModelUsedLabel(value = '') {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) return '';
   if (normalized === 'search') return 'SEARCH';
-  if (normalized === 'auto') return 'AUTO';
-  if (normalized === 'mini' || normalized === 'mira-mini') return 'MIRA MINI';
-  if (normalized === 'lite' || normalized === 'mira-lite') return 'MIRA LITE';
-  if (normalized === 'spec' || normalized === 'mira-spec') return 'MIRA SPEC';
+  if (normalized === 'mira' || normalized === 'auto' || normalized === 'mini' || normalized === 'lite' || normalized === 'spec' || normalized === 'mira-mini' || normalized === 'mira-lite' || normalized === 'mira-spec') return 'MIRA';
   if (normalized === 'vision' || normalized === 'mira-vision') return 'MIRA VISION';
+  if (normalized === 'locked' || normalized === 'mira-locked' || normalized === 'mira-locked:latest') return 'MIRA LOCKED';
+  if (normalized === 'mira:latest') return 'MIRA';
   return normalized.toUpperCase();
 }
 
@@ -756,7 +752,7 @@ function DocumentDownloadAction({ format, exporting, exportError, onExport }) {
 
 function EditPromptModal({ open, initialValue, onClose, onSave }) {
   const [value, setValue] = useState(initialValue || '');
-  const [selectedModel, setSelectedModel] = useState('auto');
+  const [selectedModel, setSelectedModel] = useState('mira');
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
@@ -766,7 +762,7 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
   useEffect(() => {
     if (open) {
       setValue(initialValue || '');
-      setSelectedModel('auto');
+      setSelectedModel('mira');
     }
   }, [open, initialValue]);
 
@@ -799,7 +795,7 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
     setModelPickerOpen(false);
   }
 
-  const selectedLabel = MODEL_OPTIONS.find((o) => o.value === selectedModel)?.label || 'Auto';
+  const selectedLabel = MODEL_OPTIONS.find((o) => o.value === selectedModel)?.label || 'Mira';
 
   if (!open) return null;
 

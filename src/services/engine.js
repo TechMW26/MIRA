@@ -203,12 +203,7 @@ function looksMultilingual(text = '') {
   return /\b(in\s+(spanish|hindi|french|german|italian|portuguese|japanese|korean|arabic)|translate|traduce|traducir|traduire|uebersetze|übersetze|bahasa|espanol|español|francais|français|deutsch|portugues|português)\b/i.test(value);
 }
 
-// ── Small-talk gating ──────────────────────────────────────────
-// Mira Mini is the smallest/fastest model and is reserved for trivial
-// conversational turns only: greetings, mood lifting, short pleasantries,
-// thanks, goodbyes, jokes, simple identity questions. Anything that
-// requires reasoning, knowledge lookup, or generation goes to a higher
-// tier (lite / spec / locked).
+// ── Small-talk gating (kept for intent heuristics/search behavior) ─────────
 const SMALL_TALK_RE = /^[^\w]*(?:hi+|hii+|hello+|hey+|heya+|yo+|sup+|howdy+|hola|namaste|salaam|salam|ciao|aloha|good\s+(?:morning|afternoon|evening|night|day)|gm|gn|how\s+(?:are|r|do|is|have)\s+(?:you|u|ya|yu|things|it|life|your\s+day|you\s+doing|you\s+been)|how'?s\s+(?:it\s+going|life|your\s+day|things|everything|tricks)|what'?s\s+(?:up|new|good|happening|cracking|cookin'?g?|poppin'?g?)|wassup|wazzup|wyd|nice\s+(?:to\s+meet\s+you|one)|pleasure\s+to\s+meet\s+you|thanks+|thank\s+you|thx+|tysm|ty\b|appreciate\s+it|cool|nice|awesome|great|amazing|wonderful|ok(?:ay)?|alright|sure|sounds\s+good|lol+|haha+|hehe+|lmao+|lmfao+|rofl+|nope+|yep+|yup+|yeah+|yes|no\b|maybe|bye+|goodbye+|see\s+(?:you|ya)|cya|ttyl|peace|catch\s+you\s+later|take\s+care|have\s+a\s+(?:good|nice|great)\s+(?:day|night|one|weekend)|cheer\s+me\s+up|make\s+me\s+(?:laugh|smile|happy)|tell\s+me\s+a\s+joke|joke\s+(?:please|for\s+me)|got\s+any\s+jokes|i'?m\s+(?:sad|bored|happy|tired|fine|good|ok|okay|down|lonely|stressed|excited|chill|chilling)|feeling\s+(?:sad|bored|happy|tired|fine|good|down|low|lonely|stressed|excited)|who\s+are\s+you|what(?:'s|\s+is)\s+your\s+name|your\s+name\??|introduce\s+yourself|tell\s+me\s+about\s+yourself)\b/iu;
 
 function wordCount(text = '') {
@@ -226,41 +221,14 @@ function isTrivialSmallTalk(text = '', { hasImages = false } = {}) {
 }
 
 // ── Model routing ──────────────────────────────────────────────
-function pickModel({ intent, complexity }, hasImages, selectedMode = 'auto', userText = '') {
-  if (hasImages) return 'vision';
-
-  // Helper: escalate mini → lite or spec depending on apparent complexity.
-  const escalateFromMini = () => {
-    if (intent === 'code' || intent === 'math') {
-      return complexity === 'high' ? 'spec' : 'lite';
-    }
-    if (complexity === 'high') return 'spec';
-    return 'lite';
-  };
-
-  if (selectedMode === 'spec') return 'spec';
-  if (selectedMode === 'lite') return 'lite';
+function pickModel(_classification, _hasImages, selectedMode = 'mira') {
   if (selectedMode === 'locked') return 'locked';
-  if (selectedMode === 'mini') {
-    // User explicitly picked mini — honor it only for trivial chitchat.
-    return isTrivialSmallTalk(userText) ? 'mini' : escalateFromMini();
-  }
-
-  // Auto mode: prioritize quality for coding/reasoning, speed for lightweight multilingual chat.
-  if (intent === 'code' || intent === 'math') {
-    return complexity === 'high' ? 'spec' : 'lite';
-  }
-  if (complexity === 'high') return 'spec';
-  if (complexity === 'medium') return 'lite';
-  // Multilingual / general / creative may still need real reasoning — only
-  // hand to mini if the turn is genuinely trivial small talk; otherwise lite.
-  if (isTrivialSmallTalk(userText)) return 'mini';
-  return 'lite';
+  return 'mira';
 }
 
 // ── Public API ─────────────────────────────────────────────────
 export function processQuery(userText, hasImages = false, options = {}) {
-  const { selectedMode = 'auto' } = options;
+  const { selectedMode = 'mira' } = options;
   const interpretation = interpretUserPrompt(userText, hasImages);
   const classification = interpretation.classification;
   const model = pickModel(classification, hasImages, selectedMode, userText);

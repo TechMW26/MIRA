@@ -43,7 +43,8 @@ const SHORT_CONTEXT_FOLLOWUP_PATTERN = /\b(are\s+you\s+sure|sure\s+about\s+that|
 const SEARCH_WORTHY_CONTEXT_PATTERN = /\b(company|manufacturer|maker|producer|brand|official\s+website|specs?|pricing|price|cost|availability|launch|release|latest|current|current\s+status|who\s+makes|who\s+owns|what\s+company|where\s+to\s+buy|how\s+much|how\s+many)\b/i;
 const SIMPLE_GREETING_PATTERN = /^\s*(?:hi|hello|hey|hey there|hello there|yo|sup|good\s+(?:morning|afternoon|evening))(?:[!.?\s]+)?$/i;
 const CONTEXT_ENTITY_STOP = new Set(['I', 'The', 'A', 'An', 'It', 'This', 'That', 'These', 'Those', 'You', 'He', 'She', 'We', 'They', 'My', 'Your', 'MIRA', 'AI', 'PDF', 'DOCX', 'PPTX']);
-const TEXT_ENTITY_RESEARCH_PATTERN = /\b(tell\s+me\s+about|tell\s+me\s+more\s+about|details?\s+about|information\s+about|info\s+about|background\s+on|research|explain|what\s+is|what's|overview\s+of|in\s+detail|deep\s+dive)\b/i;
+const TEXT_ENTITY_RESEARCH_PATTERN = /\b(tell\s+me\s+about|tell\s+me\s+more\s+about|details?\s+about|information\s+about|info\s+about|background\s+on|research|explain|what\s+is|what\s+are|what\s+an|what\s+a|what's|overview\s+of|in\s+detail|deep\s+dive|let\s+me\s+know\s+what)\b/i;
+const LOCKED_TRIGGER_PATTERN = /\b(nude|nudity|naked|explicit|uncensored|adult\s*content|erotic|porn|pornographic|xxx|18\+|lewd|sexual\s*content|sex|nsfw|fetish|hardcore|boobs?|breasts?|nipples?|genitals?|penis|vagina|anal|blowjob|handjob|cum|orgasm|hentai|bypass|jailbreak|exploit|malware|ransomware|phishing|ddos|credit\s*card\s*fraud|social\s*security\s*number|ssn|doxx|private\s*data|steal\s*data|illegal|unethical|forbidden|restricted)\b/i;
 
 function isMediaRequest(text = '') {
   return MEDIA_REQUEST_PATTERN.test(String(text || ''));
@@ -185,7 +186,7 @@ function extractTextResearchEntity(text = '') {
   if (quoted) return canonicalizeTextEntity(quoted);
 
   const withoutIntent = value
-    .replace(/\b(tell\s+me\s+(?:more\s+)?about|details?\s+about|information\s+about|info\s+about|background\s+on|overview\s+of|deep\s+dive\s+(?:on|into)|research|explain|what\s+is|what's)\b/ig, ' ')
+    .replace(/\b(tell\s+me\s+(?:more\s+)?about|details?\s+about|information\s+about|info\s+about|background\s+on|overview\s+of|deep\s+dive\s+(?:on|into)|research|explain|what\s+is|what\s+are|what\s+an|what\s+a|what's|let\s+me\s+know\s+what)\b/ig, ' ')
     .replace(/\b(in\s+detail|complete\s+information|full\s+information|please|videos?|images?|media|clips?|photos?|pictures?)\b/ig, ' ')
     .replace(/[?!.,;:()\[\]{}]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -889,11 +890,12 @@ export default function useChat() {
       const hasImages = imageAttachments.length > 0;
       const modelOverride = options.modelOverride || null;
       const guardedOverride = modelOverride;
-      // Locked mode is absolute: once locked is selected (or explicitly overridden),
-      // no downstream router/fallback can switch to mini/lite/spec.
-      const effectiveSelectedModel = (selectedModel === 'locked' || guardedOverride === 'locked')
+      const forceLockedByPrompt = LOCKED_TRIGGER_PATTERN.test(String(content || ''));
+      // Locked mode is absolute: once locked is selected (or explicitly triggered),
+      // no downstream router/fallback can switch it back for this request.
+      const effectiveSelectedModel = (selectedModel === 'locked' || guardedOverride === 'locked' || forceLockedByPrompt)
         ? 'locked'
-        : (guardedOverride || selectedModel);
+        : (guardedOverride || selectedModel || 'mira');
       const engineResult = processQuery(content, hasImages, { selectedMode: effectiveSelectedModel });
       const promptInterpretation = engineResult.interpretation || {
         route: engineResult.classification.intent,
@@ -1031,7 +1033,7 @@ export default function useChat() {
               if (decision.action === 'clarify') {
                 await updateMessage(convId, assistantMsgId, {
                   content: decision.question,
-                  modelUsed: decision.model || 'mini',
+                  modelUsed: decision.model || 'mira',
                   isClarification: true,
                 });
                 if (isNewChat) {

@@ -11,7 +11,7 @@
 
 import { runChatCompletion } from './api';
 
-const ENHANCER_MODEL = 'mini';
+const ENHANCER_MODEL = 'mira';
 
 const CREATE_VERB_RE = /\b(build|create|make|design|write|implement|generate|develop|produce|craft|compose|draft|code|construct|architect|prototype|set\s*up|spin\s*up)\b/i;
 const SHORT_LOOKUP_RE = /^\s*(what|who|when|where|why|how|is|are|do|does|did|can|could|should|would|will|tell\s+me|show\s+me|give\s+me)\b/i;
