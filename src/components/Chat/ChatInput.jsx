@@ -474,17 +474,17 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                       <span>Auto</span>
                       <small>fast by default · escalates when needed</small>
                     </button>
-                    <button type="button" className="composer-model-option" data-active={selectedModel === 'mira-pro' || undefined} onClick={() => { setSelectedModel('mira-pro'); setModelPickerOpen(false); }}>
-                      <span>Mira Pro</span>
-                      <small>chat + vision</small>
+                    <button type="button" className="composer-model-option" data-active={selectedModel === 'mira-lite' || undefined} onClick={() => { setSelectedModel('mira-lite'); setModelPickerOpen(false); }}>
+                      <span>Mira Lite</span>
+                      <small>fastest · ultra-low latency</small>
                     </button>
                     <button type="button" className="composer-model-option" data-active={selectedModel === 'mira' || undefined} onClick={() => { setSelectedModel('mira'); setModelPickerOpen(false); }}>
                       <span>Mira</span>
                       <small>standard</small>
                     </button>
-                    <button type="button" className="composer-model-option" data-active={selectedModel === 'mira-lite' || undefined} onClick={() => { setSelectedModel('mira-lite'); setModelPickerOpen(false); }}>
-                      <span>Mira Lite</span>
-                      <small>fastest · ultra-low latency</small>
+                    <button type="button" className="composer-model-option" data-active={selectedModel === 'mira-pro' || undefined} onClick={() => { setSelectedModel('mira-pro'); setModelPickerOpen(false); }}>
+                      <span>Mira Pro</span>
+                      <small>chat + vision</small>
                     </button>
                     <div style={{ borderTop: '1px solid var(--hud-cyan-dim)', margin: '4px 0' }} />
                     <button

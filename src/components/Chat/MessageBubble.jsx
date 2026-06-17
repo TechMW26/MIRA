@@ -49,9 +49,9 @@ const HYPERREAL_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'seedream-pro']
 
 const MODEL_OPTIONS = [
   { value: 'auto',   label: 'Auto',       sub: 'best model' },
-  { value: 'mira-pro', label: 'Mira Pro', sub: 'chat + vision' },
-  { value: 'mira',   label: 'Mira',       sub: 'standard' },
   { value: 'mira-lite', label: 'Mira Lite', sub: 'fastest' },
+  { value: 'mira',   label: 'Mira',       sub: 'standard' },
+  { value: 'mira-pro', label: 'Mira Pro', sub: 'chat + vision' },
   { value: 'locked', label: 'Mira Locked', sub: 'unrestricted · pin required', requiresPin: true },
 ];
 

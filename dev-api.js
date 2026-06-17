@@ -173,7 +173,7 @@ const CHAT_API_URL = (process.env.SALAD_API_URL || process.env.OLLAMA_API_URL ||
 const CHAT_API_KEY = (process.env.SALAD_API_KEY || '').trim();
 const CHAT_API_KEY_HEADER = (process.env.SALAD_API_KEY_HEADER || 'Salad-Api-Key').trim();
 const USE_SALAD_CHAT = /salad\.cloud/i.test(CHAT_API_URL);
-const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira-v4').trim();
+const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira-v4:latest').trim();
 const MIRA_PRO_MODEL = (process.env.MIRA_PRO_MODEL || 'mira-pro').trim();
 const MIRA_LOCKED_MODEL = (process.env.MIRA_LOCKED_MODEL || MIRA_MODEL || 'mira-v4').trim();
 // Mira Lite: routed to Groq's OpenAI-compatible endpoint for sub-second TTFT.
@@ -220,18 +220,9 @@ function resolveModelChoice(requested, hasImages, forceLocked = false, messages 
   if (isLite) return MIRA_LITE_MODEL;
   if (isPro) return MIRA_PRO_MODEL;
   if (isBase) return MIRA_MODEL;
-  // Auto: default to Mira Lite for almost everything (greetings, lookups,
-  // short questions, follow-ups). Escalate to Mira Pro for vision/heavy
-  // reasoning, and Mira for medium-weight prompts that aren't trivial chat
-  // but don't need the Pro model.
-  const latest = latestUserMessageText(messages);
-  const trimmed = latest.trim();
-  const wordCount = trimmed ? trimmed.split(/\s+/).filter(Boolean).length : 0;
-  const reasoningHeavy = REASONING_HEAVY_RE.test(latest) || wordCount > 80;
-  if (hasImages || reasoningHeavy) return MIRA_PRO_MODEL;
-  const trivial = isTrivialSmallTalk(latest);
-  // Medium tier: longer than a quick lookup but not heavy enough for Pro.
-  if (!trivial && wordCount > 30) return MIRA_MODEL;
+  // Auto: keep almost all conversation traffic on Lite for lowest latency.
+  // Escalate only when visual reasoning is required.
+  if (hasImages) return MIRA_PRO_MODEL;
   return MIRA_LITE_MODEL;
 }
 
