@@ -354,8 +354,14 @@ async function requestChat({ messages, model, images = [], systemPrompt, maxToke
           }),
         });
 
+        const modelUsed = String(response.headers.get('x-mira-model-used') || '').trim();
+
         if (response.ok) {
-          return readChatResponse(response, onChunk, controller.signal);
+          const streamed = await readChatResponse(response, onChunk, controller.signal);
+          return {
+            ...streamed,
+            ...(modelUsed ? { modelUsed } : {}),
+          };
         }
 
         const message = await extractApiError(response);
@@ -426,7 +432,7 @@ export async function runChatCompletion({ messages, model, images = [], systemPr
   return { result: answer };
 }
 
-export async function sendChatMessage(messages, model, onChunk, images = [], { onThinking, systemPrompt, tools = MODEL_TOOLS, think } = {}) {
+export async function sendChatMessage(messages, model, onChunk, images = [], { onThinking, onModelUsed, systemPrompt, tools = MODEL_TOOLS, think } = {}) {
   let latestAnswer = '';
   let latestThinking = '';
   const streamed = await requestChat({
@@ -463,6 +469,11 @@ export async function sendChatMessage(messages, model, onChunk, images = [], { o
     .replace(/<\/think>/gi, '')
     .trim();
   const finalAnswer = split.answer || latestAnswer || rawWithoutThinkTags;
+  const finalModelUsed = String(streamed?.modelUsed || '').trim();
+
+  if (finalModelUsed) {
+    onModelUsed?.(finalModelUsed);
+  }
 
   if (finalThinking) onThinking?.(finalThinking);
   if (finalAnswer) return finalAnswer;

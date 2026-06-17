@@ -77,14 +77,52 @@ const SEARCH_SIGNALS = [
   /\b(explain\s+(the|that|this)|what\s+(does|do)\s+.+\s+(do|mean))\b/i,
 ];
 
+// Intent-driven research language. These indicate the user wants investigation,
+// not just a generic answer.
+const RESEARCH_INTENT_SIGNALS = [
+  /\b(do\s+some\s+digging|dig\s+into|digging\s+into|look\s+into|investigate|research\s+this|deep\s+dive|background\s+check|find\s+details|pull\s+details)\b/i,
+  /\b(tell\s+me\s+more\s+about|learn\s+more\s+about|full\s+breakdown\s+of|in\s+detail\s+about)\b/i,
+  /\b(check\s+what\s+this\s+is|find\s+what\s+this\s+is|verify\s+this|cross[-\s]?check\s+this)\b/i,
+];
+
+const EVERGREEN_KNOWLEDGE_SIGNALS = [
+  /^\s*(what\s+is|who\s+is|explain|define|meaning\s+of|how\s+does)\b/i,
+  /\b(concept|basics?|overview|introduction|definition)\b/i,
+];
+
+const NICHE_ENTITY_HINTS = [
+  /[A-Z][a-z]+[A-Z][A-Za-z0-9]+/, // camel case names
+  /\b[a-z]+[-_][a-z0-9-]+\b/i,    // hyphenated/slugs
+  /\b[a-z]{8,}\b/i,               // longer uncommon terms (e.g. algaetree)
+  /["'“”][^"'“”]{3,60}["'“”]/,    // quoted specific entities
+];
+
 const IMAGE_GROUNDED_SEARCH_SIGNALS = [
   /\b(tell\s+me(?:\s+(?:something|more))?|details?|information|info|background|research|explain|what\s+is|what's|identify|recognize|verify|look\s+up|find\s+out|search|check)\b[^.!?]{0,110}\b(image|photo|picture|device|product|object|item|thing|prototype|machine|system|this|that|it)\b/i,
   /\b(image|photo|picture|device|product|object|item|thing|prototype|machine|system|this|that|it)\b[^.!?]{0,110}\b(tell\s+me(?:\s+(?:something|more))?|details?|information|info|background|research|explain|what\s+is|what's|identify|recognize|verify|look\s+up|find\s+out|search|check)\b/i,
 ];
 
 function detectSearchNeed(text, hasImages = false) {
-  if (SEARCH_SIGNALS.some(rx => rx.test(text))) return true;
-  return hasImages && IMAGE_GROUNDED_SEARCH_SIGNALS.some(rx => rx.test(text));
+  const value = String(text || '').trim();
+  if (!value) return false;
+
+  const explicitSearch = SEARCH_SIGNALS.some((rx) => rx.test(value));
+  if (explicitSearch) return true;
+
+  if (hasImages && IMAGE_GROUNDED_SEARCH_SIGNALS.some((rx) => rx.test(value))) return true;
+
+  const researchIntent = RESEARCH_INTENT_SIGNALS.some((rx) => rx.test(value));
+  if (!researchIntent) return false;
+
+  const words = value.split(/\s+/).filter(Boolean).length;
+  const nicheEntity = NICHE_ENTITY_HINTS.some((rx) => rx.test(value));
+  const looksEvergreen = EVERGREEN_KNOWLEDGE_SIGNALS.some((rx) => rx.test(value));
+
+  // If the request is likely broad/evergreen and short, answer from model
+  // knowledge first. Otherwise trigger web search for investigative intents.
+  if (looksEvergreen && !nicheEntity && words <= 10) return false;
+
+  return nicheEntity || words >= 6;
 }
 
 // Signals that the user wants code output, not actual image generation.

@@ -1424,6 +1424,18 @@ export default function useChat() {
           let fullText = '';
           let requestFailed = false;
           let requestAborted = false;
+          let responseModelUsed = chosenModel;
+
+          const applyModelUsed = (nextModel) => {
+            const normalized = String(nextModel || '').trim();
+            if (!normalized) return;
+            if (normalized === responseModelUsed) return;
+            responseModelUsed = normalized;
+            setActiveResponseModel(normalized);
+            setMessages((prev) => prev.map((msg) => (
+              msg.id === assistantMsgId ? { ...msg, modelUsed: normalized } : msg
+            )));
+          };
 
           // ── Response cache check ──
           const cacheKey = makeCacheKey({
@@ -1453,6 +1465,7 @@ export default function useChat() {
               {
                 think: shouldThink,
                 ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
+                onModelUsed: applyModelUsed,
                 onThinking: (accumulated) => {
                   if (abortRef.current) return;
                   if (!firstChunkSeen && accumulated) { firstChunkSeen = true; setIsSearching(false); }
@@ -1556,6 +1569,7 @@ export default function useChat() {
                     {
                       think: shouldThink,
                       ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
+                      onModelUsed: applyModelUsed,
                       onThinking: (accumulated) => {
                         if (abortRef.current) return;
                         if (!retryFirstChunkSeen && accumulated) { retryFirstChunkSeen = true; setIsSearching(false); }
@@ -1595,7 +1609,7 @@ export default function useChat() {
               titleSource = documentContent;
               const documentUpdate = {
                 content: documentContent,
-                modelUsed: chosenModel,
+                modelUsed: responseModelUsed || chosenModel,
                 exportFormat: requestedFormat,
                 exportStatus: 'ready',
               };
@@ -1613,7 +1627,7 @@ export default function useChat() {
             } else {
               const assistantUpdate = {
                 content: fullText,
-                modelUsed: chosenModel,
+                modelUsed: responseModelUsed || chosenModel,
                 ...(mediaForMessage ? { media: mediaForMessage } : {}),
                 ...(generatedMediaForMessage ? { generatedMedia: generatedMediaForMessage } : {}),
               };

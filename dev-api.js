@@ -169,16 +169,24 @@ function buildResultAnchoredImageQuery(results = [], anchorScope = null, fallbac
 }
 
 // === Chat provider configuration ===
-const CHAT_API_URL = (process.env.SALAD_API_URL || process.env.OLLAMA_API_URL || 'https://persimmon-chives-tx4dggpups3smlon.salad.cloud/api/chat').trim();
+const SALAD_CHAT_API_URL = (process.env.SALAD_API_URL || '').trim();
+const OLLAMA_CHAT_API_URL = (process.env.OLLAMA_API_URL || '').trim();
+const CHAT_API_URL = (SALAD_CHAT_API_URL || OLLAMA_CHAT_API_URL || 'https://persimmon-chives-tx4dggpups3smlon.salad.cloud/api/chat').trim();
 const CHAT_API_KEY = (process.env.SALAD_API_KEY || '').trim();
 const CHAT_API_KEY_HEADER = (process.env.SALAD_API_KEY_HEADER || 'Salad-Api-Key').trim();
-const USE_SALAD_CHAT = /salad\.cloud/i.test(CHAT_API_URL);
-const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira_v4').trim();
+const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira-v4').trim();
 const MIRA_PRO_MODEL = (process.env.MIRA_PRO_MODEL || 'mira-pro').trim();
 const MIRA_LOCKED_MODEL = (process.env.MIRA_LOCKED_MODEL || MIRA_MODEL || 'mira-v4').trim();
 // Mira Lite: routed to Gemini with multi-key fallback.
-const MIRA_LITE_MODEL = (process.env.MIRA_LITE_MODEL || process.env.GEMINI_LITE_MODEL || 'gemini-2.0-flash-lite').trim();
-const GEMINI_LITE_MODEL = (process.env.GEMINI_LITE_MODEL || MIRA_LITE_MODEL || 'gemini-2.0-flash-lite').trim();
+const GEMINI_PRIMARY_MODEL = (process.env.GEMINI_PRIMARY_MODEL || process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash').trim();
+const GEMINI_FALLBACK_MODEL = (process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.1-pro').trim();
+const MIRA_LITE_MODEL = (process.env.MIRA_LITE_MODEL || GEMINI_PRIMARY_MODEL).trim();
+const GEMINI_LITE_MODEL = (process.env.GEMINI_LITE_MODEL || GEMINI_PRIMARY_MODEL).trim();
+const GEMINI_MODEL_CHAIN = Array.from(new Set([
+  GEMINI_PRIMARY_MODEL,
+  GEMINI_FALLBACK_MODEL,
+  GEMINI_LITE_MODEL,
+].map((value) => String(value || '').trim()).filter(Boolean)));
 const GEMINI_API_URL_BASE = (process.env.GEMINI_API_URL_BASE || 'https://generativelanguage.googleapis.com/v1beta/models').trim();
 const GEMINI_API_KEYS = (() => {
   const csv = String(process.env.GEMINI_API_KEYS || '').trim();
@@ -259,12 +267,134 @@ function getProviderForModel(modelName) {
   return isGeminiModel(modelName) ? 'gemini' : 'salad';
 }
 
+function toUiModelName(modelName = '') {
+  const normalized = String(modelName || '').trim().toLowerCase();
+  if (!normalized) return 'mira';
+  if (isGeminiModel(normalized) || normalized === 'mira-lite' || normalized === 'lite') return 'mira-lite';
+  if (normalized === 'mira-pro' || normalized === String(MIRA_PRO_MODEL).toLowerCase() || normalized === 'pro') return 'mira-pro';
+  if (normalized === 'locked' || normalized === 'mira-locked' || normalized === String(MIRA_LOCKED_MODEL).toLowerCase()) return 'locked';
+  if (normalized === 'mira' || normalized === String(MIRA_MODEL).toLowerCase() || /^mira[-_]v4(?::latest)?$/.test(normalized)) return 'mira';
+  return normalized;
+}
+
+function buildMiraAliases(modelName = '') {
+  const name = String(modelName || '').trim();
+  if (!name) return [];
+  const normalized = name.toLowerCase();
+  const aliases = [name];
+  if (!name.includes(':')) aliases.push(`${name}:latest`);
+
+  if (normalized === 'mira' || normalized === 'mira-v4' || normalized === 'mira_v4' || normalized.startsWith('mira-v4:') || normalized.startsWith('mira_v4:')) {
+    aliases.push('mira-v4');
+    aliases.push('mira-v4:latest');
+    aliases.push('mira_v4');
+    aliases.push('mira_v4:latest');
+  }
+
+  return Array.from(new Set(aliases.map((value) => String(value || '').trim()).filter(Boolean)));
+}
+
+function isMiraFamilyModel(modelName = '') {
+  const normalized = String(modelName || '').trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === 'mira' || normalized === 'locked' || normalized === 'mira-locked') return true;
+  if (buildMiraAliases(MIRA_MODEL).map((item) => item.toLowerCase()).includes(normalized)) return true;
+  if (buildMiraAliases(MIRA_LOCKED_MODEL).map((item) => item.toLowerCase()).includes(normalized)) return true;
+  return /^mira[-_]v4(?::latest)?$/.test(normalized);
+}
+
+function getChatEndpointConfig(modelName = '') {
+  const normalized = String(modelName || '').trim().toLowerCase();
+  const isProModel = normalized === String(MIRA_PRO_MODEL).toLowerCase() || normalized === 'mira-pro' || normalized === 'pro';
+  if (isMiraFamilyModel(normalized) && OLLAMA_CHAT_API_URL) {
+    return { url: OLLAMA_CHAT_API_URL, mode: 'ollama' };
+  }
+  if (isProModel && SALAD_CHAT_API_URL) {
+    return { url: SALAD_CHAT_API_URL, mode: 'salad' };
+  }
+  const fallbackUrl = SALAD_CHAT_API_URL || OLLAMA_CHAT_API_URL || CHAT_API_URL;
+  return {
+    url: fallbackUrl,
+    mode: /salad\.cloud/i.test(fallbackUrl) ? 'salad' : 'ollama',
+  };
+}
+
+function getOllamaBaseUrl(chatUrl = '') {
+  const value = String(chatUrl || '').trim();
+  if (!value) return '';
+  return value.replace(/\/api\/.*/i, '');
+}
+
+const OLLAMA_TAGS_CACHE = { expiresAt: 0, models: [] };
+
+async function getOllamaAvailableModels(chatUrl, requestAbortSignal) {
+  const now = Date.now();
+  if (OLLAMA_TAGS_CACHE.expiresAt > now && Array.isArray(OLLAMA_TAGS_CACHE.models) && OLLAMA_TAGS_CACHE.models.length > 0) {
+    return OLLAMA_TAGS_CACHE.models;
+  }
+
+  const base = getOllamaBaseUrl(chatUrl);
+  if (!base) return [];
+  try {
+    const controller = new AbortController();
+    const abortUpstream = () => controller.abort();
+    requestAbortSignal?.addEventListener?.('abort', abortUpstream, { once: true });
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(`${base}/api/tags`, { signal: controller.signal });
+    clearTimeout(timeout);
+    requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
+    const data = await res.json().catch(() => ({}));
+    const names = Array.isArray(data?.models)
+      ? data.models.map((entry) => String(entry?.name || entry?.model || '').trim().toLowerCase()).filter(Boolean)
+      : [];
+    OLLAMA_TAGS_CACHE.models = names;
+    OLLAMA_TAGS_CACHE.expiresAt = now + 30_000;
+    return names;
+  } catch {
+    return [];
+  }
+}
+
+async function resolveOllamaModelAlias(modelName, requestAbortSignal) {
+  const endpoint = getChatEndpointConfig(modelName);
+  if (endpoint.mode !== 'ollama') return String(modelName || '').trim();
+
+  const requested = String(modelName || '').trim();
+  const requestedNorm = requested.toLowerCase();
+  const available = await getOllamaAvailableModels(endpoint.url, requestAbortSignal);
+  if (!available.length) return requested;
+  if (available.includes(requestedNorm)) return requested;
+
+  const aliases = buildMiraAliases(requested)
+    .map((name) => String(name || '').trim())
+    .filter(Boolean);
+  for (const alias of aliases) {
+    if (available.includes(alias.toLowerCase())) return alias;
+  }
+
+  const base = requestedNorm.split(':')[0];
+  const prefixHit = available.find((name) => name === base || name.startsWith(`${base}:`));
+  if (prefixHit) return prefixHit;
+
+  return requested;
+}
+
+function getGeminiModelCandidates(requestedModel = '') {
+  const normalized = String(requestedModel || '').trim().toLowerCase();
+  const isLiteAlias = !normalized || normalized === 'mira-lite' || normalized === 'lite' || normalized === String(MIRA_LITE_MODEL).toLowerCase();
+  if (isLiteAlias) return GEMINI_MODEL_CHAIN;
+  return Array.from(new Set([
+    String(requestedModel || '').trim(),
+    ...GEMINI_MODEL_CHAIN,
+  ].filter(Boolean)));
+}
+
 // Ordered fallback chain so a "model not found" / 5xx from one model
 // transparently retries the request against the next available model.
 // Locked mode never falls back to the general pool — keeps PIN-gated traffic
 // strictly on the locked model regardless of upstream availability.
 function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
-  if (forceLocked) return [MIRA_LOCKED_MODEL];
+  if (forceLocked) return buildMiraAliases(MIRA_LOCKED_MODEL);
   // Hierarchy order: Mira Lite -> Mira -> Mira Pro.
   // Requests climb forward in this order if a model/provider is unavailable.
   const normalizedPrimary = String(primaryModel || '').trim().toLowerCase();
@@ -273,10 +403,17 @@ function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
   const proNames = new Set([String(MIRA_PRO_MODEL).toLowerCase(), 'mira-pro', 'pro']);
 
   if (!normalizedPrimary || liteNames.has(normalizedPrimary)) {
-    return [MIRA_LITE_MODEL, MIRA_MODEL, MIRA_PRO_MODEL];
+    return [
+      MIRA_LITE_MODEL,
+      ...buildMiraAliases(MIRA_MODEL),
+      MIRA_PRO_MODEL,
+    ];
   }
   if (baseNames.has(normalizedPrimary)) {
-    return [MIRA_MODEL, MIRA_PRO_MODEL];
+    return [
+      ...buildMiraAliases(MIRA_MODEL),
+      MIRA_PRO_MODEL,
+    ];
   }
   if (proNames.has(normalizedPrimary)) {
     return [MIRA_PRO_MODEL];
@@ -294,16 +431,17 @@ function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
   };
   push(primaryModel);
   push(MIRA_LITE_MODEL);
-  push(MIRA_MODEL);
+  for (const alias of buildMiraAliases(MIRA_MODEL)) push(alias);
   push(MIRA_PRO_MODEL);
   return ordered;
 }
 
 function buildUnavailableAssistantResponse(primaryModel) {
-  const normalized = String(primaryModel || '').trim().toLowerCase();
-  const family = normalized.includes('pro') ? 'Mira Pro' : normalized.includes('mira') ? 'Mira' : 'Mira Lite';
+  const uiModel = toUiModelName(primaryModel);
+  const family = uiModel === 'mira-pro' ? 'Mira Pro' : uiModel === 'mira-lite' ? 'Mira Lite' : uiModel === 'locked' ? 'Mira Locked' : 'Mira';
   const content = `${family} is temporarily busy, so I switched to backup models but they are also unavailable right now. Please try again in a moment.`;
   return {
+    modelUsed: uiModel,
     model: family,
     choices: [{ message: { content } }],
   };
@@ -317,7 +455,7 @@ function truncateText(value, maxChars) {
 
 function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
   const resolvedModel = (effectiveModel === 'mira-lite' || effectiveModel === 'lite')
-    ? GEMINI_LITE_MODEL
+    ? GEMINI_PRIMARY_MODEL
     : effectiveModel;
 
   const list = Array.isArray(chatMessages) ? chatMessages : [];
@@ -351,7 +489,8 @@ function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, s
   if (isGeminiModel(effectiveModel)) {
     return buildGeminiRequest({ effectiveModel, chatMessages, safeMax });
   }
-  if (USE_SALAD_CHAT) {
+  const endpoint = getChatEndpointConfig(effectiveModel);
+  if (endpoint.mode === 'salad') {
     return {
       model: effectiveModel,
       messages: chatMessages,
@@ -393,74 +532,76 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
     let lastStatus = 500;
     let lastMessage = 'Gemini request failed.';
 
-    for (const apiKey of GEMINI_API_KEYS) {
-      if (requestAbortSignal?.aborted) {
-        return { errorStatus: 499, errorMessage: 'Generation stopped by user.' };
-      }
-
-      const controller = new AbortController();
-      const abortUpstream = () => controller.abort();
-      requestAbortSignal?.addEventListener?.('abort', abortUpstream, { once: true });
-      const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
-      try {
-        const modelName = String(payload?.model || GEMINI_LITE_MODEL).trim();
-        const url = `${GEMINI_API_URL_BASE}/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-        const upstream = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload?.body || {}),
-          signal: controller.signal,
-        });
-        clearTimeout(timeout);
-        requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
-
-        const rawText = await upstream.text().catch(() => '');
-        if (upstream.ok) {
-          let parsed;
-          try {
-            parsed = JSON.parse(rawText || '{}');
-          } catch {
-            parsed = {};
-          }
-          const text = String(
-            parsed?.candidates?.[0]?.content?.parts
-              ?.map((part) => String(part?.text || ''))
-              .join('') || '',
-          );
-          const normalized = {
-            model: modelName,
-            choices: [{ message: { content: text } }],
-          };
-          return new Response(JSON.stringify(normalized), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-
-        lastStatus = upstream.status;
-        let concise = rawText;
-        try {
-          const parsedErr = JSON.parse(rawText || '{}');
-          concise = parsedErr?.error?.message || parsedErr?.message || rawText;
-        } catch {
-          // fall back to raw text
-        }
-        lastMessage = String(concise || `Gemini API error: ${upstream.status}`)
-          .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, 240);
-        const retryOnNextKey = transientStatus.has(upstream.status) || upstream.status === 401 || upstream.status === 403;
-        if (retryOnNextKey) continue;
-      } catch (err) {
-        clearTimeout(timeout);
-        requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
+    const geminiModels = getGeminiModelCandidates(payload?.model || GEMINI_PRIMARY_MODEL);
+    for (const modelName of geminiModels) {
+      for (const apiKey of GEMINI_API_KEYS) {
         if (requestAbortSignal?.aborted) {
           return { errorStatus: 499, errorMessage: 'Generation stopped by user.' };
         }
-        lastStatus = 500;
-        lastMessage = err?.name === 'AbortError'
-          ? `Gemini API timeout after ${OLLAMA_TIMEOUT_MS}ms`
-          : (err?.message || 'Gemini request failed.');
+
+        const controller = new AbortController();
+        const abortUpstream = () => controller.abort();
+        requestAbortSignal?.addEventListener?.('abort', abortUpstream, { once: true });
+        const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+        try {
+          const url = `${GEMINI_API_URL_BASE}/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+          const upstream = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload?.body || {}),
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
+
+          const rawText = await upstream.text().catch(() => '');
+          if (upstream.ok) {
+            let parsed;
+            try {
+              parsed = JSON.parse(rawText || '{}');
+            } catch {
+              parsed = {};
+            }
+            const text = String(
+              parsed?.candidates?.[0]?.content?.parts
+                ?.map((part) => String(part?.text || ''))
+                .join('') || '',
+            );
+            const normalized = {
+              model: modelName,
+              choices: [{ message: { content: text } }],
+            };
+            return new Response(JSON.stringify(normalized), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+
+          lastStatus = upstream.status;
+          let concise = rawText;
+          try {
+            const parsedErr = JSON.parse(rawText || '{}');
+            concise = parsedErr?.error?.message || parsedErr?.message || rawText;
+          } catch {
+            // fall back to raw text
+          }
+          lastMessage = String(concise || `Gemini API error: ${upstream.status}`)
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 240);
+          const retryOnNextKey = transientStatus.has(upstream.status) || upstream.status === 401 || upstream.status === 403;
+          if (retryOnNextKey) continue;
+        } catch (err) {
+          clearTimeout(timeout);
+          requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
+          if (requestAbortSignal?.aborted) {
+            return { errorStatus: 499, errorMessage: 'Generation stopped by user.' };
+          }
+          lastStatus = 500;
+          lastMessage = err?.name === 'AbortError'
+            ? `Gemini API timeout after ${OLLAMA_TIMEOUT_MS}ms`
+            : (err?.message || 'Gemini request failed.');
+        }
       }
     }
 
@@ -471,7 +612,8 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
   const maxAttempts = 2;
   let lastStatus = 500;
   let lastMessage = 'Chat request failed.';
-  const url = CHAT_API_URL;
+  const endpoint = getChatEndpointConfig(payload?.model);
+  const url = endpoint.url;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (requestAbortSignal?.aborted) {
@@ -484,7 +626,7 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
     const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
     try {
       const headers = { 'Content-Type': 'application/json' };
-      if (CHAT_API_KEY && CHAT_API_KEY_HEADER) {
+      if (endpoint.mode === 'salad' && CHAT_API_KEY && CHAT_API_KEY_HEADER) {
         headers[CHAT_API_KEY_HEADER] = CHAT_API_KEY;
       }
 
@@ -696,8 +838,9 @@ async function handleChat(body, res, req) {
         break;
       }
       triedModel = modelChain[i];
+      const resolvedModel = await resolveOllamaModelAlias(triedModel, requestController.signal);
       const upstreamPayload = buildUpstreamPayload({
-        effectiveModel: triedModel,
+        effectiveModel: resolvedModel,
         chatMessages,
         toolList,
         think: payload.think,
@@ -717,7 +860,10 @@ async function handleChat(body, res, req) {
       if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
       if (upstreamOrError.errorStatus !== 499) {
         const safePayload = buildUnavailableAssistantResponse(triedModel || effectiveModel);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'X-Mira-Model-Used': toUiModelName(triedModel || effectiveModel),
+        });
         res.end(JSON.stringify(safePayload));
         return;
       }
@@ -732,6 +878,7 @@ async function handleChat(body, res, req) {
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      'X-Mira-Model-Used': toUiModelName(triedModel || effectiveModel),
     });
     // Push headers immediately so the browser's fetch() resolves and the
     // client-side stream reader begins waiting on bytes without buffering.
