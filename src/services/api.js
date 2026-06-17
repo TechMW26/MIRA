@@ -113,6 +113,60 @@ function parseStreamData(data) {
   }
 }
 
+function extractCompleteJsonChunks(buffer) {
+  const chunks = [];
+  const text = String(buffer || '');
+  const len = text.length;
+  let index = 0;
+
+  while (index < len) {
+    while (index < len && /\s/.test(text[index])) index += 1;
+    if (index >= len) break;
+
+    const startChar = text[index];
+    if (startChar !== '{' && startChar !== '[') break;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+
+    for (let i = index; i < len; i += 1) {
+      const ch = text[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === '\\') {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (ch === '{' || ch === '[') depth += 1;
+      if (ch === '}' || ch === ']') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+
+    if (end === -1) break;
+    chunks.push(text.slice(index, end + 1));
+    index = end + 1;
+  }
+
+  return { chunks, remainder: text.slice(index) };
+}
+
 async function readChatResponse(response, onChunk, signal) {
   const reader = response.body?.getReader();
   if (!reader) {
@@ -157,6 +211,33 @@ async function readChatResponse(response, onChunk, signal) {
     });
   };
 
+  const flushBuffer = ({ includeRemainder = false } = {}) => {
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('event:') || trimmed.startsWith('id:')) continue;
+      const data = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
+      append(parseStreamData(data));
+    }
+
+    const parsed = extractCompleteJsonChunks(buffer);
+    for (const chunk of parsed.chunks) {
+      append(parseStreamData(chunk));
+    }
+    buffer = parsed.remainder;
+
+    if (includeRemainder) {
+      const remainder = buffer.trim();
+      if (remainder) {
+        const data = remainder.startsWith('data:') ? remainder.slice(5).trim() : remainder;
+        append(parseStreamData(data));
+      }
+      buffer = '';
+    }
+  };
+
   try {
     while (true) {
       if (signal?.aborted) {
@@ -166,22 +247,10 @@ async function readChatResponse(response, onChunk, signal) {
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('event:') || trimmed.startsWith('id:')) continue;
-        const data = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
-        append(parseStreamData(data));
-      }
+      flushBuffer();
     }
 
-    const remainder = buffer.trim();
-    if (remainder) {
-      const data = remainder.startsWith('data:') ? remainder.slice(5).trim() : remainder;
-      append(parseStreamData(data));
-    }
+    flushBuffer({ includeRemainder: true });
   } finally {
     signal?.removeEventListener?.('abort', onAbort);
   }
