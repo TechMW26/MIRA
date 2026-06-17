@@ -77,24 +77,97 @@ const SEARCH_SIGNALS = [
   /\b(explain\s+(the|that|this)|what\s+(does|do)\s+.+\s+(do|mean))\b/i,
 ];
 
-// Intent-driven research language. These indicate the user wants investigation,
-// not just a generic answer.
+// Investigative research intent — user explicitly wants the assistant to
+// go look something up rather than answer from memory.
 const RESEARCH_INTENT_SIGNALS = [
-  /\b(do\s+some\s+digging|dig\s+into|digging\s+into|look\s+into|investigate|research\s+this|deep\s+dive|background\s+check|find\s+details|pull\s+details)\b/i,
-  /\b(tell\s+me\s+more\s+about|learn\s+more\s+about|full\s+breakdown\s+of|in\s+detail\s+about)\b/i,
-  /\b(check\s+what\s+this\s+is|find\s+what\s+this\s+is|verify\s+this|cross[-\s]?check\s+this)\b/i,
+  /\b(do\s+some\s+digging|dig\s+(?:into|on|up)|digging\s+(?:into|on)|look\s+(?:into|up)|investigate|research\s+(?:this|that|on|about)|deep\s+dive|background\s+check|find\s+(?:details|info|information)|pull\s+details)\b/i,
+  /\b(check\s+(?:what|who)\s+(?:this|that)\s+is|find\s+(?:what|who)\s+(?:this|that)\s+is|verify\s+(?:this|that)|cross[-\s]?check\s+(?:this|that))\b/i,
+  /\b(?:find|fetch|gather)\s+(?:me\s+)?(?:more\s+)?(?:info|information|details|background)\b/i,
 ];
 
-const EVERGREEN_KNOWLEDGE_SIGNALS = [
-  /^\s*(what\s+is|who\s+is|explain|define|meaning\s+of|how\s+does)\b/i,
-  /\b(concept|basics?|overview|introduction|definition)\b/i,
+// Informational intent — user is asking ABOUT a topic. This is the broad
+// surface that previously had to be triggered keyword-by-keyword (and missed
+// phrasings like "tell me something about X").
+const INFO_INTENT_SIGNALS = [
+  /\b(tell\s+me\s+(?:something|more|anything|everything|a\s+bit|a\s+little)?\s*about|tell\s+me\s+about)\b/i,
+  /\b(what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+are)|where\s+(?:is|are)|how\s+(?:big|small|tall|old|long|much|many)\s+(?:is|are))\b/i,
+  /\b(do\s+you\s+know|have\s+you\s+heard\s+of|ever\s+heard\s+of|familiar\s+with|any\s+idea\s+(?:what|who|where))\b/i,
+  /\b(give\s+me\s+(?:some\s+)?(?:info|information|details|background|context)|share\s+(?:info|information|details))\b/i,
+  /\b(learn\s+(?:more\s+)?about|teach\s+me\s+about|brief\s+me\s+on|walk\s+me\s+through|overview\s+of|introduce\s+(?:me\s+to)?)\b/i,
+  /\b(more\s+about|info\s+(?:on|about)|details?\s+(?:on|about)|background\s+on|context\s+on)\b/i,
 ];
 
-const NICHE_ENTITY_HINTS = [
-  /[A-Z][a-z]+[A-Z][A-Za-z0-9]+/, // camel case names
-  /\b[a-z]+[-_][a-z0-9-]+\b/i,    // hyphenated/slugs
-  /\b[a-z]{8,}\b/i,               // longer uncommon terms (e.g. algaetree)
-  /["'“”][^"'“”]{3,60}["'“”]/,    // quoted specific entities
+// Words that name very broad / well-known topics. An LLM almost certainly
+// knows these from training, so informational prompts about them stay on
+// the model and don't waste a web search call.
+const COMMON_TOPIC_TOKENS = new Set([
+  'love','life','death','time','money','happiness','sadness','luck','fate',
+  'food','water','air','fire','earth','sky','sun','moon','star','stars',
+  'gravity','math','science','physics','chemistry','biology','history','geography',
+  'philosophy','psychology','sociology','economy','politics','art','music','sport',
+  'sports','game','games','book','books','movie','movies','show','shows','dream',
+  'dreams','people','person','world','animal','animals','plant','plants','color',
+  'colors','colour','colours','god','religion','culture','society','nature','technology',
+  'computer','phone','car','cars','dog','dogs','cat','cats','bird','birds','tree','trees',
+  'flower','flowers','river','ocean','mountain','language','english','programming',
+]);
+
+const STRUCTURAL_STOPWORDS = new Set([
+  'the','a','an','and','or','but','if','then','than','that','this','these','those',
+  'so','to','of','for','from','with','about','around','into','onto','over','under',
+  'is','are','was','were','be','been','being','am','do','does','did','done',
+  'have','has','had','having','can','could','should','would','may','might','will','shall',
+  'tell','me','you','your','my','our','his','her','their','its','it','they','them',
+  'we','us','i','someone','something','anyone','anything','everyone','everything',
+  'know','let','say','said','please','kindly','maybe','perhaps','also','too','very',
+  'really','still','again','just','only','more','less','some','any','few','many','much',
+  'what','who','where','when','why','how','which',
+]);
+
+// Mirrors the retrieval-routing approach used by Perplexity / GPT-with-browse:
+// combine intent with a topic-specificity score. Search only fires when the
+// user shows informational intent AND the topic looks specific enough that a
+// general LLM is unlikely to know it reliably (proper nouns, slugs, model
+// names, niche compound words, quoted entities, etc.).
+function scoreTopicSpecificity(text = '') {
+  const value = String(text || '');
+  if (!value) return { score: 0, hits: [] };
+
+  let score = 0;
+  const hits = [];
+
+  if (/["'“”‘’][^"'“”‘’]{2,80}["'“”‘’]/.test(value)) { score += 3; hits.push('quoted'); }
+  if (/\b[a-z][a-z0-9]*[-_][a-z0-9][a-z0-9-_]{1,}\b/i.test(value)) { score += 2; hits.push('slug'); }
+  if (/\b[A-Z][a-z]+[A-Z][A-Za-z0-9]+\b/.test(value)) { score += 2; hits.push('camel'); }
+  if (/\b[A-Za-z]+[0-9]+[A-Za-z0-9]*\b|\b[A-Za-z]*[0-9]{2,}\b/.test(value)) { score += 2; hits.push('digit'); }
+  if (/\b[A-Z]{3,8}\b/.test(value) && !/^[A-Z]{3,8}\b/.test(value.trim())) { score += 2; hits.push('acronym'); }
+
+  const tokens = value.split(/\s+/).map((token) => token.replace(/[^\w-]/g, ''));
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (!token) continue;
+    if (!/^[A-Z][a-z]{2,}$/.test(token)) continue;
+    if (COMMON_TOPIC_TOKENS.has(token.toLowerCase())) continue;
+    score += 2;
+    hits.push(`proper:${token}`);
+    break;
+  }
+
+  const lowerLong = (value.toLowerCase().match(/\b[a-z]{7,}\b/g) || [])
+    .filter((word) => !COMMON_TOPIC_TOKENS.has(word) && !STRUCTURAL_STOPWORDS.has(word));
+  if (lowerLong.length > 0) {
+    score += 2;
+    hits.push(`compound:${lowerLong[0]}`);
+  }
+
+  return { score, hits };
+}
+
+// Phrases that strongly suggest the topic is broad/well-known. Avoid
+// triggering search on these unless the user also shows research intent.
+const EVERGREEN_PROMPT_SIGNALS = [
+  /^\s*(define|definition\s+of|meaning\s+of)\b/i,
+  /\b(in\s+general|generally\s+speaking|broadly\s+speaking)\b/i,
 ];
 
 const IMAGE_GROUNDED_SEARCH_SIGNALS = [
@@ -106,23 +179,42 @@ function detectSearchNeed(text, hasImages = false) {
   const value = String(text || '').trim();
   if (!value) return false;
 
-  const explicitSearch = SEARCH_SIGNALS.some((rx) => rx.test(value));
-  if (explicitSearch) return true;
+  // 1) Time-sensitive or explicit "look this up" cues — always search.
+  if (SEARCH_SIGNALS.some((rx) => rx.test(value))) return true;
 
+  // 2) Image-grounded research about an attached photo.
   if (hasImages && IMAGE_GROUNDED_SEARCH_SIGNALS.some((rx) => rx.test(value))) return true;
 
   const researchIntent = RESEARCH_INTENT_SIGNALS.some((rx) => rx.test(value));
-  if (!researchIntent) return false;
-
+  const infoIntent = INFO_INTENT_SIGNALS.some((rx) => rx.test(value));
+  const specificity = scoreTopicSpecificity(value);
   const words = value.split(/\s+/).filter(Boolean).length;
-  const nicheEntity = NICHE_ENTITY_HINTS.some((rx) => rx.test(value));
-  const looksEvergreen = EVERGREEN_KNOWLEDGE_SIGNALS.some((rx) => rx.test(value));
 
-  // If the request is likely broad/evergreen and short, answer from model
-  // knowledge first. Otherwise trigger web search for investigative intents.
-  if (looksEvergreen && !nicheEntity && words <= 10) return false;
+  // 3) Bare topic shorthand — a short prompt that is just a topic, optionally
+  //    ending in "?". e.g. "Algaetree?", "TensorFlow", "OpenAI?", "mira-v4".
+  //    Treat as implicit "tell me about X" and search when the topic is
+  //    specific enough that an LLM may not know it.
+  if (!researchIntent && !infoIntent && words <= 3 && specificity.score >= 2) {
+    return true;
+  }
 
-  return nicheEntity || words >= 6;
+  if (!researchIntent && !infoIntent) return false;
+
+  // 4) Investigative intent ("do some digging on X") almost always triggers
+  //    search; we only block trivially short prompts with zero topic surface.
+  if (researchIntent) {
+    if (specificity.score >= 1) return true;
+    if (words >= 4) return true;
+    return false;
+  }
+
+  // 5) Informational intent → search only when the topic looks specific
+  //    enough that a general LLM is unlikely to know it reliably. This keeps
+  //    "what is gravity" cheap while routing "tell me about algaetree" to
+  //    live sources.
+  const evergreen = EVERGREEN_PROMPT_SIGNALS.some((rx) => rx.test(value));
+  if (evergreen && specificity.score < 3) return false;
+  return specificity.score >= 2;
 }
 
 // Signals that the user wants code output, not actual image generation.

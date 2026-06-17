@@ -1136,7 +1136,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
 
   return (
     <div className={`group flex gap-3 px-4 lg:px-0 ${isUser ? 'justify-end' : 'justify-start'} animate-fade-in`}>
-      <div className={`${isUser ? 'max-w-[88%] sm:max-w-[84%]' : 'max-w-[920px] w-full min-w-0'}`}>
+      <div className={`${isUser ? 'max-w-[88%] sm:max-w-[84%]' : 'max-w-[920px] min-w-0'}`}>
         {isUser ? (
           <div
             className="hud-chat-bubble hud-chat-bubble-user"

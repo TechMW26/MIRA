@@ -25,6 +25,7 @@ import {
 } from '../services/knowledgeBank';
 import { makeCacheKey, getCachedResponse, setCachedResponse } from '../services/responseCache';
 import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
+import { MIRA_IDENTITY_PROMPT } from '../config/systemPrompt';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 const HISTORY_ATTACHMENT_CHAR_LIMIT = 16000;
@@ -1082,13 +1083,19 @@ export default function useChat() {
         const isFirstTurn = (historySource?.length || 0) === 0;
         const contextMode = decideContextMode(content, isFirstTurn);
         const learnedFactsBlock = buildLearnedFactsBlock();
-        const userSystemPrompt = buildAdaptiveContext({
+        const adaptiveContext = buildAdaptiveContext({
           profile,
           conversation: currentConversation,
           messages: historySource,
           mode: contextMode,
           learnedFacts: learnedFactsBlock,
         });
+        // Always prepend the Mira identity preamble. Without this the model
+        // has no anchor and will treat a bare-noun prompt ("Algaetree?") as
+        // an identity assignment.
+        const userSystemPrompt = adaptiveContext
+          ? `${MIRA_IDENTITY_PROMPT}\n\n${adaptiveContext}`
+          : MIRA_IDENTITY_PROMPT;
 
         if (replaceMessageId) {
           await updateMessage(convId, replaceMessageId, {
@@ -1197,28 +1204,70 @@ export default function useChat() {
           // so we anchor the query with proper-noun entities extracted from the
           // most recent assistant reply. Keep the query SHORT — search engines
           // (especially news RSS) return no results for long noisy queries.
+          //
+          // Strip greetings, fillers, and intent verbs so the engine sees only
+          // the actual topic. Without this, prompts like
+          // "Hello, please do some research about the algaetree?" were sent to
+          // the search API verbatim and matched on "Hello" instead of the
+          // intended subject.
+          const cleanSearchTopic = (raw = '') => {
+            let value = String(raw || '').trim();
+            if (!value) return '';
+            // Preserve quoted entities verbatim — they ARE the topic.
+            const quoted = value.match(/["'“”‘’]([^"'“”‘’]{2,80})["'“”‘’]/);
+            if (quoted) return quoted[1].trim();
+            // Drop trailing punctuation/question marks.
+            value = value.replace(/[?!.]+\s*$/g, '').trim();
+            // Strip leading greetings ("hi", "hello", "hey ...", "good morning") plus comma.
+            value = value.replace(/^(?:hi|hello|hey(?:\s+there)?|yo|sup|good\s+(?:morning|afternoon|evening|day))[,!.\s]+/i, '').trim();
+            // Strip polite leading fillers ("please", "kindly", "can you", "could you", "would you").
+            value = value.replace(/^(?:please|kindly|can\s+you|could\s+you|would\s+you|will\s+you|may\s+you|pls)[,!.\s]+/i, '').trim();
+            // Strip leading research/info intent verbs.
+            const intentLead = /^(?:do\s+some\s+(?:research|digging)\s+(?:about|on|into|for)?|do\s+(?:some\s+)?(?:research|digging)|dig\s+(?:into|on|up)|digging\s+(?:into|on)|look\s+(?:into|up)|search\s+(?:for|about|on)?|investigate|research\s+(?:about|on|into|for)?|find\s+(?:me\s+)?(?:out\s+)?(?:info|information|details|more)?(?:\s+(?:about|on|for))?|tell\s+me\s+(?:something|more|anything|everything|a\s+bit|a\s+little)?\s*about|tell\s+me\s+about|give\s+me\s+(?:some\s+)?(?:info|information|details|background|context)\s+(?:about|on)|share\s+(?:some\s+)?(?:info|information|details)\s+(?:about|on)|learn\s+(?:more\s+)?about|teach\s+me\s+about|brief\s+me\s+on|walk\s+me\s+through|overview\s+of|info\s+(?:on|about)|details?\s+(?:on|about)|background\s+on|context\s+on|what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+are)|where\s+(?:is|are)|do\s+you\s+know(?:\s+(?:about|of))?|have\s+you\s+heard\s+of|ever\s+heard\s+of|familiar\s+with|any\s+idea\s+(?:what|who|where|about))[,!.:\s]+/i;
+            for (let i = 0; i < 3; i += 1) {
+              const next = value.replace(intentLead, '').trim();
+              if (next === value) break;
+              value = next;
+            }
+            // Drop trailing pleas/fillers ("please", "thanks", "thx").
+            value = value.replace(/[,!.\s]+(?:please|kindly|thanks?|thank\s+you|thx|cheers)[?!.\s]*$/i, '').trim();
+            // Strip leading articles.
+            value = value.replace(/^(?:the|a|an)\s+/i, '').trim();
+            // Strip leading prepositions left over after intent removal.
+            value = value.replace(/^(?:about|on|into|for|regarding|concerning|of)\s+/i, '').trim();
+            // Strip leading articles again if the preposition exposed one.
+            value = value.replace(/^(?:the|a|an)\s+/i, '').trim();
+            return value;
+          };
+
           const buildContextualSearchQuery = (current) => {
             if (visualSearchAnchor) {
               return buildVisualSearchScope(visualSearchAnchor, current).query || visualSearchAnchor;
             }
 
+            const cleaned = cleanSearchTopic(current);
+            // If cleaning produced something short and topical, prefer it.
+            const cleanedWords = cleaned.split(/\s+/).filter(Boolean);
+            const useCleaned = cleaned && cleanedWords.length >= 1 && cleanedWords.length <= 12;
+
             const PRONOUN_RE = /\b(it|its|this|that|these|those|they|them|the (device|product|tool|item|object|thing|company|brand|manufacturer|maker|producer|person|model|app|software|platform|service|prototype|machine|system))\b/i;
             const looksReferential = current.length < 80 || PRONOUN_RE.test(current);
-            if (!looksReferential || historySource.length === 0) return current;
+            const fallback = useCleaned ? cleaned : current;
+            if (!looksReferential || historySource.length === 0) return fallback;
 
             const dedup = getRecentContextEntities(historySource).slice(0, 3);
-            if (!dedup.length) return current;
+            if (!dedup.length) return fallback;
 
             // Pull a couple of meaningful keywords from the current message
             // (skip stopwords and the pronouns we used to detect referentiality).
-            const STOP_KW = new Set(['can','you','tell','me','more','about','this','that','the','a','an','is','are','was','were','do','does','did','what','how','why','when','where','please','it','its','they','them','these','those','of','to','for','on','in','with','and','or','but','know','let']);
-            const kw = current.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/)
+            const STOP_KW = new Set(['can','you','tell','me','more','about','this','that','the','a','an','is','are','was','were','do','does','did','what','how','why','when','where','please','it','its','they','them','these','those','of','to','for','on','in','with','and','or','but','know','let','hello','hi','hey','research','search','find','look','dig','digging','some','do']);
+            const kw = (useCleaned ? cleaned : current).toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/)
               .filter((w) => w.length > 2 && !STOP_KW.has(w))
               .slice(0, 2);
 
             // Final query: entities first (they carry the topic), then a couple
             // of keywords from the current question. Short and search-friendly.
-            return [...dedup, ...kw].join(' ').trim() || current;
+            return [...dedup, ...kw].join(' ').trim() || fallback;
           };
 
           // Web search injection — skip when an explicit document export is requested,

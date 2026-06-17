@@ -178,14 +178,20 @@ const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira-v4').trim();
 const MIRA_PRO_MODEL = (process.env.MIRA_PRO_MODEL || 'mira-pro').trim();
 const MIRA_LOCKED_MODEL = (process.env.MIRA_LOCKED_MODEL || MIRA_MODEL || 'mira-v4').trim();
 // Mira Lite: routed to Gemini with multi-key fallback.
-const GEMINI_PRIMARY_MODEL = (process.env.GEMINI_PRIMARY_MODEL || process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash').trim();
-const GEMINI_FALLBACK_MODEL = (process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.1-pro').trim();
+const GEMINI_PRIMARY_MODEL = (process.env.GEMINI_PRIMARY_MODEL || process.env.GEMINI_LITE_MODEL || 'gemini-2.5-flash').trim();
+const GEMINI_FALLBACK_MODEL = (process.env.GEMINI_FALLBACK_MODEL || 'gemini-flash-latest').trim();
+const GEMINI_PRO_MODEL = (process.env.GEMINI_PRO_MODEL || 'gemini-2.5-pro').trim();
 const MIRA_LITE_MODEL = (process.env.MIRA_LITE_MODEL || GEMINI_PRIMARY_MODEL).trim();
-const GEMINI_LITE_MODEL = (process.env.GEMINI_LITE_MODEL || GEMINI_PRIMARY_MODEL).trim();
+const GEMINI_LITE_MODEL = (process.env.GEMINI_LITE_MODEL || 'gemini-2.5-flash-lite').trim();
 const GEMINI_MODEL_CHAIN = Array.from(new Set([
   GEMINI_PRIMARY_MODEL,
   GEMINI_FALLBACK_MODEL,
   GEMINI_LITE_MODEL,
+  GEMINI_PRO_MODEL,
+  'gemini-2.5-flash',
+  'gemini-flash-latest',
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-pro',
 ].map((value) => String(value || '').trim()).filter(Boolean)));
 const GEMINI_API_URL_BASE = (process.env.GEMINI_API_URL_BASE || 'https://generativelanguage.googleapis.com/v1beta/models').trim();
 const GEMINI_API_KEYS = (() => {
