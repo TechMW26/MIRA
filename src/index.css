@@ -1724,7 +1724,7 @@ body.mira-hud-active {
   color: var(--text-tertiary);
   font-size: 0.68rem;
   letter-spacing: 0.04em;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .composer-model-option:hover,

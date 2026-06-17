@@ -353,7 +353,7 @@ async function requestChat({ messages, model, images = [], systemPrompt, maxToke
         const message = await extractApiError(response);
         const shouldRetry = transientStatus.has(response.status) && attempt < maxAttempts;
         if (shouldRetry) {
-          await sleep(500 * attempt);
+          await sleep(150 * attempt);
           continue;
         }
 
@@ -366,7 +366,7 @@ async function requestChat({ messages, model, images = [], systemPrompt, maxToke
         const likelyNetworkError = !String(err?.message || '').startsWith('API error:');
         const shouldRetry = likelyNetworkError && attempt < maxAttempts;
         if (shouldRetry) {
-          await sleep(500 * attempt);
+          await sleep(150 * attempt);
           continue;
         }
         throw err;

@@ -48,8 +48,10 @@ const DEFAULT_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'seedream-pro'];
 const HYPERREAL_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'seedream-pro'];
 
 const MODEL_OPTIONS = [
-  { value: 'mira',   label: 'Mira',       sub: 'Primary model' },
-  { value: 'locked', label: 'Mira Locked', sub: 'Unrestricted · PIN required', requiresPin: true },
+  { value: 'auto',   label: 'Auto',       sub: 'best model' },
+  { value: 'mira-pro', label: 'Mira Pro', sub: 'chat + vision' },
+  { value: 'mira',   label: 'Mira',       sub: 'standard' },
+  { value: 'locked', label: 'Mira Locked', sub: 'unrestricted · pin required', requiresPin: true },
 ];
 
 const LOCKED_PIN = '1512';
@@ -186,6 +188,7 @@ function formatModelUsedLabel(value = '') {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) return '';
   if (normalized === 'search') return 'SEARCH';
+  if (normalized === 'mira-pro') return 'MIRA PRO';
   if (normalized === 'mira' || normalized === 'auto' || normalized === 'mini' || normalized === 'lite' || normalized === 'spec' || normalized === 'mira-mini' || normalized === 'mira-lite' || normalized === 'mira-spec') return 'MIRA';
   if (normalized === 'vision' || normalized === 'mira-vision') return 'MIRA VISION';
   if (normalized === 'locked' || normalized === 'mira-locked' || normalized === 'mira-locked:latest') return 'MIRA LOCKED';
@@ -752,7 +755,7 @@ function DocumentDownloadAction({ format, exporting, exportError, onExport }) {
 
 function EditPromptModal({ open, initialValue, onClose, onSave }) {
   const [value, setValue] = useState(initialValue || '');
-  const [selectedModel, setSelectedModel] = useState('mira');
+  const [selectedModel, setSelectedModel] = useState('auto');
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
@@ -762,7 +765,7 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
   useEffect(() => {
     if (open) {
       setValue(initialValue || '');
-      setSelectedModel('mira');
+      setSelectedModel('auto');
     }
   }, [open, initialValue]);
 
@@ -795,7 +798,7 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
     setModelPickerOpen(false);
   }
 
-  const selectedLabel = MODEL_OPTIONS.find((o) => o.value === selectedModel)?.label || 'Mira';
+  const selectedLabel = MODEL_OPTIONS.find((o) => o.value === selectedModel)?.label || 'Auto';
 
   if (!open) return null;
 

@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
 
 const SELECTED_MODEL_STORAGE_KEY = 'mira_selected_model';
-const ALLOWED_MODELS = new Set(['mira', 'locked']);
+const ALLOWED_MODELS = new Set(['auto', 'mira-pro', 'mira', 'locked']);
 const LOCKED_MODEL_PIN = '1512';
 
 const ChatContext = createContext(null);
@@ -26,15 +26,15 @@ export function ChatProvider({ children }) {
   const [selectedModel, setSelectedModelState] = useState(() => {
     try {
       const stored = localStorage.getItem(SELECTED_MODEL_STORAGE_KEY);
-      return stored && ALLOWED_MODELS.has(stored) ? stored : 'mira';
+      return stored && ALLOWED_MODELS.has(stored) ? stored : 'auto';
     } catch {
-      return 'mira';
+      return 'auto';
     }
   });
   const [activeResponseModel, setActiveResponseModel] = useState(null);
 
   const setSelectedModel = useCallback((value) => {
-    const next = ALLOWED_MODELS.has(value) ? value : 'mira';
+    const next = ALLOWED_MODELS.has(value) ? value : 'auto';
     setSelectedModelState(next);
     try {
       localStorage.setItem(SELECTED_MODEL_STORAGE_KEY, next);

@@ -4,8 +4,12 @@
 // down silently if the plan can't grant it — no deployment error.
 export const config = { maxDuration: 300 };
 
-const OLLAMA_API_URL = (process.env.OLLAMA_API_URL || 'http://147.93.102.103:11434/api/generate').trim();
+const CHAT_API_URL = (process.env.SALAD_API_URL || process.env.OLLAMA_API_URL || 'https://persimmon-chives-tx4dggpups3smlon.salad.cloud/api/chat').trim();
+const CHAT_API_KEY = (process.env.SALAD_API_KEY || '').trim();
+const CHAT_API_KEY_HEADER = (process.env.SALAD_API_KEY_HEADER || 'Salad-Api-Key').trim();
+const USE_SALAD_CHAT = /salad\.cloud/i.test(CHAT_API_URL);
 const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira-v4').trim();
+const MIRA_PRO_MODEL = (process.env.MIRA_PRO_MODEL || 'mira-pro').trim();
 const MIRA_LOCKED_MODEL = (process.env.MIRA_LOCKED_MODEL || MIRA_MODEL || 'mira-v4').trim();
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 2048);
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);
@@ -35,11 +39,39 @@ function latestUserMessageText(messages = []) {
   return '';
 }
 
-function resolveModelChoice(requested, _hasImages, forceLocked = false) {
-  const value = String(requested || 'mira').trim().toLowerCase();
+function resolveModelChoice(requested, hasImages, forceLocked = false, messages = []) {
+  const value = String(requested || 'auto').trim().toLowerCase();
   const isLocked = value === 'locked' || value === 'mira-locked' || value === MIRA_LOCKED_MODEL.toLowerCase();
+  const isPro = value === 'auto' || value === 'mira-pro' || value === 'pro' || value === MIRA_PRO_MODEL.toLowerCase();
   if (forceLocked || isLocked) return MIRA_LOCKED_MODEL;
+  if (value === 'auto' || !value) {
+    const latest = latestUserMessageText(messages);
+    const wordCount = latest.trim() ? latest.trim().split(/\s+/).filter(Boolean).length : 0;
+    const reasoningHeavy = REASONING_HEAVY_RE.test(latest) || (!isTrivialSmallTalk(latest) && wordCount > 80);
+    return hasImages || reasoningHeavy ? MIRA_PRO_MODEL : MIRA_MODEL;
+  }
+  if (isPro) return MIRA_PRO_MODEL;
   return MIRA_MODEL;
+}
+
+function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, stream, safeMax }) {
+  if (USE_SALAD_CHAT) {
+    return {
+      model: effectiveModel,
+      messages: chatMessages,
+      stream,
+      max_tokens: safeMax,
+    };
+  }
+
+  return {
+    model: effectiveModel,
+    messages: chatMessages,
+    ...(toolList.length > 0 && effectiveModel !== MIRA_LOCKED_MODEL ? { tools: toolList } : {}),
+    ...(typeof think === 'boolean' ? { think } : {}),
+    stream,
+    options: { num_predict: safeMax },
+  };
 }
 
 function hasUnrestrictedSignals(messages = []) {
@@ -153,9 +185,12 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
     requestAbortSignal?.addEventListener?.('abort', abortUpstream, { once: true });
     const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
     try {
-      const upstream = await fetch(OLLAMA_API_URL, {
+      const headers = { 'Content-Type': 'application/json' };
+      if (CHAT_API_KEY && CHAT_API_KEY_HEADER) headers[CHAT_API_KEY_HEADER] = CHAT_API_KEY;
+
+      const upstream = await fetch(CHAT_API_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
@@ -165,23 +200,23 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
       if (upstream.ok) return upstream;
 
       const errorText = await upstream.text().catch(() => '');
-      lastError = { status: upstream.status, message: errorText || `Ollama upstream error (${upstream.status}).` };
+      lastError = { status: upstream.status, message: errorText || `Upstream error (${upstream.status}).` };
       if (transientStatus.has(upstream.status) && attempt < maxAttempts) {
-        await sleep(350 * attempt);
+        await sleep(150 * attempt);
         continue;
       }
 
-      return jsonResponse({ error: `Ollama upstream error (${upstream.status}).` }, upstream.status);
+      return jsonResponse({ error: `Upstream error (${upstream.status}).` }, upstream.status);
     } catch (err) {
       clearTimeout(timeout);
       requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
       if (requestAbortSignal?.aborted) {
         return jsonResponse({ error: 'Generation stopped by user.' }, 499);
       }
-      const message = err?.name === 'AbortError' ? 'Ollama request timed out.' : (err?.message || 'Chat request failed.');
+      const message = err?.name === 'AbortError' ? 'Upstream request timed out.' : (err?.message || 'Chat request failed.');
       lastError = { status: 500, message };
       if (attempt < maxAttempts) {
-        await sleep(350 * attempt);
+        await sleep(150 * attempt);
         continue;
       }
     }
@@ -223,8 +258,8 @@ export async function POST(req) {
     const promptImages = extractLastUserImages(messages, imageList);
     const hasImages = promptImages.length > 0;
     const forceLocked = hasUnrestrictedSignals(messages);
-    const effectiveModel = resolveModelChoice(body.model, hasImages, forceLocked);
-    if (!OLLAMA_API_URL) return jsonResponse({ error: 'OLLAMA_API_URL is not configured.' }, 500);
+    const effectiveModel = resolveModelChoice(body.model, hasImages, forceLocked, messages);
+    if (!CHAT_API_URL) return jsonResponse({ error: 'CHAT_API_URL is not configured.' }, 500);
     const requestId = String(body.requestId || '').trim();
     const requestController = new AbortController();
     if (requestId) {
@@ -251,17 +286,16 @@ export async function POST(req) {
       ? attachImagesToLastUser(messages, promptImages)
       : messages;
 
-    const upstreamOrResponse = await fetchOllamaWithRetry(
-      {
-        model: effectiveModel,
-        messages: chatMessages,
-        ...(toolList.length > 0 && effectiveModel !== MIRA_LOCKED_MODEL ? { tools: toolList } : {}),
-        ...(typeof body.think === 'boolean' ? { think: body.think } : {}),
-        stream: body.stream !== false,
-        options: { num_predict: safeMax },
-      },
-      requestController.signal,
-    );
+    const upstreamPayload = buildUpstreamPayload({
+      effectiveModel,
+      chatMessages,
+      toolList,
+      think: body.think,
+      stream: body.stream !== false,
+      safeMax,
+    });
+
+    const upstreamOrResponse = await fetchOllamaWithRetry(upstreamPayload, requestController.signal);
 
     if (!upstreamOrResponse.ok) {
       if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
@@ -312,8 +346,9 @@ export async function POST(req) {
       status: 200,
       headers: {
         'Content-Type': upstream.headers.get('Content-Type') || 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
       },
     });
   } catch (err) {

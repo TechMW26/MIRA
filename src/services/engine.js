@@ -221,14 +221,20 @@ function isTrivialSmallTalk(text = '', { hasImages = false } = {}) {
 }
 
 // ── Model routing ──────────────────────────────────────────────
-function pickModel(_classification, _hasImages, selectedMode = 'mira') {
+function pickModel(classification, hasImages, selectedMode = 'auto') {
   if (selectedMode === 'locked') return 'locked';
-  return 'mira';
+  if (selectedMode === 'mira-pro') return 'mira-pro';
+  if (selectedMode === 'mira') return 'mira';
+  // Auto: use Mira Pro for image-analysis and complex requests; Mira otherwise.
+  const complexity = classification?.complexity || 'low';
+  const intent = classification?.intent || 'general';
+  const needsPro = hasImages || complexity === 'high' || intent === 'math';
+  return needsPro ? 'mira-pro' : 'mira';
 }
 
 // ── Public API ─────────────────────────────────────────────────
 export function processQuery(userText, hasImages = false, options = {}) {
-  const { selectedMode = 'mira' } = options;
+  const { selectedMode = 'auto' } = options;
   const interpretation = interpretUserPrompt(userText, hasImages);
   const classification = interpretation.classification;
   const model = pickModel(classification, hasImages, selectedMode, userText);

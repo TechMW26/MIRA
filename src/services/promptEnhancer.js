@@ -12,6 +12,7 @@
 import { runChatCompletion } from './api';
 
 const ENHANCER_MODEL = 'mira';
+const ENHANCER_MODEL_PRO = 'mira-pro';
 
 const CREATE_VERB_RE = /\b(build|create|make|design|write|implement|generate|develop|produce|craft|compose|draft|code|construct|architect|prototype|set\s*up|spin\s*up)\b/i;
 const SHORT_LOOKUP_RE = /^\s*(what|who|when|where|why|how|is|are|do|does|did|can|could|should|would|will|tell\s+me|show\s+me|give\s+me)\b/i;
@@ -30,10 +31,17 @@ export function shouldRunEnhancer({
   if (interpretation?.imageIntent || interpretation?.videoIntent) return false;
 
   const text = String(content || '').trim();
-  if (text.length < 20) return false;
+  if (!text) return false;
 
-  // Short factual lookups don't need rewriting and shouldn't be clarified.
-  if (text.length < 90 && SHORT_LOOKUP_RE.test(text) && !CREATE_VERB_RE.test(text)) return false;
+  // Lookups, follow-ups, and casual chat: never run the pre-flight model —
+  // it would add a full extra round-trip before any tokens stream back.
+  if (SHORT_LOOKUP_RE.test(text) && !CREATE_VERB_RE.test(text)) return false;
+
+  // Only spend a pre-flight round on substantive creation requests that
+  // genuinely benefit from rewriting or clarification.
+  const isCreationRequest = CREATE_VERB_RE.test(text);
+  if (!isCreationRequest) return false;
+  if (text.length < 80) return false;
 
   return true;
 }
@@ -68,13 +76,16 @@ function extractJsonObject(text) {
 
 export async function assessAndRefinePrompt({ content, interpretation }) {
   const routeHint = interpretation?.route || 'chat';
+  const enhancerModel = interpretation?.classification?.complexity === 'high'
+    ? ENHANCER_MODEL_PRO
+    : ENHANCER_MODEL;
   const userMessage = `User request:\n"""\n${String(content || '').trim()}\n"""`;
 
   let raw = '';
   try {
     const result = await runChatCompletion({
       messages: [{ role: 'user', content: userMessage }],
-      model: ENHANCER_MODEL,
+      model: enhancerModel,
       systemPrompt: buildSystemPrompt(routeHint),
       tools: [],
       think: false,
@@ -100,7 +111,7 @@ export async function assessAndRefinePrompt({ content, interpretation }) {
   if (action === 'clarify') {
     const question = String(parsed?.question || '').trim().replace(/\s+/g, ' ');
     if (!question || question.length < 6) return { action: 'pass' };
-    return { action: 'clarify', question: question.slice(0, 260), model: ENHANCER_MODEL };
+    return { action: 'clarify', question: question.slice(0, 260), model: enhancerModel };
   }
 
   if (action === 'enhance') {
@@ -110,7 +121,7 @@ export async function assessAndRefinePrompt({ content, interpretation }) {
     if (prompt.length < Math.max(40, Math.floor(String(content).length * 0.6))) {
       return { action: 'pass' };
     }
-    return { action: 'enhance', prompt, model: ENHANCER_MODEL };
+    return { action: 'enhance', prompt, model: enhancerModel };
   }
 
   return { action: 'pass' };

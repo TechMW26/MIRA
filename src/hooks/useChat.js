@@ -46,6 +46,21 @@ const CONTEXT_ENTITY_STOP = new Set(['I', 'The', 'A', 'An', 'It', 'This', 'That'
 const TEXT_ENTITY_RESEARCH_PATTERN = /\b(tell\s+me\s+about|tell\s+me\s+more\s+about|details?\s+about|information\s+about|info\s+about|background\s+on|research|explain|what\s+is|what\s+are|what\s+an|what\s+a|what's|overview\s+of|in\s+detail|deep\s+dive|let\s+me\s+know\s+what)\b/i;
 const LOCKED_TRIGGER_PATTERN = /\b(nude|nudity|naked|explicit|uncensored|adult\s*content|erotic|porn|pornographic|xxx|18\+|lewd|sexual\s*content|sex|nsfw|fetish|hardcore|boobs?|breasts?|nipples?|genitals?|penis|vagina|anal|blowjob|handjob|cum|orgasm|hentai|bypass|jailbreak|exploit|malware|ransomware|phishing|ddos|credit\s*card\s*fraud|social\s*security\s*number|ssn|doxx|private\s*data|steal\s*data|illegal|unethical|forbidden|restricted)\b/i;
 
+function attachmentSignature(attachments = []) {
+  if (!Array.isArray(attachments) || attachments.length === 0) return '';
+  return attachments
+    .map((att) => `${att?.name || ''}:${att?.type || ''}:${att?.isImage ? 'i' : 't'}`)
+    .join('|');
+}
+
+function messageFingerprint(message = {}) {
+  return [
+    message?.role || '',
+    String(message?.content || ''),
+    attachmentSignature(message?.attachments || []),
+  ].join('::');
+}
+
 function isMediaRequest(text = '') {
   return MEDIA_REQUEST_PATTERN.test(String(text || ''));
 }
@@ -744,6 +759,51 @@ export default function useChat() {
   const [thinkingContent, setThinkingContent] = useState('');
   const abortRef = useRef(false);
   const lastStableAssistantByIdRef = useRef(new Map());
+  // rAF-coalesced streaming state setters: every model token would otherwise
+  // trigger a full React re-render (heavy with ReactMarkdown). Collapse all
+  // updates within the same frame into one paint to keep typing buttery.
+  const pendingStreamRef = useRef(null);
+  const pendingThinkingRef = useRef(null);
+  const streamRafRef = useRef(null);
+  const thinkingRafRef = useRef(null);
+
+  const flushStreamingContent = useCallback((value) => {
+    if (abortRef.current) return;
+    pendingStreamRef.current = value;
+    if (streamRafRef.current != null) return;
+    const schedule = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (cb) => setTimeout(cb, 16);
+    streamRafRef.current = schedule(() => {
+      streamRafRef.current = null;
+      const next = pendingStreamRef.current;
+      pendingStreamRef.current = null;
+      if (next != null && !abortRef.current) setStreamingContent(next);
+    });
+  }, []);
+
+  const flushThinkingContent = useCallback((value) => {
+    if (abortRef.current) return;
+    pendingThinkingRef.current = value;
+    if (thinkingRafRef.current != null) return;
+    const schedule = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (cb) => setTimeout(cb, 16);
+    thinkingRafRef.current = schedule(() => {
+      thinkingRafRef.current = null;
+      const next = pendingThinkingRef.current;
+      pendingThinkingRef.current = null;
+      if (next != null && !abortRef.current) setThinkingContent(next);
+    });
+  }, []);
+
+  const cancelPendingStreamFlushes = useCallback(() => {
+    const cancel = typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : clearTimeout;
+    if (streamRafRef.current != null) { cancel(streamRafRef.current); streamRafRef.current = null; }
+    if (thinkingRafRef.current != null) { cancel(thinkingRafRef.current); thinkingRafRef.current = null; }
+    pendingStreamRef.current = null;
+    pendingThinkingRef.current = null;
+  }, []);
 
   const normalizeImageForUpload = useCallback(async (image) => {
     const raw = image.base64 || '';
@@ -828,7 +888,19 @@ export default function useChat() {
           return incoming;
         });
 
-        return next;
+        // Preserve local echoes that were rendered instantly on send, until
+        // Firebase catches up with the persisted server message.
+        const pendingLocalEchoes = (previous || []).filter((msg) => msg?.localEcho);
+        if (!pendingLocalEchoes.length) return next;
+
+        const incomingFingerprints = new Set(next.map((msg) => messageFingerprint(msg)));
+        const unresolvedEchoes = pendingLocalEchoes.filter(
+          (msg) => !incomingFingerprints.has(messageFingerprint(msg)),
+        );
+
+        if (!unresolvedEchoes.length) return next;
+        return [...next, ...unresolvedEchoes];
+
       });
     });
     return unsub;
@@ -837,12 +909,13 @@ export default function useChat() {
   const stopGenerating = useCallback(() => {
     abortRef.current = true;
     stopChatGeneration();
+    cancelPendingStreamFlushes();
     setIsGenerating(false);
     setIsSearching(false);
     setActiveResponseModel(null);
     setStreamingContent('');
     setThinkingContent('');
-  }, [setActiveResponseModel, setIsGenerating, setIsSearching]);
+  }, [cancelPendingStreamFlushes, setActiveResponseModel, setIsGenerating, setIsSearching]);
 
   const pruneMessagesAfter = useCallback(async (convId, messageId, sourceMessages = messages) => {
     const index = sourceMessages.findIndex((message) => message.id === messageId);
@@ -858,6 +931,7 @@ export default function useChat() {
       if ((!content.trim() && attachments.length === 0) || isGenerating || !user) return;
 
       abortRef.current = false;
+      cancelPendingStreamFlushes();
       setIsGenerating(true);
       setStreamingContent('');
       setThinkingContent('');
@@ -887,6 +961,39 @@ export default function useChat() {
         }
       }
 
+      if (replaceMessageId) {
+        // Update edited message instantly in the local timeline while writes
+        // propagate to Firebase, and prune locally-visible trailing branch.
+        setMessages((prev) => {
+          const index = prev.findIndex((msg) => msg.id === replaceMessageId);
+          if (index === -1) return prev;
+          const next = prev.slice(0, index + 1);
+          const target = next[index];
+          next[index] = {
+            ...target,
+            content: displayContent,
+            type: 'text',
+            ...(options.promptContent ? { promptContent: options.promptContent } : { promptContent: null }),
+            ...(options.webPage ? { webPage: options.webPage } : { webPage: null }),
+            ...(attachmentData.length > 0 ? { attachments: attachmentData } : { attachments: null }),
+          };
+          return next;
+        });
+      } else {
+        // Show the newly-sent user message immediately without waiting for DB IO.
+        const localEcho = {
+          id: `local-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: 'user',
+          content: displayContent,
+          type: 'text',
+          ...(options.promptContent ? { promptContent: options.promptContent } : {}),
+          ...(options.webPage ? { webPage: options.webPage } : {}),
+          ...(attachmentData.length > 0 ? { attachments: attachmentData } : {}),
+          localEcho: true,
+        };
+        setMessages((prev) => [...prev, localEcho]);
+      }
+
       const hasImages = imageAttachments.length > 0;
       const modelOverride = options.modelOverride || null;
       const guardedOverride = modelOverride;
@@ -895,7 +1002,7 @@ export default function useChat() {
       // no downstream router/fallback can switch it back for this request.
       const effectiveSelectedModel = (selectedModel === 'locked' || guardedOverride === 'locked' || forceLockedByPrompt)
         ? 'locked'
-        : (guardedOverride || selectedModel || 'mira');
+        : (guardedOverride || selectedModel || 'auto');
       const engineResult = processQuery(content, hasImages, { selectedMode: effectiveSelectedModel });
       const promptInterpretation = engineResult.interpretation || {
         route: engineResult.classification.intent,
@@ -1332,14 +1439,15 @@ export default function useChat() {
             setIsSearching(false);
           } else {
           try {
+            let firstChunkSeen = false;
             await sendChatMessage(
               history,
               chosenModel,
               (accumulated) => {
                 if (abortRef.current) return;
-                if (accumulated) setIsSearching(false);
+                if (!firstChunkSeen && accumulated) { firstChunkSeen = true; setIsSearching(false); }
                 fullText = accumulated;
-                setStreamingContent(accumulated);
+                flushStreamingContent(accumulated);
               },
               images,
               {
@@ -1347,8 +1455,8 @@ export default function useChat() {
                 ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                 onThinking: (accumulated) => {
                   if (abortRef.current) return;
-                  if (accumulated) setIsSearching(false);
-                  setThinkingContent(accumulated);
+                  if (!firstChunkSeen && accumulated) { firstChunkSeen = true; setIsSearching(false); }
+                  flushThinkingContent(accumulated);
                 },
               },
             );
@@ -1412,6 +1520,7 @@ export default function useChat() {
 
           if (autoSearchEligible) {
             setIsSearching(true);
+            cancelPendingStreamFlushes();
             setStreamingContent('');
             setThinkingContent('');
             try {
@@ -1432,15 +1541,16 @@ export default function useChat() {
                 history[history.length - 1] = { role: 'user', content: groundedUserContent };
 
                 let retryText = '';
+                let retryFirstChunkSeen = false;
                 try {
                   await sendChatMessage(
                     history,
                     chosenModel,
                     (accumulated) => {
                       if (abortRef.current) return;
-                      if (accumulated) setIsSearching(false);
+                      if (!retryFirstChunkSeen && accumulated) { retryFirstChunkSeen = true; setIsSearching(false); }
                       retryText = accumulated;
-                      setStreamingContent(accumulated);
+                      flushStreamingContent(accumulated);
                     },
                     images,
                     {
@@ -1448,8 +1558,8 @@ export default function useChat() {
                       ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                       onThinking: (accumulated) => {
                         if (abortRef.current) return;
-                        if (accumulated) setIsSearching(false);
-                        setThinkingContent(accumulated);
+                        if (!retryFirstChunkSeen && accumulated) { retryFirstChunkSeen = true; setIsSearching(false); }
+                        flushThinkingContent(accumulated);
                       },
                     },
                   );
@@ -1523,6 +1633,7 @@ export default function useChat() {
       } catch (err) {
         console.error('Send message error:', err);
       } finally {
+        cancelPendingStreamFlushes();
         setIsGenerating(false);
         setIsSearching(false);
         setActiveResponseModel(null);
