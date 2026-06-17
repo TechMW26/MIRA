@@ -173,13 +173,32 @@ const CHAT_API_URL = (process.env.SALAD_API_URL || process.env.OLLAMA_API_URL ||
 const CHAT_API_KEY = (process.env.SALAD_API_KEY || '').trim();
 const CHAT_API_KEY_HEADER = (process.env.SALAD_API_KEY_HEADER || 'Salad-Api-Key').trim();
 const USE_SALAD_CHAT = /salad\.cloud/i.test(CHAT_API_URL);
-const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira-v4:latest').trim();
+const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira_v4').trim();
 const MIRA_PRO_MODEL = (process.env.MIRA_PRO_MODEL || 'mira-pro').trim();
 const MIRA_LOCKED_MODEL = (process.env.MIRA_LOCKED_MODEL || MIRA_MODEL || 'mira-v4').trim();
-// Mira Lite: routed to Groq's OpenAI-compatible endpoint for sub-second TTFT.
-const GROQ_API_URL = (process.env.GROQ_API_URL || 'https://api.groq.com/openai/v1/chat/completions').trim();
-const GROQ_API_KEY = (process.env.GROQ_API_KEY || '').trim();
-const MIRA_LITE_MODEL = (process.env.MIRA_LITE_MODEL || 'llama-3.1-8b-instant').trim();
+// Mira Lite: routed to Gemini with multi-key fallback.
+const MIRA_LITE_MODEL = (process.env.MIRA_LITE_MODEL || process.env.GEMINI_LITE_MODEL || 'gemini-2.0-flash-lite').trim();
+const GEMINI_LITE_MODEL = (process.env.GEMINI_LITE_MODEL || MIRA_LITE_MODEL || 'gemini-2.0-flash-lite').trim();
+const GEMINI_API_URL_BASE = (process.env.GEMINI_API_URL_BASE || 'https://generativelanguage.googleapis.com/v1beta/models').trim();
+const GEMINI_API_KEYS = (() => {
+  const csv = String(process.env.GEMINI_API_KEYS || '').trim();
+  const fromCsv = csv ? csv.split(',').map((value) => value.trim()).filter(Boolean) : [];
+  const fromSingles = [
+    process.env.GEMINI_API_KEY,
+    process.env.GEMINI_API_KEY_1,
+    process.env.GEMINI_API_KEY_2,
+    process.env.GEMINI_API_KEY_3,
+    process.env.GEMINI_API_KEY_4,
+    process.env.GEMINI_API_KEY_5,
+    process.env.GEMINI_API_KEY_6,
+    process.env.GEMINI_API_KEY_7,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+  return Array.from(new Set([...fromCsv, ...fromSingles]));
+})();
+const LITE_MAX_MESSAGES = Number(process.env.LITE_MAX_MESSAGES || 8);
+const LITE_MAX_CHARS_PER_MESSAGE = Number(process.env.LITE_MAX_CHARS_PER_MESSAGE || 900);
+const LITE_MAX_SYSTEM_CHARS = Number(process.env.LITE_MAX_SYSTEM_CHARS || 500);
+const LITE_MAX_OUTPUT_TOKENS = Number(process.env.LITE_MAX_OUTPUT_TOKENS || 256);
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 2048);
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);
 const ACTIVE_CHAT_REQUEST_TTL_MS = OLLAMA_TIMEOUT_MS + 120000;
@@ -226,32 +245,43 @@ function resolveModelChoice(requested, hasImages, forceLocked = false, messages 
   return MIRA_LITE_MODEL;
 }
 
-// Mira Lite runs on Groq (OpenAI-compatible); Mira / Mira Pro / Locked run on
-// the Salad/Ollama upstream. Knowing the provider lets us swap URL, auth, and
-// payload shape per model.
-function isGroqModel(modelName) {
+// Mira Lite runs on Gemini; Mira / Mira Pro / Locked run on Salad/Ollama.
+function isGeminiModel(modelName) {
   const value = String(modelName || '').trim().toLowerCase();
   if (!value) return false;
   return value === MIRA_LITE_MODEL.toLowerCase()
     || value === 'mira-lite'
     || value === 'lite'
-    || /^llama-/.test(value)
-    || /^mixtral-/.test(value)
-    || /^gemma/.test(value);
+    || /^gemini-/.test(value);
 }
 
 function getProviderForModel(modelName) {
-  return isGroqModel(modelName) ? 'groq' : 'salad';
+  return isGeminiModel(modelName) ? 'gemini' : 'salad';
 }
 
 // Ordered fallback chain so a "model not found" / 5xx from one model
 // transparently retries the request against the next available model.
 // Locked mode never falls back to the general pool — keeps PIN-gated traffic
 // strictly on the locked model regardless of upstream availability.
-// Mira Lite stays on Groq and only falls back to Mira/Pro if Groq itself is
-// unreachable, since the providers are independent.
 function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
   if (forceLocked) return [MIRA_LOCKED_MODEL];
+  // Hierarchy order: Mira Lite -> Mira -> Mira Pro.
+  // Requests climb forward in this order if a model/provider is unavailable.
+  const normalizedPrimary = String(primaryModel || '').trim().toLowerCase();
+  const liteNames = new Set([String(MIRA_LITE_MODEL).toLowerCase(), 'mira-lite', 'lite', 'auto']);
+  const baseNames = new Set([String(MIRA_MODEL).toLowerCase(), 'mira']);
+  const proNames = new Set([String(MIRA_PRO_MODEL).toLowerCase(), 'mira-pro', 'pro']);
+
+  if (!normalizedPrimary || liteNames.has(normalizedPrimary)) {
+    return [MIRA_LITE_MODEL, MIRA_MODEL, MIRA_PRO_MODEL];
+  }
+  if (baseNames.has(normalizedPrimary)) {
+    return [MIRA_MODEL, MIRA_PRO_MODEL];
+  }
+  if (proNames.has(normalizedPrimary)) {
+    return [MIRA_PRO_MODEL];
+  }
+
   const ordered = [];
   const seen = new Set();
   const push = (candidate) => {
@@ -263,28 +293,63 @@ function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
     ordered.push(name);
   };
   push(primaryModel);
-  // Always have a non-primary backup; spread across providers so a Salad
-  // outage can still serve Lite (Groq) and vice versa. Lite first because it
-  // is the fastest fallback.
   push(MIRA_LITE_MODEL);
-  push(MIRA_PRO_MODEL);
   push(MIRA_MODEL);
+  push(MIRA_PRO_MODEL);
   return ordered;
 }
 
+function buildUnavailableAssistantResponse(primaryModel) {
+  const normalized = String(primaryModel || '').trim().toLowerCase();
+  const family = normalized.includes('pro') ? 'Mira Pro' : normalized.includes('mira') ? 'Mira' : 'Mira Lite';
+  const content = `${family} is temporarily busy, so I switched to backup models but they are also unavailable right now. Please try again in a moment.`;
+  return {
+    model: family,
+    choices: [{ message: { content } }],
+  };
+}
+
+function truncateText(value, maxChars) {
+  const text = String(value || '');
+  if (text.length <= maxChars) return text;
+  return text.slice(0, maxChars);
+}
+
+function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
+  const resolvedModel = (effectiveModel === 'mira-lite' || effectiveModel === 'lite')
+    ? GEMINI_LITE_MODEL
+    : effectiveModel;
+
+  const list = Array.isArray(chatMessages) ? chatMessages : [];
+  const systemCombined = list
+    .filter((message) => message?.role === 'system')
+    .map((message) => String(message?.content || '').trim())
+    .filter(Boolean)
+    .join('\n\n');
+  const nonSystem = list.filter((message) => message?.role !== 'system');
+  const compact = nonSystem.slice(-Math.max(1, LITE_MAX_MESSAGES)).map((message) => ({
+    role: message?.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: truncateText(message?.content, LITE_MAX_CHARS_PER_MESSAGE) }],
+  }));
+
+  const contents = compact.length > 0 ? compact : [{ role: 'user', parts: [{ text: 'Hello' }] }];
+  return {
+    model: resolvedModel,
+    body: {
+      ...(systemCombined
+        ? { systemInstruction: { parts: [{ text: truncateText(systemCombined, LITE_MAX_SYSTEM_CHARS) }] } }
+        : {}),
+      contents,
+      generationConfig: {
+        maxOutputTokens: Math.max(32, Math.min(Number(safeMax) || LITE_MAX_OUTPUT_TOKENS, LITE_MAX_OUTPUT_TOKENS)),
+      },
+    },
+  };
+}
+
 function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, stream, safeMax }) {
-  if (isGroqModel(effectiveModel)) {
-    // Groq is OpenAI-compatible; resolve the front-end alias to the actual
-    // Groq model id before sending upstream.
-    const resolvedModel = (effectiveModel === 'mira-lite' || effectiveModel === 'lite')
-      ? MIRA_LITE_MODEL
-      : effectiveModel;
-    return {
-      model: resolvedModel,
-      messages: chatMessages,
-      stream,
-      max_tokens: safeMax,
-    };
+  if (isGeminiModel(effectiveModel)) {
+    return buildGeminiRequest({ effectiveModel, chatMessages, safeMax });
   }
   if (USE_SALAD_CHAT) {
     return {
@@ -320,14 +385,93 @@ function sleep(ms) {
 }
 
 async function fetchOllamaWithRetry(payload, requestAbortSignal) {
+  if (getProviderForModel(payload?.model) === 'gemini') {
+    if (GEMINI_API_KEYS.length === 0) {
+      return { errorStatus: 500, errorMessage: 'GEMINI_API_KEYS are not configured.' };
+    }
+    const transientStatus = new Set([408, 429, 500, 502, 503, 504]);
+    let lastStatus = 500;
+    let lastMessage = 'Gemini request failed.';
+
+    for (const apiKey of GEMINI_API_KEYS) {
+      if (requestAbortSignal?.aborted) {
+        return { errorStatus: 499, errorMessage: 'Generation stopped by user.' };
+      }
+
+      const controller = new AbortController();
+      const abortUpstream = () => controller.abort();
+      requestAbortSignal?.addEventListener?.('abort', abortUpstream, { once: true });
+      const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+      try {
+        const modelName = String(payload?.model || GEMINI_LITE_MODEL).trim();
+        const url = `${GEMINI_API_URL_BASE}/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const upstream = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload?.body || {}),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
+
+        const rawText = await upstream.text().catch(() => '');
+        if (upstream.ok) {
+          let parsed;
+          try {
+            parsed = JSON.parse(rawText || '{}');
+          } catch {
+            parsed = {};
+          }
+          const text = String(
+            parsed?.candidates?.[0]?.content?.parts
+              ?.map((part) => String(part?.text || ''))
+              .join('') || '',
+          );
+          const normalized = {
+            model: modelName,
+            choices: [{ message: { content: text } }],
+          };
+          return new Response(JSON.stringify(normalized), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        lastStatus = upstream.status;
+        let concise = rawText;
+        try {
+          const parsedErr = JSON.parse(rawText || '{}');
+          concise = parsedErr?.error?.message || parsedErr?.message || rawText;
+        } catch {
+          // fall back to raw text
+        }
+        lastMessage = String(concise || `Gemini API error: ${upstream.status}`)
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 240);
+        const retryOnNextKey = transientStatus.has(upstream.status) || upstream.status === 401 || upstream.status === 403;
+        if (retryOnNextKey) continue;
+      } catch (err) {
+        clearTimeout(timeout);
+        requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
+        if (requestAbortSignal?.aborted) {
+          return { errorStatus: 499, errorMessage: 'Generation stopped by user.' };
+        }
+        lastStatus = 500;
+        lastMessage = err?.name === 'AbortError'
+          ? `Gemini API timeout after ${OLLAMA_TIMEOUT_MS}ms`
+          : (err?.message || 'Gemini request failed.');
+      }
+    }
+
+    return { errorStatus: lastStatus, errorMessage: lastMessage };
+  }
+
   const transientStatus = new Set([408, 429, 500, 502, 503, 504]);
   const maxAttempts = 2;
   let lastStatus = 500;
   let lastMessage = 'Chat request failed.';
-  // Pick provider per payload so a single chat handler can dispatch to either
-  // Salad/Ollama or Groq without separate code paths.
-  const provider = getProviderForModel(payload?.model);
-  const url = provider === 'groq' ? GROQ_API_URL : CHAT_API_URL;
+  const url = CHAT_API_URL;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (requestAbortSignal?.aborted) {
@@ -340,14 +484,7 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
     const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
     try {
       const headers = { 'Content-Type': 'application/json' };
-      if (provider === 'groq') {
-        if (!GROQ_API_KEY) {
-          clearTimeout(timeout);
-          requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
-          return { errorStatus: 500, errorMessage: 'GROQ_API_KEY is not configured.' };
-        }
-        headers.Authorization = `Bearer ${GROQ_API_KEY}`;
-      } else if (CHAT_API_KEY && CHAT_API_KEY_HEADER) {
+      if (CHAT_API_KEY && CHAT_API_KEY_HEADER) {
         headers[CHAT_API_KEY_HEADER] = CHAT_API_KEY;
       }
 
@@ -578,6 +715,12 @@ async function handleChat(body, res, req) {
 
     if (upstreamOrError?.errorStatus) {
       if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+      if (upstreamOrError.errorStatus !== 499) {
+        const safePayload = buildUnavailableAssistantResponse(triedModel || effectiveModel);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(safePayload));
+        return;
+      }
       res.writeHead(upstreamOrError.errorStatus, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: upstreamOrError.errorMessage }));
       return;

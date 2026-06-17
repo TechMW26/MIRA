@@ -121,7 +121,7 @@ function extractCompleteJsonChunks(buffer) {
 
   while (index < len) {
     // Skip anything that isn't the start of a JSON object/array. Some providers
-    // (Groq / OpenAI-compatible) wrap each chunk in SSE framing like
+    // (OpenAI-style / SSE-style) wrap each chunk in framing like
     // "data: {...}\n\n"; we just want the JSON payload regardless of prefix.
     while (index < len && text[index] !== '{' && text[index] !== '[') index += 1;
     if (index >= len) break;
@@ -265,10 +265,18 @@ function sleep(ms) {
 async function extractApiError(response) {
   try {
     const payload = await response.json();
-    return payload?.error || payload?.detail || '';
+    const candidate = payload?.error?.message || payload?.error || payload?.detail || payload?.message || '';
+    const text = typeof candidate === 'string' ? candidate : JSON.stringify(candidate || '');
+    return String(text)
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 240);
   } catch {
     const text = await response.text().catch(() => '');
-    return String(text || '').trim().slice(0, 300);
+    return String(text || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 240);
   }
 }
 

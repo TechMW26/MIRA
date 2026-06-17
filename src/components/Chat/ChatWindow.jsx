@@ -182,7 +182,7 @@ export default function ChatWindow() {
 
       <div className="flex flex-col flex-1 min-w-0 min-h-0 relative z-10">
         <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden hud-scroll-area" style={{ fontSize: chatFontSize }}>
-          <div className={`max-w-2xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 pb-44 gap-6 px-4 w-full min-w-0`}>
+          <div className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 pb-44 gap-6 px-4 w-full min-w-0`}>
             {showingWelcome ? (
               <WelcomeScreen
                 onSend={(p, atts = []) => sendToChat(p, atts, webSearch)}

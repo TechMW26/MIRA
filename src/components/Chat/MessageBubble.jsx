@@ -1136,14 +1136,14 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
 
   return (
     <div className={`group flex gap-3 px-4 lg:px-0 ${isUser ? 'justify-end' : 'justify-start'} animate-fade-in`}>
-      <div className={`${isUser ? 'max-w-[78%]' : 'max-w-[820px] min-w-0'}`}>
+      <div className={`${isUser ? 'max-w-[88%] sm:max-w-[84%]' : 'max-w-[920px] w-full min-w-0'}`}>
         {isUser ? (
           <div
             className="hud-chat-bubble hud-chat-bubble-user"
             style={{ color: 'var(--user-bubble-text)' }}
           >
             {message.content && (
-              <p className="whitespace-pre-wrap" style={{ lineHeight: 1.6 }}>{message.content}</p>
+              <p className="whitespace-pre-wrap break-words overflow-x-auto max-w-full" style={{ lineHeight: 1.6 }}>{message.content}</p>
             )}
             {message.webPage && (
               <WebPageCapsule page={message.webPage} />
@@ -1173,7 +1173,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
               {searchingBubbleActive ? 'MIRA · SEARCHING' : message.isStreaming ? 'MIRA · THINKING' : 'MIRA'}
               {modelUsedLabel ? ` · ${modelUsedLabel}` : ''}
             </div>
-            <div className="prose prose-base max-w-none prose-headings:font-bold prose-p:leading-relaxed prose-li:leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+            <div className="prose prose-base max-w-none overflow-x-auto break-words prose-headings:font-bold prose-p:leading-relaxed prose-li:leading-relaxed" style={{ color: 'var(--text-primary)' }}>
               {message.thinkingContent && (
                 <ThinkingSection content={message.thinkingContent} isActive={message.isThinkingActive} />
               )}

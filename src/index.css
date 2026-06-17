@@ -1834,8 +1834,19 @@ body.mira-hud-active {
   color: var(--text-primary);
   font-size: 0.95rem;
   line-height: 1.6;
+  max-width: 100%;
+  overflow-x: auto;
   backdrop-filter: blur(10px) saturate(140%);
   -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+.hud-chat-bubble .prose,
+.hud-chat-bubble p,
+.hud-chat-bubble li,
+.hud-chat-bubble blockquote,
+.hud-chat-bubble td,
+.hud-chat-bubble th {
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .hud-chat-bubble-user {
   background: var(--glass-bg);
