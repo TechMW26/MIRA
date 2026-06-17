@@ -51,6 +51,7 @@ const MODEL_OPTIONS = [
   { value: 'auto',   label: 'Auto',       sub: 'best model' },
   { value: 'mira-pro', label: 'Mira Pro', sub: 'chat + vision' },
   { value: 'mira',   label: 'Mira',       sub: 'standard' },
+  { value: 'mira-lite', label: 'Mira Lite', sub: 'fastest' },
   { value: 'locked', label: 'Mira Locked', sub: 'unrestricted · pin required', requiresPin: true },
 ];
 
@@ -189,7 +190,8 @@ function formatModelUsedLabel(value = '') {
   if (!normalized) return '';
   if (normalized === 'search') return 'SEARCH';
   if (normalized === 'mira-pro') return 'MIRA PRO';
-  if (normalized === 'mira' || normalized === 'auto' || normalized === 'mini' || normalized === 'lite' || normalized === 'spec' || normalized === 'mira-mini' || normalized === 'mira-lite' || normalized === 'mira-spec') return 'MIRA';
+  if (normalized === 'mira-lite' || normalized === 'lite') return 'MIRA LITE';
+  if (normalized === 'mira' || normalized === 'auto' || normalized === 'mini' || normalized === 'spec' || normalized === 'mira-mini' || normalized === 'mira-spec') return 'MIRA';
   if (normalized === 'vision' || normalized === 'mira-vision') return 'MIRA VISION';
   if (normalized === 'locked' || normalized === 'mira-locked' || normalized === 'mira-locked:latest') return 'MIRA LOCKED';
   if (normalized === 'mira:latest') return 'MIRA';

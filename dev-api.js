@@ -176,6 +176,10 @@ const USE_SALAD_CHAT = /salad\.cloud/i.test(CHAT_API_URL);
 const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira-v4').trim();
 const MIRA_PRO_MODEL = (process.env.MIRA_PRO_MODEL || 'mira-pro').trim();
 const MIRA_LOCKED_MODEL = (process.env.MIRA_LOCKED_MODEL || MIRA_MODEL || 'mira-v4').trim();
+// Mira Lite: routed to Groq's OpenAI-compatible endpoint for sub-second TTFT.
+const GROQ_API_URL = (process.env.GROQ_API_URL || 'https://api.groq.com/openai/v1/chat/completions').trim();
+const GROQ_API_KEY = (process.env.GROQ_API_KEY || '').trim();
+const MIRA_LITE_MODEL = (process.env.MIRA_LITE_MODEL || 'llama-3.1-8b-instant').trim();
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 2048);
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);
 const ACTIVE_CHAT_REQUEST_TTL_MS = OLLAMA_TIMEOUT_MS + 120000;
@@ -207,19 +211,90 @@ function latestUserMessageText(messages = []) {
 function resolveModelChoice(requested, hasImages, forceLocked = false, messages = []) {
   const value = String(requested || 'auto').trim().toLowerCase();
   const isLocked = value === 'locked' || value === 'mira-locked' || value === MIRA_LOCKED_MODEL.toLowerCase();
-  const isPro = value === 'auto' || value === 'mira-pro' || value === 'pro' || value === MIRA_PRO_MODEL.toLowerCase();
+  const isLite = value === 'lite' || value === 'mira-lite' || value === MIRA_LITE_MODEL.toLowerCase();
+  const isPro = value === 'mira-pro' || value === 'pro' || value === MIRA_PRO_MODEL.toLowerCase();
+  const isBase = value === 'mira' || value === MIRA_MODEL.toLowerCase();
+  // Anything matching unrestricted/guardrail-free intent goes through Locked
+  // regardless of what the dropdown said.
   if (forceLocked || isLocked) return MIRA_LOCKED_MODEL;
-  if (value === 'auto' || !value) {
-    const latest = latestUserMessageText(messages);
-    const wordCount = latest.trim() ? latest.trim().split(/\s+/).filter(Boolean).length : 0;
-    const reasoningHeavy = REASONING_HEAVY_RE.test(latest) || (!isTrivialSmallTalk(latest) && wordCount > 80);
-    return hasImages || reasoningHeavy ? MIRA_PRO_MODEL : MIRA_MODEL;
-  }
+  if (isLite) return MIRA_LITE_MODEL;
   if (isPro) return MIRA_PRO_MODEL;
-  return MIRA_MODEL;
+  if (isBase) return MIRA_MODEL;
+  // Auto: default to Mira Lite for almost everything (greetings, lookups,
+  // short questions, follow-ups). Escalate to Mira Pro for vision/heavy
+  // reasoning, and Mira for medium-weight prompts that aren't trivial chat
+  // but don't need the Pro model.
+  const latest = latestUserMessageText(messages);
+  const trimmed = latest.trim();
+  const wordCount = trimmed ? trimmed.split(/\s+/).filter(Boolean).length : 0;
+  const reasoningHeavy = REASONING_HEAVY_RE.test(latest) || wordCount > 80;
+  if (hasImages || reasoningHeavy) return MIRA_PRO_MODEL;
+  const trivial = isTrivialSmallTalk(latest);
+  // Medium tier: longer than a quick lookup but not heavy enough for Pro.
+  if (!trivial && wordCount > 30) return MIRA_MODEL;
+  return MIRA_LITE_MODEL;
+}
+
+// Mira Lite runs on Groq (OpenAI-compatible); Mira / Mira Pro / Locked run on
+// the Salad/Ollama upstream. Knowing the provider lets us swap URL, auth, and
+// payload shape per model.
+function isGroqModel(modelName) {
+  const value = String(modelName || '').trim().toLowerCase();
+  if (!value) return false;
+  return value === MIRA_LITE_MODEL.toLowerCase()
+    || value === 'mira-lite'
+    || value === 'lite'
+    || /^llama-/.test(value)
+    || /^mixtral-/.test(value)
+    || /^gemma/.test(value);
+}
+
+function getProviderForModel(modelName) {
+  return isGroqModel(modelName) ? 'groq' : 'salad';
+}
+
+// Ordered fallback chain so a "model not found" / 5xx from one model
+// transparently retries the request against the next available model.
+// Locked mode never falls back to the general pool — keeps PIN-gated traffic
+// strictly on the locked model regardless of upstream availability.
+// Mira Lite stays on Groq and only falls back to Mira/Pro if Groq itself is
+// unreachable, since the providers are independent.
+function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
+  if (forceLocked) return [MIRA_LOCKED_MODEL];
+  const ordered = [];
+  const seen = new Set();
+  const push = (candidate) => {
+    const name = String(candidate || '').trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    ordered.push(name);
+  };
+  push(primaryModel);
+  // Always have a non-primary backup; spread across providers so a Salad
+  // outage can still serve Lite (Groq) and vice versa. Lite first because it
+  // is the fastest fallback.
+  push(MIRA_LITE_MODEL);
+  push(MIRA_PRO_MODEL);
+  push(MIRA_MODEL);
+  return ordered;
 }
 
 function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, stream, safeMax }) {
+  if (isGroqModel(effectiveModel)) {
+    // Groq is OpenAI-compatible; resolve the front-end alias to the actual
+    // Groq model id before sending upstream.
+    const resolvedModel = (effectiveModel === 'mira-lite' || effectiveModel === 'lite')
+      ? MIRA_LITE_MODEL
+      : effectiveModel;
+    return {
+      model: resolvedModel,
+      messages: chatMessages,
+      stream,
+      max_tokens: safeMax,
+    };
+  }
   if (USE_SALAD_CHAT) {
     return {
       model: effectiveModel,
@@ -258,6 +333,10 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
   const maxAttempts = 2;
   let lastStatus = 500;
   let lastMessage = 'Chat request failed.';
+  // Pick provider per payload so a single chat handler can dispatch to either
+  // Salad/Ollama or Groq without separate code paths.
+  const provider = getProviderForModel(payload?.model);
+  const url = provider === 'groq' ? GROQ_API_URL : CHAT_API_URL;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (requestAbortSignal?.aborted) {
@@ -270,9 +349,18 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
     const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
     try {
       const headers = { 'Content-Type': 'application/json' };
-      if (CHAT_API_KEY && CHAT_API_KEY_HEADER) headers[CHAT_API_KEY_HEADER] = CHAT_API_KEY;
+      if (provider === 'groq') {
+        if (!GROQ_API_KEY) {
+          clearTimeout(timeout);
+          requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
+          return { errorStatus: 500, errorMessage: 'GROQ_API_KEY is not configured.' };
+        }
+        headers.Authorization = `Bearer ${GROQ_API_KEY}`;
+      } else if (CHAT_API_KEY && CHAT_API_KEY_HEADER) {
+        headers[CHAT_API_KEY_HEADER] = CHAT_API_KEY;
+      }
 
-      const upstream = await fetch(CHAT_API_URL, {
+      const upstream = await fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
@@ -471,16 +559,31 @@ async function handleChat(body, res, req) {
     : messages;
 
   try {
-    const upstreamPayload = buildUpstreamPayload({
-      effectiveModel,
-      chatMessages,
-      toolList,
-      think: payload.think,
-      stream: payload.stream !== false,
-      safeMax,
-    });
-
-    const upstreamOrError = await fetchOllamaWithRetry(upstreamPayload, requestController.signal);
+    const modelChain = buildModelFallbackChain(effectiveModel, { forceLocked });
+    let upstreamOrError = null;
+    let triedModel = effectiveModel;
+    for (let i = 0; i < modelChain.length; i += 1) {
+      if (requestController.signal.aborted) {
+        upstreamOrError = { errorStatus: 499, errorMessage: 'Generation stopped by user.' };
+        break;
+      }
+      triedModel = modelChain[i];
+      const upstreamPayload = buildUpstreamPayload({
+        effectiveModel: triedModel,
+        chatMessages,
+        toolList,
+        think: payload.think,
+        stream: payload.stream !== false,
+        safeMax,
+      });
+      upstreamOrError = await fetchOllamaWithRetry(upstreamPayload, requestController.signal);
+      if (!upstreamOrError?.errorStatus) break; // got a real upstream Response
+      if (upstreamOrError.errorStatus === 499) break; // user aborted, don't try more models
+      const isLastCandidate = i === modelChain.length - 1;
+      if (!isLastCandidate) {
+        console.warn(`[chat] model "${triedModel}" failed (${upstreamOrError.errorStatus}); falling back to "${modelChain[i + 1]}"`);
+      }
+    }
 
     if (upstreamOrError?.errorStatus) {
       if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);

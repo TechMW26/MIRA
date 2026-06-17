@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
 
 const SELECTED_MODEL_STORAGE_KEY = 'mira_selected_model';
-const ALLOWED_MODELS = new Set(['auto', 'mira-pro', 'mira', 'locked']);
+const ALLOWED_MODELS = new Set(['auto', 'mira-pro', 'mira', 'mira-lite', 'locked']);
 const LOCKED_MODEL_PIN = '1512';
 
 const ChatContext = createContext(null);

@@ -154,9 +154,11 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
     ? 'Mira Locked'
     : selectedModel === 'mira-pro'
       ? 'Mira Pro'
-      : selectedModel === 'mira'
-        ? 'Mira'
-        : 'Auto';
+      : selectedModel === 'mira-lite'
+        ? 'Mira Lite'
+        : selectedModel === 'mira'
+          ? 'Mira'
+          : 'Auto';
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -470,7 +472,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                   <div className="composer-model-popover" onMouseLeave={() => setModelPickerOpen(false)}>
                     <button type="button" className="composer-model-option" data-active={selectedModel === 'auto' || undefined} onClick={() => { setSelectedModel('auto'); setModelPickerOpen(false); }}>
                       <span>Auto</span>
-                      <small>best model</small>
+                      <small>fast by default · escalates when needed</small>
                     </button>
                     <button type="button" className="composer-model-option" data-active={selectedModel === 'mira-pro' || undefined} onClick={() => { setSelectedModel('mira-pro'); setModelPickerOpen(false); }}>
                       <span>Mira Pro</span>
@@ -479,6 +481,10 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                     <button type="button" className="composer-model-option" data-active={selectedModel === 'mira' || undefined} onClick={() => { setSelectedModel('mira'); setModelPickerOpen(false); }}>
                       <span>Mira</span>
                       <small>standard</small>
+                    </button>
+                    <button type="button" className="composer-model-option" data-active={selectedModel === 'mira-lite' || undefined} onClick={() => { setSelectedModel('mira-lite'); setModelPickerOpen(false); }}>
+                      <span>Mira Lite</span>
+                      <small>fastest · ultra-low latency</small>
                     </button>
                     <div style={{ borderTop: '1px solid var(--hud-cyan-dim)', margin: '4px 0' }} />
                     <button

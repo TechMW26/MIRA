@@ -120,11 +120,11 @@ function extractCompleteJsonChunks(buffer) {
   let index = 0;
 
   while (index < len) {
-    while (index < len && /\s/.test(text[index])) index += 1;
+    // Skip anything that isn't the start of a JSON object/array. Some providers
+    // (Groq / OpenAI-compatible) wrap each chunk in SSE framing like
+    // "data: {...}\n\n"; we just want the JSON payload regardless of prefix.
+    while (index < len && text[index] !== '{' && text[index] !== '[') index += 1;
     if (index >= len) break;
-
-    const startChar = text[index];
-    if (startChar !== '{' && startChar !== '[') break;
 
     let depth = 0;
     let inString = false;

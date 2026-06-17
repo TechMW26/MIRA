@@ -11,7 +11,9 @@
 
 import { runChatCompletion } from './api';
 
-const ENHANCER_MODEL = 'mira';
+// Pre-flight is intentionally on Mira Lite for sub-second turnaround;
+// only the rare high-complexity creation request bumps up to Mira Pro.
+const ENHANCER_MODEL = 'mira-lite';
 const ENHANCER_MODEL_PRO = 'mira-pro';
 
 const CREATE_VERB_RE = /\b(build|create|make|design|write|implement|generate|develop|produce|craft|compose|draft|code|construct|architect|prototype|set\s*up|spin\s*up)\b/i;

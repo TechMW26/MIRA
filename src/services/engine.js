@@ -224,12 +224,16 @@ function isTrivialSmallTalk(text = '', { hasImages = false } = {}) {
 function pickModel(classification, hasImages, selectedMode = 'auto') {
   if (selectedMode === 'locked') return 'locked';
   if (selectedMode === 'mira-pro') return 'mira-pro';
+  if (selectedMode === 'mira-lite') return 'mira-lite';
   if (selectedMode === 'mira') return 'mira';
-  // Auto: use Mira Pro for image-analysis and complex requests; Mira otherwise.
+  // Auto: default to Mira Lite for fastest replies. Escalate to Mira Pro for
+  // image analysis or genuinely complex requests, and Mira for medium-weight
+  // prompts that aren't simple chat but don't need Pro.
   const complexity = classification?.complexity || 'low';
   const intent = classification?.intent || 'general';
-  const needsPro = hasImages || complexity === 'high' || intent === 'math';
-  return needsPro ? 'mira-pro' : 'mira';
+  if (hasImages || complexity === 'high' || intent === 'math') return 'mira-pro';
+  if (complexity === 'medium') return 'mira';
+  return 'mira-lite';
 }
 
 // ── Public API ─────────────────────────────────────────────────
