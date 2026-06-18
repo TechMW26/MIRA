@@ -33,6 +33,7 @@ import {
   updateProject,
 } from '../../services/database';
 import { groupConversationsByDate } from '../../utils/helpers';
+import { stopChatGeneration } from '../../services/api';
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
@@ -96,6 +97,7 @@ export default function Sidebar() {
     if (currentConversationId && conversations.length > 0) {
       const exists = conversations.some((conversation) => conversation.id === currentConversationId);
       if (!exists) {
+        stopChatGeneration();
         setCurrentConversationId(null);
       }
     }
@@ -159,6 +161,7 @@ export default function Sidebar() {
     setActiveMenu(null);
     setContextMenu(null);
     if (user) {
+      if (currentConversationId === convId) stopChatGeneration();
       const conv = conversations.find((c) => c.id === convId);
       if (conv?.projectId) {
         await removeConversationFromProject(user.uid, conv.projectId, convId);
@@ -224,6 +227,7 @@ export default function Sidebar() {
 
   function handleOpenProject(project) {
     requirePin(project, 'verify', () => {
+      stopChatGeneration();
       setActiveProjectId(project.id);
       setCurrentConversationId(null);
       setSidebarOpen(false);
@@ -320,6 +324,7 @@ export default function Sidebar() {
               <div
                 key={conv.id}
                 onClick={() => {
+                  if (currentConversationId !== conv.id) stopChatGeneration();
                   setCurrentConversationId(conv.id);
                   setSidebarOpen(false);
                 }}
@@ -371,6 +376,7 @@ export default function Sidebar() {
               {activeProjectId ? (
                 <button
                   onClick={() => {
+                    stopChatGeneration();
                     setActiveProjectId(null);
                     setCurrentConversationId(null);
                     setSidebarOpen(false);
@@ -556,6 +562,7 @@ export default function Sidebar() {
                 </button>
                 <button
                   onClick={() => {
+                    stopChatGeneration();
                     setShowUserMenu(false);
                     setSidebarOpen(false);
                     logout();

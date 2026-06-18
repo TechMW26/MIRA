@@ -1,5 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { sendChatMessage, stopChatGeneration } from '../services/api';
+import {
+  installGenerationExitCancellation,
+  sendChatMessage,
+  stopChatGeneration,
+} from '../services/api';
 import { analyzeImage } from '../services/imageAnalysis.js';
 import { needsFreshInformation, processQuery } from '../services/engine';
 import { assessAndRefinePrompt, shouldRunEnhancer } from '../services/promptEnhancer';
@@ -1012,6 +1016,14 @@ export default function useChat() {
     setStreamingContent('');
     setThinkingContent('');
   }, [cancelPendingStreamFlushes, setActiveResponseModel, setIsGenerating, setIsSearching]);
+
+  useEffect(() => {
+    const removeExitCancellation = installGenerationExitCancellation();
+    return () => {
+      stopChatGeneration();
+      removeExitCancellation();
+    };
+  }, []);
 
   const pruneMessagesAfter = useCallback(async (convId, messageId, sourceMessages = messages) => {
     const index = sourceMessages.findIndex((message) => message.id === messageId);

@@ -5,6 +5,7 @@ import Sidebar from '../Sidebar/Sidebar';
 import ChatWindow from '../Chat/ChatWindow';
 import HudOverlay from '../Chat/HudOverlay';
 import SettingsModal from '../Profile/ProfilePage';
+import { stopChatGeneration } from '../../services/api';
 
 export default function MainLayout() {
   const {
@@ -41,6 +42,7 @@ export default function MainLayout() {
     if (hasResetSessionRef.current) return;
     hasResetSessionRef.current = true;
 
+    stopChatGeneration();
     setCurrentConversationId(null);
     setActiveProjectId(null);
 

@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { stopChatGeneration } from '../services/api';
 
 const SELECTED_MODEL_STORAGE_KEY = 'mira_selected_model';
 const ALLOWED_MODELS = new Set(['auto', 'mira-pro', 'mira', 'mira-lite', 'locked']);
@@ -44,6 +45,7 @@ export function ChatProvider({ children }) {
   }, []);
 
   const startNewChat = useCallback(() => {
+    stopChatGeneration();
     setCurrentConversationId(null);
   }, []);
 

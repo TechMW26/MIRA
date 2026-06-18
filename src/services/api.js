@@ -2,6 +2,7 @@ import { MODEL_TOOLS } from './modelTools';
 
 let activeChatAbortController = null;
 let activeChatRequestId = null;
+let lifecycleCancellationInstalled = false;
 
 function createRequestId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -334,6 +335,27 @@ export function stopChatGeneration() {
   } catch {
     // ignore — local abort has already stopped client streaming.
   }
+}
+
+export function installGenerationExitCancellation() {
+  if (lifecycleCancellationInstalled || typeof window === 'undefined') return () => {};
+  lifecycleCancellationInstalled = true;
+
+  const cancelForExit = () => stopChatGeneration();
+  const cancelWhenHidden = () => {
+    if (document.visibilityState === 'hidden') cancelForExit();
+  };
+
+  window.addEventListener('pagehide', cancelForExit, { capture: true });
+  window.addEventListener('beforeunload', cancelForExit, { capture: true });
+  document.addEventListener('visibilitychange', cancelWhenHidden, { capture: true });
+
+  return () => {
+    window.removeEventListener('pagehide', cancelForExit, { capture: true });
+    window.removeEventListener('beforeunload', cancelForExit, { capture: true });
+    document.removeEventListener('visibilitychange', cancelWhenHidden, { capture: true });
+    lifecycleCancellationInstalled = false;
+  };
 }
 
 async function requestChat({ messages, model, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think, onChunk }) {
