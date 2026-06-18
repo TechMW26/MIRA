@@ -118,7 +118,13 @@ export default function ChatWindow() {
     if (lastMsg.role !== 'assistant') return messages;
     return [
       ...messages.slice(0, -1),
-      { ...lastMsg, content: streamingContent || lastMsg.content, thinkingContent: thinkingContent || undefined, isThinkingActive: !!thinkingContent && !streamingContent, isStreaming: true },
+      {
+        ...lastMsg,
+        content: streamingContent || lastMsg.content,
+        thinkingContent: thinkingContent || undefined,
+        isThinkingActive: Boolean(thinkingContent && !streamingContent),
+        isStreaming: true,
+      },
     ];
   }, [messages, streamingContent, thinkingContent, isGenerating]);
 

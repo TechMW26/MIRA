@@ -191,7 +191,8 @@ function formatModelUsedLabel(value = '') {
   if (normalized === 'search') return 'SEARCH';
   if (normalized === 'mira-pro') return 'MIRA PRO';
   if (normalized === 'mira-lite' || normalized === 'lite') return 'MIRA LITE';
-  if (normalized === 'mira' || normalized === 'auto' || normalized === 'mini' || normalized === 'spec' || normalized === 'mira-mini' || normalized === 'mira-spec') return 'MIRA';
+  if (normalized === 'spec' || normalized === 'mira-spec' || normalized.startsWith('mira-spec:')) return 'MIRA SPEC';
+  if (normalized === 'mira' || normalized === 'mira-v4' || normalized === 'mira-v4:latest' || normalized === 'mira_v4' || normalized === 'mira_v4:latest' || normalized === 'auto' || normalized === 'mini' || normalized === 'mira-mini') return 'MIRA';
   if (normalized === 'vision' || normalized === 'mira-vision') return 'MIRA VISION';
   if (normalized === 'locked' || normalized === 'mira-locked' || normalized === 'mira-locked:latest') return 'MIRA LOCKED';
   if (normalized === 'mira:latest') return 'MIRA';
@@ -344,10 +345,8 @@ function ThinkingSection({ content, isActive }) {
         className="thinking-toggle"
         aria-expanded={expanded}
       >
-        <span className={isActive ? 'thinking-sparkle' : 'thinking-sparkle-static'}>✦</span>
         <span className="thinking-label">{isActive ? 'Thinking' : 'Thought process'}</span>
         {isActive && !expanded && <span className="thinking-live-dot" />}
-        <ChevronDown size={12} className={`thinking-chevron${expanded ? ' is-expanded' : ''}`} />
       </button>
 
       <div className={`thinking-body${expanded ? ' is-expanded' : ''}`}>
@@ -355,7 +354,6 @@ function ThinkingSection({ content, isActive }) {
           <div className="thinking-lines">
             {lines.map((line, i) => (
               <div key={`${i}-${line}`} className="thinking-line">
-                <span className="thinking-line-marker" aria-hidden="true">›</span>
                 <span className={`thinking-line-text${isActive && i >= lines.length - 2 ? ' is-ghosting' : ''}`}>{line}</span>
               </div>
             ))}
@@ -953,7 +951,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
   const imagePrompt = !isUser ? extractImagePrompt(message.content) : '';
   const videoPrompt = !isUser ? extractVideoPrompt(message.content) : '';
   const modelUsedLabel = !isUser ? formatModelUsedLabel(message.modelUsed || message.model) : '';
-  const showThinking = !isUser && modelUsedLabel !== 'MIRA LITE' && Boolean(message.thinkingContent);
+  const showThinking = !isUser && Boolean(message.thinkingContent);
   const searchingBubbleActive = !isUser && isLast && isSearching && message.content === '' && !showThinking;
   const thinkingOnly = Boolean(message.isThinkingActive && showThinking && !message.content);
   const suggestedExportFormat = !isUser && !message.isStreaming && !imagePrompt && !videoPrompt

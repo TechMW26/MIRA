@@ -67,7 +67,7 @@ async function readSearchResponse(response) {
     error.status = response.status;
     throw error;
   }
-  return payload || { results: [], media: { videos: [], images: [] } };
+  return payload || { results: [], media: { videos: [], images: [], articles: [] } };
 }
 
 function relevanceTokens(value = '') {
@@ -95,7 +95,8 @@ export function isSearchResultRelevant(payload, query = '') {
 
 function hasUsefulSearchData(payload, query) {
   const hasMedia = (Array.isArray(payload?.media?.videos) && payload.media.videos.length)
-    || (Array.isArray(payload?.media?.images) && payload.media.images.length);
+    || (Array.isArray(payload?.media?.images) && payload.media.images.length)
+    || (Array.isArray(payload?.media?.articles) && payload.media.articles.length);
   return Boolean(hasMedia || isSearchResultRelevant(payload, query));
 }
 

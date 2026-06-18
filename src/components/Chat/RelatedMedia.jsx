@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Play, ExternalLink, X, ImageIcon } from 'lucide-react';
+import { Play, ExternalLink, X, ImageIcon, Newspaper } from 'lucide-react';
 
 // Proxy through our own image endpoint so foreign CDNs (which often block
 // hot-linking with referer checks) still render in <img>.
@@ -40,12 +40,12 @@ function MediaThumb({ item, kind, onOpen }) {
         borderColor: 'var(--border)',
         background: 'var(--glass-bg)',
       }}
-      title={item.title || (kind === 'video' ? 'Open video' : 'Open image')}
+      title={cleanMediaTitle(item.title) || (kind === 'video' ? 'Open video' : 'Open image')}
     >
       {src ? (
         <img
           src={src}
-          alt={item.title || ''}
+          alt={cleanMediaTitle(item.title)}
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={(e) => {
@@ -89,7 +89,7 @@ function MediaThumb({ item, kind, onOpen }) {
           }}
         >
           {isInstagram(item) ? 'Instagram · ' : isYouTube(item) ? 'YouTube · ' : ''}
-          {item.title || ''}
+          {cleanMediaTitle(item.title)}
         </div>
       )}
     </button>
@@ -149,7 +149,7 @@ function Lightbox({ item, kind, onClose }) {
             <div style={{ aspectRatio: '16 / 9', width: '100%' }}>
               <iframe
                 src={`${item.embed}?autoplay=1&rel=0`}
-                title={item.title || 'Video'}
+                title={cleanMediaTitle(item.title) || 'Video'}
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                 allowFullScreen
                 className="h-full w-full border-0"
@@ -159,7 +159,7 @@ function Lightbox({ item, kind, onClose }) {
             <div style={{ width: '100%', height: 'min(720px, 85vh)' }}>
               <iframe
                 src={item.embed}
-                title={item.title || 'Instagram'}
+                title={cleanMediaTitle(item.title) || 'Instagram'}
                 allow="encrypted-media"
                 allowFullScreen
                 scrolling="no"
@@ -169,7 +169,7 @@ function Lightbox({ item, kind, onClose }) {
             </div>
           ) : item.embed ? (
             <div style={{ aspectRatio: '16 / 9', width: '100%' }}>
-              <iframe src={item.embed} title={item.title || 'Video'} allowFullScreen className="h-full w-full border-0" />
+              <iframe src={item.embed} title={cleanMediaTitle(item.title) || 'Video'} allowFullScreen className="h-full w-full border-0" />
             </div>
           ) : item.url && /\.(mp4|webm|ogg)(\?|$)/i.test(item.url) ? (
             <video src={item.url} controls autoPlay className="max-h-[88vh] max-w-[92vw]" />
@@ -186,7 +186,7 @@ function Lightbox({ item, kind, onClose }) {
         ) : (
           <img
             src={item.url || item.thumbnail}
-            alt={item.title || ''}
+            alt={cleanMediaTitle(item.title)}
             referrerPolicy="no-referrer"
             onError={(e) => {
               const cur = e.currentTarget;
@@ -202,7 +202,7 @@ function Lightbox({ item, kind, onClose }) {
 
       {item.title && (
         <div className="absolute bottom-4 left-1/2 max-w-[80vw] -translate-x-1/2 truncate rounded-full bg-black/60 px-4 py-1.5 text-center text-xs text-white">
-          {item.title}
+          {cleanMediaTitle(item.title)}
         </div>
       )}
     </div>,
@@ -218,7 +218,8 @@ export default function RelatedMedia({ media }) {
   if (!media) return null;
   const videos = Array.isArray(media.videos) ? media.videos : [];
   const images = Array.isArray(media.images) ? media.images : [];
-  if (!videos.length && !images.length) return null;
+  const articles = Array.isArray(media.articles) ? media.articles : [];
+  if (!videos.length && !images.length && !articles.length) return null;
 
   return (
     <div className="not-prose mt-0 space-y-1.5 pt-0">
@@ -246,8 +247,52 @@ export default function RelatedMedia({ media }) {
           </div>
         </div>
       )}
+      {articles.length > 0 && (
+        <div>
+          <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>
+            News &amp; articles
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {articles.slice(0, 6).map((article, i) => (
+              <a
+                key={`a-${article.url || i}`}
+                href={article.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex min-w-0 items-start gap-2 rounded-xl border p-2.5 transition-colors hover:bg-white/5"
+                style={{ borderColor: 'var(--border)', background: 'var(--glass-bg)' }}
+              >
+                <Newspaper size={15} className="mt-0.5 shrink-0" style={{ color: 'var(--accent)' }} />
+                <span className="min-w-0">
+                  <span className="block text-[9px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>
+                    {article.type || 'article'}
+                  </span>
+                  <span className="line-clamp-2 block text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
+                    {cleanMediaTitle(article.title)}
+                  </span>
+                </span>
+                <ExternalLink size={12} className="ml-auto mt-0.5 shrink-0" style={{ color: 'var(--text-tertiary)' }} />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
 
       {active && <Lightbox item={active.item} kind={active.kind} onClose={close} />}
     </div>
   );
+}
+function cleanMediaTitle(value = '') {
+  return String(value || '')
+    .replace(/&quot;|&#34;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&ldquo;|&rdquo;/gi, '"')
+    .replace(/&lsquo;|&rsquo;/gi, "'")
+    .replace(/&mdash;/gi, '—')
+    .replace(/&ndash;/gi, '–')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

@@ -1106,10 +1106,12 @@ body[data-locked='true'] ::selection {
 .thinking-section {
   position: relative;
   width: min(100%, 560px);
-  margin: 0 0 12px;
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  border-radius: 11px;
-  background: rgba(2, 12, 18, 0.28);
+  margin: 12px 0;
+  border: 0;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 12% 20%, rgba(94, 234, 212, 0.055), transparent 48%),
+    linear-gradient(115deg, rgba(94, 234, 212, 0.028), rgba(148, 163, 184, 0.035) 52%, rgba(59, 130, 246, 0.018));
   overflow: hidden;
 }
 
@@ -1117,8 +1119,8 @@ body[data-locked='true'] ::selection {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 7px;
+  padding: 10px 12px;
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -1127,25 +1129,14 @@ body[data-locked='true'] ::selection {
 }
 
 .thinking-toggle:hover {
-  background: rgba(148, 163, 184, 0.045);
+  background: rgba(148, 163, 184, 0.025);
 }
 
 .thinking-label {
-  font-size: 0.625rem;
-  font-weight: 550;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: rgba(148, 163, 184, 0.72);
-}
-
-.thinking-chevron {
-  margin-left: auto;
-  color: rgba(148, 163, 184, 0.48);
-  transition: transform 180ms ease;
-}
-
-.thinking-chevron.is-expanded {
-  transform: rotate(180deg);
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: rgba(148, 163, 184, 0.66);
 }
 
 .thinking-live-dot {
@@ -1176,7 +1167,7 @@ body[data-locked='true'] ::selection {
 .thinking-scroll {
   min-height: 0;
   max-height: 104px;
-  padding: 0 10px 9px;
+  padding: 2px 12px 12px;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
@@ -1188,30 +1179,19 @@ body[data-locked='true'] ::selection {
 .thinking-lines {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .thinking-line {
-  display: flex;
-  align-items: flex-start;
-  gap: 5px;
-}
-
-.thinking-line-marker {
-  color: rgba(94, 234, 212, 0.44);
-  font-size: 0.58rem;
-  font-weight: bold;
-  opacity: 0.65;
-  margin-top: 2px;
-  flex-shrink: 0;
+  display: block;
 }
 
 .thinking-line-text {
-  font-size: 0.68rem;
-  line-height: 1.5;
+  font-size: 0.69rem;
+  line-height: 1.55;
   font-style: italic;
-  color: rgba(148, 163, 184, 0.68);
-  opacity: 0.82;
+  color: rgba(148, 163, 184, 0.62);
+  opacity: 0.78;
   text-shadow: none;
   word-break: break-word;
 }
@@ -1926,7 +1906,7 @@ body.mira-hud-active {
 }
 .hud-chat-bubble-assistant.is-thinking-only {
   width: min(100%, 560px);
-  padding: 10px 14px 11px;
+  padding: 12px 14px;
   background: rgba(2, 16, 22, 0.34);
   border-color: rgba(94, 234, 212, 0.1);
   box-shadow: none;
@@ -2097,11 +2077,16 @@ body.mira-hud-active {
 
 /* ── Sidebar drawer (animated open / close) ── */
 .mira-sidebar {
+  width: 280px;
+  padding: 12px;
   transform: translateX(-110%);
   opacity: 0;
   transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.32s ease;
   pointer-events: none;
   will-change: transform;
+}
+.mira-sidebar-panel {
+  border-radius: var(--radius-shell);
 }
 .mira-sidebar.open {
   transform: translateX(0);
@@ -2119,13 +2104,18 @@ body.mira-hud-active {
 .mira-sidebar .rounded-lg,
 .mira-sidebar .rounded-md { border-radius: var(--radius-inner) !important; }
 
-@media (max-width: 1024px) {
+@media (max-width: 640px) {
   .mira-sidebar {
     top: max(env(safe-area-inset-top, 0px), 0px) !important;
     bottom: max(env(safe-area-inset-bottom, 0px), 0px) !important;
     left: max(env(safe-area-inset-left, 0px), 0px) !important;
     right: max(env(safe-area-inset-right, 0px), 0px) !important;
+    width: auto;
     height: auto !important;
+    padding: 0;
+  }
+  .mira-sidebar-panel {
+    border-radius: 0;
   }
 }
 

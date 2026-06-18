@@ -77,7 +77,7 @@ async function searchGoogle(query, fresh = false, window = freshnessWindow(query
 }
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-const ANCHOR_STOP = new Set(['the','a','an','of','to','for','in','on','with','and','or','but','is','are','was','were','what','how','why','when','where','this','that','it','its','they','them','about','more','can','you','tell','please','show','give','find','search','get','some','image','images','photo','picture','video','videos','media','device','product','object','thing','system','technology']);
+const ANCHOR_STOP = new Set(['the','a','an','of','to','for','in','on','with','and','or','but','is','are','was','were','what','how','why','when','where','this','that','it','its','they','them','about','more','can','you','tell','please','show','give','find','search','get','some','latest','current','recent','new','news','blog','blogs','article','articles','image','images','photo','picture','video','videos','media','device','product','object','thing','system','technology']);
 
 function normalizeSearchText(value = '') {
   return String(value || '').toLowerCase()
@@ -123,6 +123,23 @@ function scoreAgainstAnchor(text = '', scope) {
   return score;
 }
 
+function mediaConfidence(item, scope, getText) {
+  const normalized = normalizeSearchText(getText(item));
+  if (!normalized || !scope?.terms?.length) return 0;
+  const matchedTerms = scope.terms.filter((term) => normalized.includes(term)).length;
+  const exactPhrase = Boolean(scope.phraseNorm && normalized.includes(scope.phraseNorm));
+  const coverage = matchedTerms / scope.terms.length;
+  return Number(Math.min(1, (exactPhrase ? 0.72 : 0) + (coverage * 0.55)).toFixed(2));
+}
+
+function highConfidenceMedia(items, scope, getText) {
+  if (!Array.isArray(items) || !items.length || !scope?.terms?.length) return [];
+  return items
+    .map((item) => ({ ...item, confidence: mediaConfidence(item, scope, getText) }))
+    .filter((item) => item.confidence >= 0.55)
+    .sort((a, b) => b.confidence - a.confidence);
+}
+
 function filterByAnchor(items, scope, getText, strict = false) {
   if (!Array.isArray(items) || !items.length || !scope?.terms?.length) return items || [];
   const scored = items.map((item) => ({ item, score: scoreAgainstAnchor(getText(item), scope) }));
@@ -130,6 +147,16 @@ function filterByAnchor(items, scope, getText, strict = false) {
   if (exact.length) return exact.map((entry) => entry.item);
   if (!strict) return items;
   return scored.filter((entry) => entry.score >= anchorThreshold(scope)).map((entry) => entry.item);
+}
+
+function classifyArticle(result = {}) {
+  const url = String(result.url || '').toLowerCase();
+  const text = `${result.title || ''} ${result.snippet || ''}`.toLowerCase();
+  const isNews = /\b(news|breaking|report|reported|announced|update|today|yesterday)\b/.test(text)
+    || /\/(?:news|world|politics|business|technology|tech|science|sports)\//.test(url);
+  const isBlog = /\b(blog|opinion|guide|analysis|explainer|review|how to)\b/.test(text)
+    || /\/(?:blog|blogs|insights|stories|posts|article)\//.test(url);
+  return isNews ? 'news' : (isBlog ? 'blog' : 'article');
 }
 
 function decodeHtmlEntities(value = '') {
@@ -538,7 +565,7 @@ export async function POST(req) {
     if (!query?.trim()) return new Response(JSON.stringify({ error: 'Query required', results: [] }), { status: 400 });
     const searchQuery = query.trim();
     const mediaSearchQuery = String(mediaQuery || searchQuery).trim();
-    const anchorScope = buildAnchorScope(anchor || (strictAnchor ? mediaSearchQuery : ''));
+    const anchorScope = buildAnchorScope(anchor || mediaSearchQuery);
     const shouldFetchMedia = includeMedia !== false;
     const fresh = detectFreshnessIntent(searchQuery, freshness);
     const window = freshnessWindow(searchQuery);
@@ -595,11 +622,28 @@ export async function POST(req) {
     }
 
     const og = await enrichFromArticles(results);
+    const articleMedia = highConfidenceMedia(
+      results,
+      anchorScope,
+      (item) => `${item.title || ''} ${item.snippet || ''} ${item.url || ''}`,
+    ).slice(0, 6).map((item) => ({
+      type: classifyArticle(item),
+      title: item.title || '',
+      snippet: item.snippet || '',
+      url: item.url || '',
+      publishedAt: item.publishedAt || '',
+      confidence: item.confidence,
+    }));
 
     // Image ordering: article og:image (most relevant) → Bing CDN thumbs (filler).
     const seenImg = new Set();
     const mergedImages = [];
-    for (const im of [...og.images, ...resolvedBingImages]) {
+    const confidentImages = highConfidenceMedia(
+      [...og.images, ...resolvedBingImages],
+      anchorScope,
+      (item) => `${item.title || ''} ${item.source || ''} ${item.url || ''}`,
+    );
+    for (const im of confidentImages) {
       if (!im.url || seenImg.has(im.url)) continue;
       seenImg.add(im.url);
       mergedImages.push(im);
@@ -609,7 +653,12 @@ export async function POST(req) {
     // Video ordering: YouTube → Instagram → article-embedded videos.
     const seenVid = new Set();
     const mergedVideos = [];
-    for (const v of [...(videos || []), ...(instagram || []), ...og.videos]) {
+    const confidentVideos = highConfidenceMedia(
+      [...(videos || []), ...(instagram || []), ...og.videos],
+      anchorScope,
+      (item) => `${item.title || ''} ${item.url || ''}`,
+    );
+    for (const v of confidentVideos) {
       const key = v.url || v.embed;
       if (!key || seenVid.has(key)) continue;
       seenVid.add(key);
@@ -617,7 +666,7 @@ export async function POST(req) {
       if (mergedVideos.length >= 8) break;
     }
 
-    const media = { videos: mergedVideos, images: mergedImages };
+    const media = { videos: mergedVideos, images: mergedImages, articles: articleMedia };
     return new Response(JSON.stringify({
       results,
       media,
@@ -632,7 +681,7 @@ export async function POST(req) {
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (err) {
-    return new Response(JSON.stringify({ error: err.message, results: [], media: { videos: [], images: [] } }), {
+    return new Response(JSON.stringify({ error: err.message, results: [], media: { videos: [], images: [], articles: [] } }), {
       status: 500, headers: { 'Content-Type': 'application/json' },
     });
   }

@@ -49,7 +49,14 @@ function toolCallsToText(toolCalls = []) {
 export function extractChatText(payload) {
   if (!payload || typeof payload !== 'object') return '';
 
+  const geminiAnswer = Array.isArray(payload.candidates?.[0]?.content?.parts)
+    ? payload.candidates[0].content.parts
+      .filter((part) => part?.thought !== true)
+      .map((part) => contentToText(part?.text))
+      .join('')
+    : '';
   const candidates = [
+    geminiAnswer,
     payload.text,
     payload.result,
     payload.response,
@@ -69,10 +76,17 @@ export function extractChatText(payload) {
   return '';
 }
 
-function extractThinkingText(payload) {
+export function extractThinkingText(payload) {
   if (!payload || typeof payload !== 'object') return '';
 
+  const geminiThinking = Array.isArray(payload.candidates?.[0]?.content?.parts)
+    ? payload.candidates[0].content.parts
+      .filter((part) => part?.thought === true)
+      .map((part) => contentToText(part?.text))
+      .join('')
+    : '';
   const candidates = [
+    geminiThinking,
     payload.thinking,
     payload.reasoning,
     payload.reasoning_content,

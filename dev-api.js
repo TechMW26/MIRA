@@ -39,7 +39,7 @@ const GENERATED_IMAGE_RETRY_ATTEMPTS = 3;
 const GENERATED_IMAGE_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
 const GENERATED_IMAGE_ALT_SEARCH_TIMEOUT_MS = 12000;
 const GENERATED_IMAGE_SEARCH_STOPWORDS = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'at', 'for', 'with', 'and', 'or', 'to', 'from', 'by', 'into', 'split-shot', 'photograph', 'photo', 'image', 'stunning', 'majestic', 'crystal-clear']);
-const ANCHOR_STOP = new Set(['the','a','an','of','to','for','in','on','with','and','or','but','is','are','was','were','what','how','why','when','where','this','that','it','its','they','them','about','more','can','you','tell','please','show','give','find','search','get','some','image','images','photo','picture','video','videos','media','device','product','object','thing','system','technology']);
+const ANCHOR_STOP = new Set(['the','a','an','of','to','for','in','on','with','and','or','but','is','are','was','were','what','how','why','when','where','this','that','it','its','they','them','about','more','can','you','tell','please','show','give','find','search','get','some','latest','current','recent','new','news','blog','blogs','article','articles','image','images','photo','picture','video','videos','media','device','product','object','thing','system','technology']);
 
 function normalizeSearchText(value = '') {
   return String(value || '').toLowerCase()
@@ -85,6 +85,23 @@ function scoreAgainstAnchor(text = '', scope) {
   return score;
 }
 
+function mediaConfidence(item, scope, getText) {
+  const normalized = normalizeSearchText(getText(item));
+  if (!normalized || !scope?.terms?.length) return 0;
+  const matchedTerms = scope.terms.filter((term) => normalized.includes(term)).length;
+  const exactPhrase = Boolean(scope.phraseNorm && normalized.includes(scope.phraseNorm));
+  const coverage = matchedTerms / scope.terms.length;
+  return Number(Math.min(1, (exactPhrase ? 0.72 : 0) + (coverage * 0.55)).toFixed(2));
+}
+
+function highConfidenceMedia(items, scope, getText) {
+  if (!Array.isArray(items) || !items.length || !scope?.terms?.length) return [];
+  return items
+    .map((item) => ({ ...item, confidence: mediaConfidence(item, scope, getText) }))
+    .filter((item) => item.confidence >= 0.55)
+    .sort((a, b) => b.confidence - a.confidence);
+}
+
 function filterByAnchor(items, scope, getText, strict = false) {
   if (!Array.isArray(items) || !items.length || !scope?.terms?.length) return items || [];
   const scored = items.map((item) => ({ item, score: scoreAgainstAnchor(getText(item), scope) }));
@@ -92,6 +109,16 @@ function filterByAnchor(items, scope, getText, strict = false) {
   if (exact.length) return exact.map((entry) => entry.item);
   if (!strict) return items;
   return scored.filter((entry) => entry.score >= anchorThreshold(scope)).map((entry) => entry.item);
+}
+
+function classifyArticle(result = {}) {
+  const url = String(result.url || '').toLowerCase();
+  const text = `${result.title || ''} ${result.snippet || ''}`.toLowerCase();
+  const isNews = /\b(news|breaking|report|reported|announced|update|today|yesterday)\b/.test(text)
+    || /\/(?:news|world|politics|business|technology|tech|science|sports)\//.test(url);
+  const isBlog = /\b(blog|opinion|guide|analysis|explainer|review|how to)\b/.test(text)
+    || /\/(?:blog|blogs|insights|stories|posts|article)\//.test(url);
+  return isNews ? 'news' : (isBlog ? 'blog' : 'article');
 }
 
 function decodeHtmlEntities(value = '') {
@@ -227,8 +254,8 @@ const ACTIVE_CHAT_REQUEST_TTL_MS = OLLAMA_TIMEOUT_MS + 120000;
 // we seed an explicit Mira self-introduction the model can pattern-match on
 // the next time the user asks "who are you?" / "what model are you?".
 const MIRA_IDENTITY_PRIMER_MESSAGES = [
-  { role: 'user', content: 'Quick check before we start — who are you and what runs you?' },
-  { role: 'assistant', content: 'I am Mira, an AI assistant built by MW FutureTech (Mushroom World FutureTech). I do not share details about the underlying technology that powers me — I just focus on helping you. What can I help with?' },
+  { role: 'user', content: 'Quick check before we start: who are you and what runs you?' },
+  { role: 'assistant', content: 'I am Mira, an AI assistant built by MW FutureTech (Mushroom World FutureTech). I do not share details about the underlying technology that powers me. I just focus on helping you. What can I help with?' },
 ];
 
 const MIRA_CANONICAL_INTRO = 'I am Mira, an AI assistant built by MW FutureTech (Mushroom World FutureTech). How can I help you?';
@@ -288,7 +315,7 @@ function latestUserMessageText(messages = []) {
 
 function resolveModelChoice(requested, hasImages, forceLocked = false, messages = []) {
   const value = String(requested || 'auto').trim().toLowerCase();
-  const isLocked = value === 'locked' || value === 'mira-locked' || value === MIRA_LOCKED_MODEL.toLowerCase();
+  const isLocked = value === 'locked' || value === 'mira-locked';
   const isLite = value === 'lite' || value === 'mira-lite' || value === MIRA_LITE_MODEL.toLowerCase();
   const isPro = value === 'mira-pro' || value === 'pro' || value === MIRA_PRO_MODEL.toLowerCase();
   const isBase = value === 'mira' || value === MIRA_MODEL.toLowerCase();
@@ -318,13 +345,14 @@ function getProviderForModel(modelName) {
   return isGeminiModel(modelName) ? 'gemini' : 'salad';
 }
 
-function toUiModelName(modelName = '') {
+function toUiModelName(modelName = '', { locked = false } = {}) {
   const normalized = String(modelName || '').trim().toLowerCase();
+  if (locked) return 'locked';
   if (!normalized) return 'mira';
   if (isGeminiModel(normalized) || normalized === 'mira-lite' || normalized === 'lite') return 'mira-lite';
   if (normalized === 'mira-pro' || normalized === String(MIRA_PRO_MODEL).toLowerCase() || normalized === 'pro') return 'mira-pro';
-  if (normalized === 'locked' || normalized === 'mira-locked' || normalized === String(MIRA_LOCKED_MODEL).toLowerCase()) return 'locked';
   if (normalized === 'mira' || normalized === String(MIRA_MODEL).toLowerCase() || /^mira[-_]v4(?::latest)?$/.test(normalized)) return 'mira';
+  if (normalized === 'locked' || normalized === 'mira-locked') return 'locked';
   return normalized;
 }
 
@@ -348,10 +376,10 @@ function buildMiraAliases(modelName = '') {
 function isMiraFamilyModel(modelName = '') {
   const normalized = String(modelName || '').trim().toLowerCase();
   if (!normalized) return false;
-  if (normalized === 'mira' || normalized === 'locked' || normalized === 'mira-locked') return true;
+  if (normalized === 'mira' || normalized === 'locked' || normalized === 'mira-locked' || normalized === 'spec' || normalized === 'mira-spec') return true;
   if (buildMiraAliases(MIRA_MODEL).map((item) => item.toLowerCase()).includes(normalized)) return true;
   if (buildMiraAliases(MIRA_LOCKED_MODEL).map((item) => item.toLowerCase()).includes(normalized)) return true;
-  return /^mira[-_]v4(?::latest)?$/.test(normalized);
+  return /^mira[-_](?:v4|spec)(?::latest)?$/.test(normalized);
 }
 
 function getChatEndpointConfig(modelName = '') {
@@ -488,7 +516,7 @@ function buildUnavailableAssistantResponse(primaryModel) {
   };
 }
 
-function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
+function buildGeminiRequest({ effectiveModel, chatMessages, safeMax, think }) {
   const resolvedModel = (effectiveModel === 'mira-lite' || effectiveModel === 'lite')
     ? GEMINI_PRIMARY_MODEL
     : effectiveModel;
@@ -514,6 +542,7 @@ function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
       contents: contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: 'Hello' }] }],
       generationConfig: {
         maxOutputTokens: Math.max(LITE_MAX_OUTPUT_TOKENS, Number(safeMax) || LITE_MAX_OUTPUT_TOKENS),
+        ...(think !== false ? { thinkingConfig: { includeThoughts: true } } : {}),
       },
     },
   };
@@ -521,7 +550,7 @@ function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
 
 function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, stream, safeMax }) {
   if (isGeminiModel(effectiveModel)) {
-    return buildGeminiRequest({ effectiveModel, chatMessages, safeMax });
+    return buildGeminiRequest({ effectiveModel, chatMessages, safeMax, think: true });
   }
   const endpoint = getChatEndpointConfig(effectiveModel);
   if (endpoint.mode === 'salad') {
@@ -530,7 +559,9 @@ function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, s
       messages: chatMessages,
       stream,
       max_tokens: safeMax,
-      ...(typeof think === 'boolean' ? { think } : {}),
+      ...(isMiraFamilyModel(effectiveModel)
+        ? { think: true }
+        : (typeof think === 'boolean' ? { think } : {})),
     };
   }
 
@@ -589,7 +620,7 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
         requestAbortSignal?.addEventListener?.('abort', abortUpstream, { once: true });
         const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
         try {
-          const url = `${GEMINI_API_URL_BASE}/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+          const url = `${GEMINI_API_URL_BASE}/${encodeURIComponent(modelName)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
           const upstream = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -599,29 +630,11 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
           clearTimeout(timeout);
           requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
 
-          const rawText = await upstream.text().catch(() => '');
           if (upstream.ok) {
-            let parsed;
-            try {
-              parsed = JSON.parse(rawText || '{}');
-            } catch {
-              parsed = {};
-            }
-            const text = sanitizeMiraIdentity(String(
-              parsed?.candidates?.[0]?.content?.parts
-                ?.map((part) => String(part?.text || ''))
-                .join('') || '',
-            ));
-            const normalized = {
-              model: modelName,
-              choices: [{ message: { content: text } }],
-            };
-            return new Response(JSON.stringify(normalized), {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            });
+            return upstream;
           }
 
+          const rawText = await upstream.text().catch(() => '');
           lastStatus = upstream.status;
           let concise = rawText;
           try {
@@ -845,6 +858,7 @@ async function handleChat(body, res, req) {
   const promptImages = extractLastUserImages(messages, imageList);
   const hasImages = promptImages.length > 0;
   const forceLocked = hasUnrestrictedSignals(messages);
+  const lockedModeRequested = forceLocked || ['locked', 'mira-locked'].includes(String(payload.model || '').trim().toLowerCase());
   const effectiveModel = resolveModelChoice(payload.model, hasImages, forceLocked, messages);
   const requestId = String(payload.requestId || '').trim();
   const requestController = new AbortController();
@@ -911,7 +925,7 @@ async function handleChat(body, res, req) {
         const safePayload = buildUnavailableAssistantResponse(effectiveModel);
         res.writeHead(200, {
           'Content-Type': 'application/json',
-          'X-Mira-Model-Used': toUiModelName(effectiveModel),
+          'X-Mira-Model-Used': toUiModelName(effectiveModel, { locked: lockedModeRequested }),
         });
         res.end(JSON.stringify(safePayload));
         return;
@@ -927,7 +941,7 @@ async function handleChat(body, res, req) {
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
-      'X-Mira-Model-Used': toUiModelName(triedModel || effectiveModel),
+      'X-Mira-Model-Used': toUiModelName(triedModel || effectiveModel, { locked: lockedModeRequested }),
     });
     // Push headers immediately so the browser's fetch() resolves and the
     // client-side stream reader begins waiting on bytes without buffering.
@@ -1041,10 +1055,10 @@ async function handleScrape(body) {
 
 async function handleSearch(body) {
   const { query, includeMedia = true, mediaQuery, anchor, strictAnchor = false, freshness = false } = JSON.parse(body);
-  if (!query?.trim()) return { error: 'Query required', results: [], media: { videos: [], images: [] } };
+  if (!query?.trim()) return { error: 'Query required', results: [], media: { videos: [], images: [], articles: [] } };
   const searchQuery = query.trim();
   const mediaSearchQuery = String(mediaQuery || searchQuery).trim();
-  const anchorScope = buildAnchorScope(anchor || (strictAnchor ? mediaSearchQuery : ''));
+  const anchorScope = buildAnchorScope(anchor || mediaSearchQuery);
   const shouldFetchMedia = includeMedia !== false;
   const fresh = detectFreshnessIntent(searchQuery, freshness);
   const freshWindow = freshnessWindow(searchQuery);
@@ -1363,6 +1377,18 @@ async function handleSearch(body) {
   }
 
   const og = await enrichFromArticles(results);
+  const articleMedia = highConfidenceMedia(
+    results,
+    anchorScope,
+    (item) => `${item.title || ''} ${item.snippet || ''} ${item.url || ''}`,
+  ).slice(0, 6).map((item) => ({
+    type: classifyArticle(item),
+    title: item.title || '',
+    snippet: item.snippet || '',
+    url: item.url || '',
+    publishedAt: item.publishedAt || '',
+    confidence: item.confidence,
+  }));
 
   // Image ordering: article og:image (most relevant) → Bing CDN thumbs (filler).
   const ytVideos = videosRes.value || [];
@@ -1371,7 +1397,12 @@ async function handleSearch(body) {
 
   const seenImg = new Set();
   const mergedImages = [];
-  for (const im of [...og.images, ...bingImgs]) {
+  const confidentImages = highConfidenceMedia(
+    [...og.images, ...bingImgs],
+    anchorScope,
+    (item) => `${item.title || ''} ${item.source || ''} ${item.url || ''}`,
+  );
+  for (const im of confidentImages) {
     if (!im.url || seenImg.has(im.url)) continue;
     seenImg.add(im.url);
     mergedImages.push(im);
@@ -1380,7 +1411,12 @@ async function handleSearch(body) {
 
   const seenVid = new Set();
   const mergedVideos = [];
-  for (const v of [...ytVideos, ...igVideos, ...og.videos]) {
+  const confidentVideos = highConfidenceMedia(
+    [...ytVideos, ...igVideos, ...og.videos],
+    anchorScope,
+    (item) => `${item.title || ''} ${item.url || ''}`,
+  );
+  for (const v of confidentVideos) {
     const key = v.url || v.embed;
     if (!key || seenVid.has(key)) continue;
     seenVid.add(key);
@@ -1388,7 +1424,7 @@ async function handleSearch(body) {
     if (mergedVideos.length >= 8) break;
   }
 
-  const media = { videos: mergedVideos, images: mergedImages };
+  const media = { videos: mergedVideos, images: mergedImages, articles: articleMedia };
   return {
     results,
     media,

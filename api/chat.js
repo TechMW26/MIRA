@@ -78,9 +78,9 @@ function latestUserMessageText(messages = []) {
   return '';
 }
 
-function resolveModelChoice(requested, hasImages, forceLocked = false, messages = []) {
+export function resolveModelChoice(requested, hasImages, forceLocked = false, messages = []) {
   const value = String(requested || 'auto').trim().toLowerCase();
-  const isLocked = value === 'locked' || value === 'mira-locked' || value === MIRA_LOCKED_MODEL.toLowerCase();
+  const isLocked = value === 'locked' || value === 'mira-locked';
   const isLite = value === 'lite' || value === 'mira-lite' || value === MIRA_LITE_MODEL.toLowerCase();
   const isPro = value === 'mira-pro' || value === 'pro' || value === MIRA_PRO_MODEL.toLowerCase();
   const isBase = value === 'mira' || value === MIRA_MODEL.toLowerCase();
@@ -108,13 +108,14 @@ function getProviderForModel(modelName) {
   return isGeminiModel(modelName) ? 'gemini' : 'salad';
 }
 
-function toUiModelName(modelName = '') {
+export function toUiModelName(modelName = '', { locked = false } = {}) {
   const normalized = String(modelName || '').trim().toLowerCase();
+  if (locked) return 'locked';
   if (!normalized) return 'mira';
   if (isGeminiModel(normalized) || normalized === 'mira-lite' || normalized === 'lite') return 'mira-lite';
   if (normalized === 'mira-pro' || normalized === String(MIRA_PRO_MODEL).toLowerCase() || normalized === 'pro') return 'mira-pro';
-  if (normalized === 'locked' || normalized === 'mira-locked' || normalized === String(MIRA_LOCKED_MODEL).toLowerCase()) return 'locked';
   if (normalized === 'mira' || normalized === String(MIRA_MODEL).toLowerCase() || /^mira[-_]v4(?::latest)?$/.test(normalized)) return 'mira';
+  if (normalized === 'locked' || normalized === 'mira-locked') return 'locked';
   return normalized;
 }
 
@@ -138,10 +139,10 @@ function buildMiraAliases(modelName = '') {
 function isMiraFamilyModel(modelName = '') {
   const normalized = String(modelName || '').trim().toLowerCase();
   if (!normalized) return false;
-  if (normalized === 'mira' || normalized === 'locked' || normalized === 'mira-locked') return true;
+  if (normalized === 'mira' || normalized === 'locked' || normalized === 'mira-locked' || normalized === 'spec' || normalized === 'mira-spec') return true;
   if (buildMiraAliases(MIRA_MODEL).map((item) => item.toLowerCase()).includes(normalized)) return true;
   if (buildMiraAliases(MIRA_LOCKED_MODEL).map((item) => item.toLowerCase()).includes(normalized)) return true;
-  return /^mira[-_]v4(?::latest)?$/.test(normalized);
+  return /^mira[-_](?:v4|spec)(?::latest)?$/.test(normalized);
 }
 
 function getChatEndpointConfig(modelName = '') {
@@ -277,7 +278,7 @@ function buildUnavailableAssistantResponse(primaryModel) {
   };
 }
 
-function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
+function buildGeminiRequest({ effectiveModel, chatMessages, safeMax, think }) {
   const resolvedModel = (effectiveModel === 'mira-lite' || effectiveModel === 'lite')
     ? GEMINI_PRIMARY_MODEL
     : effectiveModel;
@@ -303,6 +304,7 @@ function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
       contents: contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: 'Hello' }] }],
       generationConfig: {
         maxOutputTokens: Math.max(LITE_MAX_OUTPUT_TOKENS, Number(safeMax) || LITE_MAX_OUTPUT_TOKENS),
+        ...(think !== false ? { thinkingConfig: { includeThoughts: true } } : {}),
       },
     },
   };
@@ -310,7 +312,7 @@ function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
 
 function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, stream, safeMax }) {
   if (isGeminiModel(effectiveModel)) {
-    return buildGeminiRequest({ effectiveModel, chatMessages, safeMax });
+    return buildGeminiRequest({ effectiveModel, chatMessages, safeMax, think: true });
   }
   const endpoint = getChatEndpointConfig(effectiveModel);
   if (endpoint.mode === 'salad') {
@@ -319,7 +321,9 @@ function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, s
       messages: chatMessages,
       stream,
       max_tokens: safeMax,
-      ...(typeof think === 'boolean' ? { think } : {}),
+      ...(isMiraFamilyModel(effectiveModel)
+        ? { think: true }
+        : (typeof think === 'boolean' ? { think } : {})),
     };
   }
 
@@ -365,8 +369,8 @@ const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
 // we seed an explicit Mira self-introduction the model can pattern-match on
 // the next time the user asks "who are you?" / "what model are you?".
 const MIRA_IDENTITY_PRIMER_MESSAGES = [
-  { role: 'user', content: 'Quick check before we start — who are you and what runs you?' },
-  { role: 'assistant', content: 'I am Mira, an AI assistant built by MW FutureTech (Mushroom World FutureTech). I do not share details about the underlying technology that powers me — I just focus on helping you. What can I help with?' },
+  { role: 'user', content: 'Quick check before we start: who are you and what runs you?' },
+  { role: 'assistant', content: 'I am Mira, an AI assistant built by MW FutureTech (Mushroom World FutureTech). I do not share details about the underlying technology that powers me. I just focus on helping you. What can I help with?' },
 ];
 
 const MIRA_CANONICAL_INTRO = 'I am Mira, an AI assistant built by MW FutureTech (Mushroom World FutureTech). How can I help you?';
@@ -503,7 +507,7 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
         requestAbortSignal?.addEventListener?.('abort', abortUpstream, { once: true });
         const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
         try {
-          const url = `${GEMINI_API_URL_BASE}/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+          const url = `${GEMINI_API_URL_BASE}/${encodeURIComponent(modelName)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
           const upstream = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -513,31 +517,11 @@ async function fetchOllamaWithRetry(payload, requestAbortSignal) {
           clearTimeout(timeout);
           requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
 
-          const rawText = await upstream.text().catch(() => '');
           if (upstream.ok) {
-            let parsed;
-            try {
-              parsed = JSON.parse(rawText || '{}');
-            } catch {
-              parsed = {};
-            }
-            const text = sanitizeMiraIdentity(String(
-              parsed?.candidates?.[0]?.content?.parts
-                ?.map((part) => String(part?.text || ''))
-                .join('') || '',
-            ));
-            const normalized = {
-              model: modelName,
-              choices: [{ message: { content: text } }],
-            };
-            return {
-              upstream: new Response(JSON.stringify(normalized), {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-              }),
-            };
+            return { upstream };
           }
 
+          const rawText = await upstream.text().catch(() => '');
           let concise = rawText;
           try {
             const parsedErr = JSON.parse(rawText || '{}');
@@ -662,6 +646,7 @@ export async function POST(req) {
     const promptImages = extractLastUserImages(messages, imageList);
     const hasImages = promptImages.length > 0;
     const forceLocked = hasUnrestrictedSignals(messages);
+    const lockedModeRequested = forceLocked || ['locked', 'mira-locked'].includes(String(body.model || '').trim().toLowerCase());
     const effectiveModel = resolveModelChoice(body.model, hasImages, forceLocked, messages);
     if (!CHAT_API_URL) return jsonResponse({ error: 'CHAT_API_URL is not configured.' }, 500);
     const requestId = String(body.requestId || '').trim();
@@ -723,7 +708,7 @@ export async function POST(req) {
         return jsonResponse(
           buildUnavailableAssistantResponse(effectiveModel),
           200,
-          { 'X-Mira-Model-Used': toUiModelName(effectiveModel) },
+          { 'X-Mira-Model-Used': toUiModelName(effectiveModel, { locked: lockedModeRequested }) },
         );
       }
       return jsonResponse({ error: upstreamResult?.errorMessage || 'Chat request failed.' }, upstreamResult?.errorStatus || 500);
@@ -776,7 +761,7 @@ export async function POST(req) {
         'Cache-Control': 'no-cache, no-transform',
         Connection: 'keep-alive',
         'X-Accel-Buffering': 'no',
-        'X-Mira-Model-Used': toUiModelName(triedModel || effectiveModel),
+        'X-Mira-Model-Used': toUiModelName(triedModel || effectiveModel, { locked: lockedModeRequested }),
       },
     });
   } catch (err) {

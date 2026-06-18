@@ -361,9 +361,9 @@ export default function Sidebar() {
         ref={sidebarRef}
         onMouseEnter={cancelHide}
         onMouseLeave={scheduleHide}
-        className={`mira-sidebar ${sidebarOpen ? 'open' : ''} fixed inset-y-0 left-0 z-50 w-full lg:w-[280px] p-0 lg:p-3 flex flex-col h-full`}
+        className={`mira-sidebar ${sidebarOpen ? 'open' : ''} fixed inset-y-0 left-0 z-50 flex flex-col h-full`}
       >
-        <div className="flex flex-col h-full rounded-none lg:rounded-2xl overflow-hidden glass-strong">
+        <div className="mira-sidebar-panel flex flex-col h-full overflow-hidden glass-strong">
 
           {/* Header */}
           <div className="p-4 flex items-center justify-between">

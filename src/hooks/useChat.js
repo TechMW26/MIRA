@@ -9,13 +9,14 @@ import {
   updateMessage,
   deleteMessage,
   updateConversation,
+  updateConversationTitle,
   addConversationToProject,
   subscribeMessages,
 } from '../services/database';
 import { useAuth } from '../contexts/AuthContext';
 import { useChatContext } from '../contexts/ChatContext';
 import useUserProfile from './useUserProfile';
-import { generateSmartTitle, buildAdaptiveContext } from '../utils/helpers';
+import { generateSmartTitle, generateConversationTitle, buildAdaptiveContext } from '../utils/helpers';
 import {
   cacheProfile,
   decideContextMode,
@@ -30,7 +31,12 @@ import {
   stripWebSearchControl,
 } from '../services/webSearchControl';
 import { searchWeb } from '../services/webSearch';
-import { assessResponseQuality, buildQualityCorrectionPrompt } from '../services/responseQuality';
+import {
+  assessResponseQuality,
+  buildQualityCorrectionPrompt,
+  humanizeAssistantText,
+  polishAssistantAnswer,
+} from '../services/responseQuality';
 import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
 import { MIRA_IDENTITY_PROMPT } from '../config/systemPrompt';
 
@@ -53,6 +59,32 @@ const SIMPLE_GREETING_PATTERN = /^\s*(?:hi|hello|hey|hey there|hello there|yo|su
 const CONTEXT_ENTITY_STOP = new Set(['I', 'The', 'A', 'An', 'It', 'This', 'That', 'These', 'Those', 'You', 'He', 'She', 'We', 'They', 'My', 'Your', 'MIRA', 'AI', 'PDF', 'DOCX', 'PPTX']);
 const TEXT_ENTITY_RESEARCH_PATTERN = /\b(tell\s+me\s+about|tell\s+me\s+more\s+about|details?\s+about|information\s+about|info\s+about|background\s+on|research|explain|what\s+is|what\s+are|what\s+an|what\s+a|what's|overview\s+of|in\s+detail|deep\s+dive|let\s+me\s+know\s+what)\b/i;
 const LOCKED_TRIGGER_PATTERN = /\b(nude|nudity|naked|explicit|uncensored|adult\s*content|erotic|porn|pornographic|xxx|18\+|lewd|sexual\s*content|sex|nsfw|fetish|hardcore|boobs?|breasts?|nipples?|genitals?|penis|vagina|anal|blowjob|handjob|cum|orgasm|hentai|bypass|jailbreak|exploit|malware|ransomware|phishing|ddos|credit\s*card\s*fraud|social\s*security\s*number|ssn|doxx|private\s*data|steal\s*data|illegal|unethical|forbidden|restricted)\b/i;
+const MEDIA_RELEVANCE_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'of', 'to', 'for', 'in', 'on', 'with', 'about',
+  'tell', 'show', 'find', 'search', 'images', 'image', 'photos', 'photo', 'videos', 'video',
+  'something', 'more', 'details', 'information', 'latest', 'current',
+]);
+
+function filterRelevantMedia(items = [], query = '') {
+  const tokens = Array.from(new Set(
+    String(query || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((token) => token.length >= 3 && !MEDIA_RELEVANCE_STOPWORDS.has(token))
+  )).slice(0, 5);
+  if (!tokens.length) return Array.isArray(items) ? items : [];
+  const required = tokens.length >= 2 ? 2 : 1;
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const haystack = `${item?.title || ''} ${item?.source || ''} ${item?.url || ''}`.toLowerCase();
+    return tokens.reduce((score, token) => score + (haystack.includes(token) ? 1 : 0), 0) >= required;
+  });
+}
+
+function filterHighConfidenceArticles(items = [], query = '') {
+  return filterRelevantMedia(items, query)
+    .filter((item) => Number(item?.confidence || 0) >= 0.55);
+}
 
 function attachmentSignature(attachments = []) {
   if (!Array.isArray(attachments) || attachments.length === 0) return '';
@@ -406,6 +438,21 @@ function indicatesKnowledgeGap(text = '') {
   const value = String(text || '');
   if (value.length < 12) return false;
   return KNOWLEDGE_GAP_PATTERN.test(value);
+}
+
+const LOW_CONFIDENCE_PATTERN = new RegExp([
+  /there (?:isn'?t|is not|doesn'?t appear to be) (?:a |an )?(?:known|recognized|established|documented)/,
+  /(?:might|may|could) be (?:a )?(?:misunderstanding|misspelling|typo|fictional|made[- ]up|confusion)/,
+  /i(?:'?m| am) not (?:sure|certain|familiar|aware)/,
+  /i (?:couldn'?t|cannot|can'?t) (?:verify|confirm|find|identify)/,
+  /(?:perhaps|possibly|maybe) (?:you mean|you are referring to|it is|it'?s)/,
+  /not (?:a )?(?:widely )?(?:known|recognized|documented) (?:term|name|concept|entity|organism|product|project)/,
+].map((part) => part.source).join('|'), 'i');
+
+function indicatesLowConfidence(text = '') {
+  const value = String(text || '');
+  if (value.length < 12) return false;
+  return indicatesKnowledgeGap(value) || LOW_CONFIDENCE_PATTERN.test(value);
 }
 
 function cleanImagePrompt(text = '') {
@@ -771,10 +818,18 @@ export default function useChat() {
   const pendingThinkingRef = useRef(null);
   const streamRafRef = useRef(null);
   const thinkingRafRef = useRef(null);
+  const titleSessionRef = useRef({ conversationId: null, messages: [] });
+
+  const refreshConversationTitle = useCallback(async (conversationId, transcript = []) => {
+    if (!user?.uid || !conversationId || !Array.isArray(transcript) || transcript.length === 0) return;
+    const title = await generateConversationTitle(transcript);
+    if (!title || title === 'New Chat') return;
+    await updateConversationTitle(user.uid, conversationId, title);
+  }, [user?.uid]);
 
   const flushStreamingContent = useCallback((value) => {
     if (abortRef.current) return;
-    pendingStreamRef.current = value;
+    pendingStreamRef.current = humanizeAssistantText(value);
     if (streamRafRef.current != null) return;
     const schedule = typeof requestAnimationFrame === 'function'
       ? requestAnimationFrame
@@ -855,6 +910,42 @@ export default function useChat() {
       mimeType: 'image/jpeg',
     };
   }, []);
+
+  useEffect(() => {
+    const previous = titleSessionRef.current;
+    if (previous.conversationId && previous.conversationId !== currentConversationId) {
+      refreshConversationTitle(previous.conversationId, previous.messages).catch(() => {});
+    }
+    titleSessionRef.current = {
+      conversationId: currentConversationId,
+      messages: currentConversationId ? messages : [],
+    };
+  }, [currentConversationId, refreshConversationTitle]);
+
+  useEffect(() => {
+    if (titleSessionRef.current.conversationId === currentConversationId) {
+      titleSessionRef.current.messages = messages;
+    }
+  }, [currentConversationId, messages]);
+
+  useEffect(() => {
+    const finalizeCurrentTitle = () => {
+      const current = titleSessionRef.current;
+      if (current.conversationId && current.messages.length > 0) {
+        refreshConversationTitle(current.conversationId, current.messages).catch(() => {});
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') finalizeCurrentTitle();
+    };
+    window.addEventListener('pagehide', finalizeCurrentTitle);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', finalizeCurrentTitle);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      finalizeCurrentTitle();
+    };
+  }, [refreshConversationTitle]);
 
   useEffect(() => {
     if (!currentConversationId) {
@@ -1026,9 +1117,9 @@ export default function useChat() {
       const requestedDocumentFormat = (wantsImageGeneration || wantsVideoGeneration)
         ? null
         : detectDocumentRequest(content, textAttachments.length > 0);
-      // Mira Lite stays fast/plain. Every other model may use the structured
-      // thinking channel, which the UI contains and collapses separately.
-      const shouldThink = chosenModel !== 'mira-lite' && !simpleGreeting;
+      // Keep structured thinking enabled for every chat request. The UI only
+      // renders reasoning actually returned by the provider.
+      const shouldThink = true;
       let documentVisualImages = [];
 
       try {
@@ -1153,6 +1244,11 @@ export default function useChat() {
                     updateConversation(user.uid, convId, { title });
                   });
                 }
+                refreshConversationTitle(convId, [
+                  ...historySource,
+                  { role: 'user', content },
+                  { role: 'assistant', content: decision.question },
+                ]).catch(() => {});
                 return;
               }
               if (decision.action === 'enhance' && decision.prompt) {
@@ -1301,7 +1397,11 @@ export default function useChat() {
               // must NOT trigger an auto media gallery — search engines return
               // off-topic YouTube/image results for bare nouns and pollute the
               // reply with irrelevant embeds.
-              const shouldAttachRelatedMedia = wantsMediaGallery || shouldUseVisualAnchor || shouldAttachContextualMedia;
+              const shouldAttachRelatedMedia = wantsMediaGallery
+                || shouldUseVisualAnchor
+                || shouldAttachContextualMedia
+                || Boolean(textResearchMediaScope)
+                || engineResult.needsSearch;
               const includeMedia = shouldAttachRelatedMedia;
               const visualScope = visualSearchAnchor ? buildVisualSearchScope(visualSearchAnchor, content) : null;
               const freshnessRequested = needsFreshInformation(content) || needsFreshInformation(searchQuery);
@@ -1342,10 +1442,11 @@ export default function useChat() {
                 }
               }
               const mediaQueryForMessage = visualScope?.mediaQuery || textResearchMediaScope?.mediaQuery || searchQuery;
-              const realVideos = Array.isArray(searchData.media?.videos) ? searchData.media.videos : [];
-              const realImages = Array.isArray(searchData.media?.images) ? searchData.media.images : [];
+              const realVideos = filterRelevantMedia(searchData.media?.videos, mediaQueryForMessage);
+              const realImages = filterRelevantMedia(searchData.media?.images, mediaQueryForMessage);
+              const realArticles = filterHighConfidenceArticles(searchData.media?.articles, mediaQueryForMessage);
               const mediaBlock = (() => {
-                if (!shouldAttachRelatedMedia || (!realVideos.length && !realImages.length)) return '';
+                if (!shouldAttachRelatedMedia || (!realVideos.length && !realImages.length && !realArticles.length)) return '';
                 const lines = [];
                 if (realVideos.length) {
                   lines.push('Videos (auto-rendered as embeds below your reply):');
@@ -1363,11 +1464,19 @@ export default function useChat() {
                     lines.push(`  i${i + 1}. ${title} — ${im.url || ''}`);
                   });
                 }
+                if (realArticles.length) {
+                  if (lines.length) lines.push('');
+                  lines.push('News and blog articles (auto-rendered below your reply):');
+                  realArticles.slice(0, 6).forEach((article, i) => {
+                    const title = (article.title || '').replace(/\s+/g, ' ').trim() || 'article';
+                    lines.push(`  a${i + 1}. [${article.type || 'article'}] ${title} — ${article.url || ''}`);
+                  });
+                }
                 return `\n\n=== REAL MEDIA GALLERY (already shown to the user as embeds/thumbnails under your reply) ===\n${lines.join('\n')}\n=== END MEDIA GALLERY ===`;
               })();
               if (wantsMediaGallery) {
-                if (realVideos.length || realImages.length) {
-                  mediaForMessage = { videos: realVideos, images: realImages, query: mediaQueryForMessage };
+                if (realVideos.length || realImages.length || realArticles.length) {
+                  mediaForMessage = { videos: realVideos, images: realImages, articles: realArticles, query: mediaQueryForMessage };
                   if (wantsOnlyMediaGallery) {
                     deterministicMediaReply = 'Here are the most relevant clips and photos I found — open any item in the gallery below to play or preview it here.';
                   }
@@ -1377,6 +1486,13 @@ export default function useChat() {
               }
               if (!wantsMediaGallery && shouldUseVisualAnchor && (realVideos.length || realImages.length)) {
                 mediaForMessage = { videos: realVideos, images: realImages, query: mediaQueryForMessage };
+              }
+              if (!wantsMediaGallery && shouldAttachRelatedMedia && realImages.length) {
+                mediaForMessage = {
+                  videos: [],
+                  images: realImages,
+                  query: mediaQueryForMessage,
+                };
               }
               if (searchData.results?.length) {
                 groundingSearchData = searchData;
@@ -1391,7 +1507,7 @@ export default function useChat() {
                 const freshnessRules = freshnessRequested
                   ? `\n- FRESHNESS IS MANDATORY: The user requested latest/current information. The host has ranked the evidence newest-first and limited it to the freshest retrieved cohort.\n- Use ONLY the newest relevant retrieved facts. Prefer the greatest Published timestamp. Ignore older claims when a newer source updates, supersedes, or conflicts with them.\n- State the exact date of the newest evidence you rely on. If every result says "date unavailable", say that recency could not be independently confirmed instead of presenting it as definitively latest.`
                   : '';
-                userContent = `${content}${recentConversationContextBlock}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${searchData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${searchQuery}"${contextBlock}\nFreshness requested: ${freshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${searchData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===${mediaBlock}\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${freshnessRules}\n- Conversation context comes FIRST. Resolve pronouns and phrases like "this device", "that product", "it", or "the company" from the conversation context anchor before interpreting search results.\n- If the search results clearly do not match the entity the user is referring to in this conversation, IGNORE the search results and answer from prior turns / your own knowledge instead. Do NOT pivot to an unrelated topic just because it appeared in the search results.\n- If the user asks who makes, produces, owns, founded, launched, or sells the referenced thing, search results are required evidence. Do not say you need more details when the context anchor already names the referenced thing.\n- When the results are on-topic, cite the sources by their [number].\n- MEDIA RULES (strict, NON-NEGOTIABLE):\n   • NEVER write or paste any YouTube, Instagram, Twitter/X, TikTok, or article URL as text or as a markdown link in your reply. The user has already had real links/embeds rendered for them by the UI (see the MEDIA GALLERY block above and the [number] citations).\n   • NEVER invent video titles, image descriptions, durations, channel names, view counts, or URLs. If you do not have a verified value, omit it.\n   • The UI auto-renders an embedded video player + image gallery directly under your reply for every item in the MEDIA GALLERY block. Do NOT enumerate them.\n   • When the user asks for "videos", "images", "more media", "social posts", or similar, reply with ONE short sentence pointing at the gallery (e.g. "Here are the most relevant clips and photos I found — see the gallery below.") and stop.\n   • If the MEDIA GALLERY block is empty, say plainly that you couldn't find relevant media this time. Do NOT invent placeholder links to fill the gap.\n\nAnswer:`;
+                userContent = `${content}${recentConversationContextBlock}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${searchData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${searchQuery}"${contextBlock}\nFreshness requested: ${freshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${searchData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===${mediaBlock}\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${freshnessRules}\n- Read every source title and snippet before answering. If multiple titles/snippets directly name the user's entity, the search succeeded: synthesize the evidence and do not claim nothing was found.\n- Start with a polished direct explanation. Add only the most useful supporting facts; avoid filler introductions and repetitive bullets.\n- Conversation context comes FIRST. Resolve pronouns and phrases like "this device", "that product", "it", or "the company" from the conversation context anchor before interpreting search results.\n- If the search results clearly do not match the entity the user is referring to in this conversation, IGNORE the search results and answer from prior turns / your own knowledge instead. Do NOT pivot to an unrelated topic just because it appeared in the search results.\n- If the user asks who makes, produces, owns, founded, launched, or sells the referenced thing, search results are required evidence. Do not say you need more details when the context anchor already names the referenced thing.\n- Do not print numeric source markers such as [1] or [1, 2]. The host preserves source provenance separately.\n- MEDIA RULES (strict, NON-NEGOTIABLE):\n   • NEVER write or paste any YouTube, Instagram, Twitter/X, TikTok, or article URL as text or as a markdown link in your reply. The UI renders verified media separately.\n   • NEVER invent video titles, image descriptions, durations, channel names, view counts, or URLs. If you do not have a verified value, omit it.\n   • The UI auto-renders an embedded video player + image gallery directly under your reply for every item in the MEDIA GALLERY block. Do NOT enumerate them.\n   • When the user asks for "videos", "images", "more media", "social posts", or similar, reply with ONE short sentence pointing at the gallery and stop.\n   • If the MEDIA GALLERY block is empty, say plainly that you couldn't find relevant media this time. Do NOT invent placeholder links to fill the gap.\n\nAnswer:`;
                 if (!wantsOnlyMediaGallery && shouldAttachRelatedMedia) {
                   userContent = userContent.replace(
                     '   • When the user asks for "videos", "images", "more media", "social posts", or similar, reply with ONE short sentence pointing at the gallery (e.g. "Here are the most relevant clips and photos I found — see the gallery below.") and stop.',
@@ -1408,10 +1524,17 @@ export default function useChat() {
               if (visualSearchAnchor) {
                 userContent = userContent
                   .replace(`Search query used: "${searchQuery}"`, `Search query used: "${searchQuery}"\nImage-derived search anchor: "${visualSearchAnchor}"`)
-                  .replace('- When the results are on-topic, cite the sources by their [number].', '- For image identity / object matching, only identify a person, product, place, or device when the source title/snippet clearly matches visible text, logo, distinctive object details, or the image-derived anchor. If the match is weak, say you could not verify it from the web results.\n- When the results are on-topic, cite the sources by their [number].');
+                  .replace('- Do not print numeric source markers such as [1] or [1, 2]. The host preserves source provenance separately.', '- For image identity / object matching, only identify a person, product, place, or device when the source title/snippet clearly matches visible text, logo, distinctive object details, or the image-derived anchor. If the match is weak, say you could not verify it from the web results.\n- Do not print numeric source markers; the host preserves source provenance separately.');
               }
-              if (realVideos.length || realImages.length) {
-                if (shouldAttachRelatedMedia) mediaForMessage = { videos: realVideos, images: realImages, query: mediaQueryForMessage };
+              if (realVideos.length || realImages.length || realArticles.length) {
+                if (shouldAttachRelatedMedia) {
+                  mediaForMessage = {
+                    videos: wantsMediaGallery ? realVideos : [],
+                    images: realImages,
+                    articles: realArticles,
+                    query: mediaQueryForMessage,
+                  };
+                }
               }
             } catch (e) {
               console.warn('Web search failed:', e.message);
@@ -1477,6 +1600,11 @@ export default function useChat() {
                 updateConversation(user.uid, convId, { title });
               });
             }
+            refreshConversationTitle(convId, [
+              ...historySource,
+              { role: 'user', content },
+              { role: 'assistant', content: deterministicMediaReply },
+            ]).catch(() => {});
             return;
           }
 
@@ -1514,8 +1642,8 @@ export default function useChat() {
           });
           const cached = cacheKey ? getCachedResponse(cacheKey) : null;
           if (cached && !abortRef.current) {
-            fullText = cached;
-            setStreamingContent(cached);
+            fullText = humanizeAssistantText(cached);
+            setStreamingContent(fullText);
             setIsSearching(false);
           } else {
           try {
@@ -1611,13 +1739,13 @@ export default function useChat() {
           const autoSearchEligible =
             !requestFailed &&
             !abortRef.current &&
-            !effectiveWebSearch &&
+            (!effectiveWebSearch || !groundingSearchData) &&
             !wantsImageGeneration &&
             !wantsVideoGeneration &&
             !requestedDocumentFormat &&
             !hasImages &&
             content.trim().length > 0 &&
-            Boolean(requestedWebSearchQuery);
+            (Boolean(requestedWebSearchQuery) || indicatesLowConfidence(fullText));
 
           if (autoSearchEligible) {
             setIsSearching(true);
@@ -1647,7 +1775,7 @@ export default function useChat() {
                 const fallbackFreshnessRules = fallbackFreshnessRequested
                   ? '\n- The user needs latest/current information. Use only the newest relevant retrieved facts, prefer the greatest Published timestamp, state its exact date, and ignore older conflicting claims. If dates are unavailable, say recency could not be confirmed.'
                   : '';
-                const groundedUserContent = `${content}${recentConversationContextBlock}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${fallbackData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${fallbackQuery}"\nFreshness requested: ${fallbackFreshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${fallbackData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${fallbackFreshnessRules}\n- You previously could not answer this from your own knowledge; now answer the user's question directly using these results.\n- Cite the sources you use by their [number].\n- Do not repeat that you lack current information — you now have it above.\n- Never invent URLs, citations, numbers, or facts beyond these results. If the results still do not cover it, say what is missing.`;
+                const groundedUserContent = `${content}${recentConversationContextBlock}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${fallbackData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${fallbackQuery}"\nFreshness requested: ${fallbackFreshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${fallbackData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${fallbackFreshnessRules}\n- You previously could not answer this from your own knowledge; now answer the user's question directly using these results.\n- Keep the answer polished and concise. Do not print numeric source markers; source provenance is handled separately.\n- Do not repeat that you lack current information — you now have it above.\n- Never invent URLs, citations, numbers, or facts beyond these results. If the results still do not cover it, say what is missing.`;
                 history[history.length - 1] = { role: 'user', content: groundedUserContent };
 
                 let retryText = '';
@@ -1776,12 +1904,79 @@ export default function useChat() {
             if (correctedText.trim() && !abortRef.current) {
               fullText = correctedText.trim();
             }
+
+            const correctedAssessment = correctedText.trim()
+              ? assessResponseQuality({
+                answer: correctedText,
+                userQuery: content,
+                searchData: groundingSearchData,
+                searchQuery: groundingSearchQuery,
+              })
+              : { ok: false, reasons: ['empty-quality-rewrite'] };
+
+            // Lite gets the first opportunity to repair its own answer. If it
+            // still ignores clearly relevant evidence, escalate only then.
+            if (!correctedAssessment.ok && chosenModel === 'mira-lite' && !abortRef.current) {
+              cancelPendingStreamFlushes();
+              setStreamingContent('');
+              setThinkingContent('');
+              setIsSearching(Boolean(groundingSearchData));
+
+              const escalationPrompt = buildQualityCorrectionPrompt({
+                userQuery: content,
+                reasons: correctedAssessment.reasons,
+                freshnessRequested: groundingFreshnessRequested,
+              });
+              const escalationHistory = correctedHistory.slice();
+              const escalationLastIndex = escalationHistory.length - 1;
+              if (escalationLastIndex >= 0 && escalationHistory[escalationLastIndex]?.role === 'user') {
+                escalationHistory[escalationLastIndex] = {
+                  ...escalationHistory[escalationLastIndex],
+                  content: `${escalationHistory[escalationLastIndex].content}\n\n${escalationPrompt}\nThe faster model failed this grounded task twice. Produce the definitive evidence-based answer now.`,
+                };
+              }
+
+              let escalatedText = '';
+              try {
+                await sendChatMessage(
+                  escalationHistory,
+                  'mira',
+                  (accumulated) => {
+                    if (abortRef.current) return;
+                    escalatedText = stripWebSearchControl(accumulated);
+                    flushStreamingContent(escalatedText);
+                  },
+                  images,
+                  {
+                    think: true,
+                    ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
+                    onModelUsed: applyModelUsed,
+                    onThinking: (accumulated) => {
+                      if (abortRef.current) return;
+                      finalThinkingText = stripWebSearchControl(accumulated);
+                      flushThinkingContent(finalThinkingText);
+                    },
+                  },
+                );
+              } catch (escalationErr) {
+                console.warn('Grounded answer escalation failed:', escalationErr?.message);
+              } finally {
+                setIsSearching(false);
+              }
+
+              if (escalatedText.trim() && !abortRef.current) {
+                fullText = escalatedText.trim();
+              }
+            }
           }
 
           if (fullText) {
             // Strip + persist [REMEMBER: key=value] markers before display
             fullText = processRememberMarkers(fullText);
             fullText = sanitizeMemoryLeakStyleResponse(fullText);
+            fullText = polishAssistantAnswer(fullText, {
+              grounded: Boolean(groundingSearchData),
+            });
 
             const requestedFormat = requestedDocumentFormat;
             let titleSource = fullText;
@@ -1829,6 +2024,12 @@ export default function useChat() {
                 updateConversation(user.uid, convId, { title });
               });
             }
+            const titleTranscript = [
+              ...historySource,
+              { role: 'user', content },
+              { role: 'assistant', content: titleSource },
+            ];
+            refreshConversationTitle(convId, titleTranscript).catch(() => {});
           }
         }
       } catch (err) {
@@ -1855,6 +2056,7 @@ export default function useChat() {
       selectedModel,
       normalizeImageForUpload,
       pruneMessagesAfter,
+      refreshConversationTitle,
     ]
   );
 

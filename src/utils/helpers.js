@@ -22,16 +22,44 @@ export function groupConversationsByDate(conversations) {
 }
 
 export function generateTitle(text) {
-  const cleaned = text.replace(/[#*`]/g, '').trim();
-  const words = cleaned.split(/\s+/).slice(0, 5);
-  return words.join(' ') + (cleaned.split(/\s+/).length > 5 ? '…' : '');
+  const cleaned = String(text || '')
+    .replace(/\[[A-Z_]+:[^\]]*\]/g, ' ')
+    .replace(/\[Attached:[^\]]*\]/gi, ' ')
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/[#*`"'“”‘’()[\]{}]/g, ' ')
+    .replace(/\b(?:please|kindly|can you|could you|would you|tell me about|tell me|show me|give me|explain|help me|i want to know|something about|information about)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return 'New Chat';
+
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  const selected = words.slice(0, 8);
+
+  return selected
+    .join(' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/^./, (letter) => letter.toUpperCase());
 }
 
 export async function generateSmartTitle(userMessage, assistantMessage) {
-  const seed = assistantMessage && assistantMessage.trim().length > 0
-    ? assistantMessage
-    : userMessage;
-  return generateTitle(seed);
+  return generateTitle(userMessage || assistantMessage);
+}
+
+export async function generateConversationTitle(messages = []) {
+  const seen = new Set();
+  const userText = (Array.isArray(messages) ? messages : [])
+    .filter((message) => message?.role === 'user')
+    .map((message) => String(message?.content || '').trim())
+    .filter(Boolean)
+    .filter((content) => {
+      const key = content.toLowerCase().replace(/\s+/g, ' ');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(-3)
+    .join(' ');
+  return generateTitle(userText);
 }
 
 export function detectIntent(message) {
@@ -173,4 +201,3 @@ export function buildAdaptiveContext({ profile, conversation, messages = [], mod
   }
   return sections.join('\n\n');
 }
-

@@ -68,6 +68,13 @@ export async function updateConversation(uid, convId, data) {
   });
 }
 
+export async function updateConversationTitle(uid, convId, title) {
+  await update(ref(db, `conversations/${uid}/${convId}`), {
+    title,
+    titleUpdatedAt: Date.now(),
+  });
+}
+
 export async function deleteConversation(uid, convId) {
   try {
     const messagesSnap = await get(ref(db, `messages/${convId}`));
@@ -200,4 +207,3 @@ export async function updateUserProfile(uid, data) {
     updatedAt: Date.now(),
   });
 }
-

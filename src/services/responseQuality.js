@@ -1,8 +1,8 @@
 import { isSearchResultRelevant } from './webSearch.js';
 
 const IDENTITY_QUESTION_RE = /\b(who are you|what are you|your name|who (?:made|built|created|powers) you|what model)\b/i;
-const UNJUSTIFIED_REFUSAL_RE = /\b(?:i (?:cannot|can't|am unable to|do not have|don't have)|unable to answer|cannot answer|can't answer)\b/i;
-const SEARCH_META_RE = /\b(?:the |these )?(?:provided )?search results?\s+(?:do not|don't|did not|didn't|only|contain|focus|discuss|provided)\b/i;
+const UNJUSTIFIED_REFUSAL_RE = /\b(?:i (?:cannot|can['’]?t|couldn['’]?t|am unable to|do not have|don['’]?t have)|unable to answer|cannot answer|can['’]?t answer|couldn['’]?t answer)\b/i;
+const SEARCH_META_RE = /\b(?:(?:the |these )?(?:provided )?search results?\s+(?:do not|don['’]?t|did not|didn['’]?t|only|contain|focus|discuss|provided)|(?:i\s+)?couldn['’]?t find (?:any )?(?:relevant )?(?:information|details|evidence)[^.!?]{0,80}(?:provided )?search results?)\b/i;
 const ACCESS_DENIAL_RE = /\b(?:no access to|cannot access|can't access|cannot browse|can't browse|knowledge cut[- ]?off|training data)\b/i;
 
 function meaningfulTokens(value = '') {
@@ -39,10 +39,6 @@ export function assessResponseQuality({
   if (grounded && evidenceRelevant && SEARCH_META_RE.test(text)) {
     reasons.push('search-process-meta-answer');
   }
-  if (grounded && evidenceRelevant && !/\[\d+\]/.test(text)) {
-    reasons.push('missing-grounded-citation');
-  }
-
   const queryTokens = meaningfulTokens(userQuery);
   if (text.length >= 40 && queryTokens.length) {
     const lower = text.toLowerCase();
@@ -69,7 +65,11 @@ export function buildQualityCorrectionPrompt({
     `Problems detected: ${reasons.join(', ') || 'failed to answer directly'}.`,
     'Produce a fresh final answer, not a critique of the previous draft.',
     'Answer the question immediately in the first sentence.',
-    'Use the supplied REAL-TIME WEB SEARCH DATA when present and cite factual claims as [1], [2].',
+    'Write like a thoughtful human: natural wording, varied sentence length, plain language, and no canned AI filler or repetitive conclusion.',
+    'Never use an em dash. Rewrite with normal punctuation or a new sentence.',
+    'Use the supplied REAL-TIME WEB SEARCH DATA when present, but do not print numeric citation markers such as [1] or [1, 2]. Source provenance is rendered separately by the host.',
+    'Read the source titles and snippets literally. If they name the same entity as the user query, the evidence is relevant; synthesize it instead of claiming nothing was found.',
+    'Extract at least two concrete facts from relevant evidence before concluding.',
     'Do not discuss your knowledge, training, browsing ability, search process, missing data, or identity unless the user explicitly asks.',
     'Do not summarize irrelevant search results. Ignore irrelevant evidence.',
     freshnessRequested
@@ -79,3 +79,42 @@ export function buildQualityCorrectionPrompt({
   ].filter(Boolean).join('\n');
 }
 
+export function humanizeAssistantText(answer = '') {
+  const lines = String(answer || '').replace(/\r\n?/g, '\n').split('\n');
+  let insideFence = false;
+
+  return lines.map((line) => {
+    if (/^\s*```/.test(line)) {
+      insideFence = !insideFence;
+      return line;
+    }
+    if (insideFence) return line;
+    return line
+      .replace(/\s*—\s*/g, ', ')
+      .replace(/\b(?:It is important to note that|It should be noted that)\s+([a-z])/gi, (_match, letter) => letter.toUpperCase())
+      .replace(/\bIn conclusion,\s*([a-z])/gi, (_match, letter) => letter.toUpperCase())
+      .replace(/\bAdditionally,\s*/gi, 'Also, ')
+      .replace(/\bFurthermore,\s*/gi, 'Also, ');
+  }).join('\n');
+}
+
+export function polishAssistantAnswer(answer = '', { grounded = false } = {}) {
+  let text = humanizeAssistantText(answer).trim();
+  if (!text) return '';
+
+  if (grounded) {
+    text = text
+      .replace(/\s*\[(?:\d+(?:\s*,\s*\d+)*)\]/g, '')
+      .replace(/\s+([,.;:!?])/g, '$1')
+      .replace(/\bHere (?:are|is) (?:some |a few )?(?:key |important )?(?:facts|details|points)(?::)?[ \t]*/gi, '')
+      .replace(/\butili[sz]es\b/gi, 'uses')
+      .replace(/\bbio-engineering\b/gi, 'bioengineered');
+  }
+
+  return text
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
+    .join('\n')
+    .replace(/\n[ \t]*\n[ \t]*\n+/g, '\n\n')
+    .trim();
+}

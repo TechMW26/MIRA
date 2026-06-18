@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assessResponseQuality } from './responseQuality.js';
+import { assessResponseQuality, humanizeAssistantText, polishAssistantAnswer } from './responseQuality.js';
 
 const yachtSearch = {
   results: [{
@@ -19,6 +19,24 @@ test('rejects a grounded refusal when relevant evidence exists', () => {
   });
   assert.equal(result.ok, false);
   assert.ok(result.reasons.includes('unjustified-grounded-refusal'));
+});
+
+test('rejects a lite-style claim that relevant search evidence was missing', () => {
+  const result = assessResponseQuality({
+    answer: 'I couldn’t find any information about an "Algae tree" in the provided search results.',
+    userQuery: 'Tell me something about the Algae tree',
+    searchQuery: 'Algae tree',
+    searchData: {
+      results: [{
+        title: 'India installs its first Algae Tree in Bhopal',
+        snippet: 'The structure uses microalgae to capture carbon dioxide.',
+        url: 'https://example.com/algae-tree',
+      }],
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.includes('unjustified-grounded-refusal'));
+  assert.ok(result.reasons.includes('search-process-meta-answer'));
 });
 
 test('rejects irrelevant identity and capability disclaimers', () => {
@@ -41,3 +59,20 @@ test('accepts a direct cited grounded answer', () => {
   assert.equal(result.ok, true);
 });
 
+test('polishes grounded answers without removing meaningful numbers', () => {
+  const result = polishAssistantAnswer(
+    'The device utilizes algae [1, 3]. Here are some key facts:\n\n- It can match 25 trees [2, 4].',
+    { grounded: true },
+  );
+  assert.equal(result, 'The device uses algae.\n\n- It can match 25 trees.');
+});
+
+test('humanizes prose and removes em dashes without changing code blocks', () => {
+  const result = humanizeAssistantText(
+    'It is important to note that this works — and it feels natural.\n\n```js\nconst symbol = "—";\n```',
+  );
+  assert.equal(
+    result,
+    'This works, and it feels natural.\n\n```js\nconst symbol = "—";\n```',
+  );
+});
