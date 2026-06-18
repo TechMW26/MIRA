@@ -11,7 +11,9 @@ const CHAT_API_KEY = (process.env.SALAD_API_KEY || '').trim();
 const CHAT_API_KEY_HEADER = (process.env.SALAD_API_KEY_HEADER || 'Salad-Api-Key').trim();
 const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira-v4').trim();
 const MIRA_PRO_MODEL = (process.env.MIRA_PRO_MODEL || 'mira-pro').trim();
-const MIRA_LOCKED_MODEL = (process.env.MIRA_LOCKED_MODEL || MIRA_MODEL || 'mira-v4').trim();
+// Locked is a separate product mode, but it intentionally uses the exact
+// same Salad model deployment as Mira Pro.
+const MIRA_LOCKED_MODEL = MIRA_PRO_MODEL;
 // Mira Lite: routed to Gemini with multi-key fallback.
 // Primary uses the stable `gemini-2.5-flash` (verified-reachable, 1M context).
 // Floating aliases are kept in the chain so Google can hot-swap stable models
@@ -141,7 +143,6 @@ function isMiraFamilyModel(modelName = '') {
   if (!normalized) return false;
   if (normalized === 'mira' || normalized === 'locked' || normalized === 'mira-locked' || normalized === 'spec' || normalized === 'mira-spec') return true;
   if (buildMiraAliases(MIRA_MODEL).map((item) => item.toLowerCase()).includes(normalized)) return true;
-  if (buildMiraAliases(MIRA_LOCKED_MODEL).map((item) => item.toLowerCase()).includes(normalized)) return true;
   return /^mira[-_](?:v4|spec)(?::latest)?$/.test(normalized);
 }
 
@@ -235,7 +236,7 @@ function getGeminiModelCandidates(requestedModel = '') {
 // transparently retries the request against the next available model.
 // Locked mode never falls back to the general pool.
 function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
-  if (forceLocked) return buildMiraAliases(MIRA_LOCKED_MODEL);
+  if (forceLocked) return [MIRA_PRO_MODEL];
   const normalizedPrimary = String(primaryModel || '').trim().toLowerCase();
   const liteNames = new Set([String(MIRA_LITE_MODEL).toLowerCase(), 'mira-lite', 'lite', 'auto']);
   const baseNames = new Set([String(MIRA_MODEL).toLowerCase(), 'mira']);
@@ -267,8 +268,8 @@ function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
   return ordered;
 }
 
-function buildUnavailableAssistantResponse(primaryModel) {
-  const uiModel = toUiModelName(primaryModel);
+function buildUnavailableAssistantResponse(primaryModel, { locked = false } = {}) {
+  const uiModel = toUiModelName(primaryModel, { locked });
   const family = uiModel === 'mira-pro' ? 'Mira Pro' : uiModel === 'mira-lite' ? 'Mira Lite' : uiModel === 'locked' ? 'Mira Locked' : 'Mira';
   const content = `${family} is temporarily busy, so I switched to backup models but they are also unavailable right now. Please try again in a moment.`;
   return {
@@ -675,7 +676,7 @@ export async function POST(req) {
       ? attachImagesToLastUser(messages, promptImages)
       : messages;
 
-    const modelChain = buildModelFallbackChain(effectiveModel, { forceLocked });
+    const modelChain = buildModelFallbackChain(effectiveModel, { forceLocked: lockedModeRequested });
     let upstreamResult = null;
     let triedModel = effectiveModel;
     for (let i = 0; i < modelChain.length; i += 1) {
@@ -706,7 +707,7 @@ export async function POST(req) {
       if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
       if (upstreamResult?.errorStatus !== 499) {
         return jsonResponse(
-          buildUnavailableAssistantResponse(effectiveModel),
+          buildUnavailableAssistantResponse(effectiveModel, { locked: lockedModeRequested }),
           200,
           { 'X-Mira-Model-Used': toUiModelName(effectiveModel, { locked: lockedModeRequested }) },
         );
