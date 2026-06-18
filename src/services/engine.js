@@ -73,8 +73,7 @@ const SEARCH_SIGNALS = [
   /\b(live|real[- ]time|up[- ]to[- ]date|this morning|tonight|yesterday)\b/i,
   /\b(availability|in stock|sold out|shipping|delivery)\b/i,
   /\b(who\s+(makes|manufactures|produces|produced|created|built|developed|owns|founded)|which\s+company|what\s+company|manufacturer|producer|maker|company\s+behind|brand\s+behind|official\s+website)\b/i,
-  /\b(in[-\s]?depth|deep\s+dive|full\s+information|complete\s+information)\b/i,
-  /\b(explain\s+(the|that|this)|what\s+(does|do)\s+.+\s+(do|mean))\b/i,
+  /\b(law|legal|regulation|regulatory|tax|visa|immigration|medication|drug\s+interaction|dosage|diagnosis|treatment\s+guideline)\b/i,
 ];
 
 // Investigative research intent — user explicitly wants the assistant to

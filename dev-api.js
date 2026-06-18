@@ -211,7 +211,7 @@ const GEMINI_API_KEYS = (() => {
 })();
 const LITE_MAX_MESSAGES = Number(process.env.LITE_MAX_MESSAGES || 16);
 const LITE_MAX_CHARS_PER_MESSAGE = Number(process.env.LITE_MAX_CHARS_PER_MESSAGE || 4000);
-const LITE_MAX_SYSTEM_CHARS = Number(process.env.LITE_MAX_SYSTEM_CHARS || 2000);
+const LITE_MAX_SYSTEM_CHARS = Number(process.env.LITE_MAX_SYSTEM_CHARS || 6000);
 const LITE_MAX_OUTPUT_TOKENS = Number(process.env.LITE_MAX_OUTPUT_TOKENS || 4096);
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 8192);
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);

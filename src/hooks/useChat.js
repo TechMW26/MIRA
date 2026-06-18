@@ -24,6 +24,12 @@ import {
   sanitizeMemoryLeakStyleResponse,
 } from '../services/knowledgeBank';
 import { makeCacheKey, getCachedResponse, setCachedResponse } from '../services/responseCache';
+import {
+  extractWebSearchRequest,
+  isPotentialWebSearchControl,
+  stripWebSearchControl,
+  thinkingSuggestsWebSearch,
+} from '../services/webSearchControl';
 import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
 import { MIRA_IDENTITY_PROMPT } from '../config/systemPrompt';
 
@@ -1481,6 +1487,8 @@ export default function useChat() {
           let requestFailed = false;
           let requestAborted = false;
           let responseModelUsed = chosenModel;
+          let requestedWebSearchQuery = '';
+          let thinkingRequestedWebSearch = false;
 
           const applyModelUsed = (nextModel) => {
             const normalized = String(nextModel || '').trim();
@@ -1513,9 +1521,16 @@ export default function useChat() {
               chosenModel,
               (accumulated) => {
                 if (abortRef.current) return;
-                if (!firstChunkSeen && accumulated) { firstChunkSeen = true; setIsSearching(false); }
+                const controlRequest = extractWebSearchRequest(accumulated);
+                if (controlRequest?.query) {
+                  requestedWebSearchQuery = controlRequest.query;
+                  setIsSearching(true);
+                }
+                const visibleText = stripWebSearchControl(accumulated);
+                const controlPending = isPotentialWebSearchControl(accumulated);
+                if (!firstChunkSeen && visibleText && !controlRequest) { firstChunkSeen = true; setIsSearching(false); }
                 fullText = accumulated;
-                flushStreamingContent(accumulated);
+                flushStreamingContent(controlPending ? visibleText : accumulated);
               },
               images,
               {
@@ -1524,8 +1539,18 @@ export default function useChat() {
                 onModelUsed: applyModelUsed,
                 onThinking: (accumulated) => {
                   if (abortRef.current) return;
-                  if (!firstChunkSeen && accumulated) { firstChunkSeen = true; setIsSearching(false); }
-                  flushThinkingContent(accumulated);
+                  const controlRequest = extractWebSearchRequest(accumulated);
+                  if (controlRequest?.query) {
+                    requestedWebSearchQuery = controlRequest.query;
+                    thinkingRequestedWebSearch = true;
+                    setIsSearching(true);
+                  } else if (thinkingSuggestsWebSearch(accumulated)) {
+                    thinkingRequestedWebSearch = true;
+                    setIsSearching(true);
+                  }
+                  const visibleThinking = stripWebSearchControl(accumulated);
+                  if (!firstChunkSeen && visibleThinking && !thinkingRequestedWebSearch) { firstChunkSeen = true; setIsSearching(false); }
+                  flushThinkingContent(visibleThinking);
                 },
               },
             );
@@ -1538,7 +1563,14 @@ export default function useChat() {
             }
           }
           // Cache successful responses
-          if (cacheKey && fullText && !requestFailed && !requestAborted) {
+          if (
+            cacheKey
+            && fullText
+            && !requestFailed
+            && !requestAborted
+            && !extractWebSearchRequest(fullText)
+            && !indicatesKnowledgeGap(fullText)
+          ) {
             setCachedResponse(cacheKey, fullText);
           }
           }
@@ -1576,6 +1608,10 @@ export default function useChat() {
           // regenerate a grounded answer. This is what lets MIRA resort to the
           // internet on its own when it is unable to answer — not only when the
           // user toggles web access on.
+          const explicitSearchRequest = extractWebSearchRequest(fullText);
+          if (explicitSearchRequest?.query) {
+            requestedWebSearchQuery = explicitSearchRequest.query;
+          }
           const autoSearchEligible =
             !requestFailed &&
             !abortRef.current &&
@@ -1585,7 +1621,11 @@ export default function useChat() {
             !requestedDocumentFormat &&
             !hasImages &&
             content.trim().length > 0 &&
-            indicatesKnowledgeGap(fullText);
+            (
+              Boolean(requestedWebSearchQuery)
+              || thinkingRequestedWebSearch
+              || indicatesKnowledgeGap(fullText)
+            );
 
           if (autoSearchEligible) {
             setIsSearching(true);
@@ -1593,7 +1633,7 @@ export default function useChat() {
             setStreamingContent('');
             setThinkingContent('');
             try {
-              const fallbackQuery = buildContextualSearchQuery(content);
+              const fallbackQuery = requestedWebSearchQuery || buildContextualSearchQuery(content);
               const fallbackRes = await fetch('/api/search', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1639,15 +1679,22 @@ export default function useChat() {
                 }
 
                 if (retryText && retryText.trim() && !abortRef.current) {
-                  fullText = retryText;
+                  fullText = stripWebSearchControl(retryText);
                 }
+              } else if (requestedWebSearchQuery) {
+                fullText = `I searched the web for "${fallbackQuery}", but the available sources did not provide enough reliable information to answer confidently.`;
               }
             } catch (autoErr) {
               console.warn('Auto fallback web search failed:', autoErr?.message);
+              if (requestedWebSearchQuery) {
+                fullText = 'I tried to search the internet for this, but the search service is temporarily unavailable. Please try again in a moment.';
+              }
             } finally {
               setIsSearching(false);
             }
           }
+
+          fullText = stripWebSearchControl(fullText);
 
           if (fullText) {
             // Strip + persist [REMEMBER: key=value] markers before display
