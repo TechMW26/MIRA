@@ -41,7 +41,7 @@ test('uses the dedicated VPS payload for Mira v4', () => {
   });
   assert.equal(payload.model, process.env.MIRA_MODEL || 'mira-v4');
   assert.equal(payload.stream, true);
-  assert.equal(payload.options.num_ctx, Number(process.env.OLLAMA_CONTEXT_TOKENS || 8192));
+  assert.equal(payload.options.num_ctx, Number(process.env.OLLAMA_CONTEXT_TOKENS || 131072));
   assert.equal(payload.options.temperature, 0.2);
   assert.equal(payload.options.top_p, 0.85);
   assert.equal(payload.options.repeat_penalty, 1.2);

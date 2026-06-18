@@ -51,8 +51,8 @@ const GEMINI_API_KEYS = (() => {
   return Array.from(new Set([...fromCsv, ...fromSingles]));
 })();
 const LITE_MAX_OUTPUT_TOKENS = Number(process.env.LITE_MAX_OUTPUT_TOKENS || 4096);
-const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 8192);
-const OLLAMA_CONTEXT_TOKENS = Number(process.env.OLLAMA_CONTEXT_TOKENS || 8192);
+const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 131072);
+const OLLAMA_CONTEXT_TOKENS = Number(process.env.OLLAMA_CONTEXT_TOKENS || 131072);
 const MIRA_V4_TEMPERATURE = Number(process.env.MIRA_V4_TEMPERATURE || 0.2);
 const MIRA_V4_TOP_P = Number(process.env.MIRA_V4_TOP_P || 0.85);
 const MIRA_V4_REPEAT_PENALTY = Number(process.env.MIRA_V4_REPEAT_PENALTY || 1.2);
@@ -335,7 +335,7 @@ export function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, t
         temperature: MIRA_V4_TEMPERATURE,
         top_p: MIRA_V4_TOP_P,
         repeat_penalty: MIRA_V4_REPEAT_PENALTY,
-        num_ctx: Math.max(1024, Math.floor(OLLAMA_CONTEXT_TOKENS || 8192)),
+        num_ctx: Math.max(1024, Math.floor(OLLAMA_CONTEXT_TOKENS || 131072)),
         num_predict: safeMax,
       },
     };
