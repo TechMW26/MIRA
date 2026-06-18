@@ -290,6 +290,38 @@ async function searchDDG(query) {
   } catch { return null; }
 }
 
+async function searchDDGHtml(query) {
+  try {
+    const res = await fetch(
+      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+      {
+        headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' },
+        signal: AbortSignal.timeout(8000),
+      },
+    );
+    if (!res.ok) return null;
+    const html = await res.text();
+    const blocks = html.split(/class="result results_links[^"]*"/i).slice(1, 15);
+    const results = blocks.map((block) => {
+      const anchor = block.match(/class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+      if (!anchor) return null;
+      let url = decodeHtmlEntities(anchor[1]);
+      try {
+        const parsed = new URL(url, 'https://html.duckduckgo.com');
+        url = parsed.searchParams.get('uddg') ? decodeURIComponent(parsed.searchParams.get('uddg')) : parsed.href;
+      } catch { /* keep raw URL */ }
+      const title = cleanImageText(anchor[2]);
+      const snippet = cleanImageText(
+        block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|div)>/i)?.[1] || title,
+      );
+      return title ? { title, snippet: snippet || title, url } : null;
+    }).filter(Boolean);
+    return results.length ? results : null;
+  } catch {
+    return null;
+  }
+}
+
 // === Media: YouTube + Bing Images scrapers ===
 function decodeYTText(s = '') {
   return s.replace(/\\u0026/g, '&').replace(/\\"/g, '"').replace(/\\\//g, '/');
@@ -570,13 +602,14 @@ export async function POST(req) {
     const fresh = detectFreshnessIntent(searchQuery, freshness);
     const window = freshnessWindow(searchQuery);
 
-    const [brave, google, bingWeb, bing, gnews, ddg, videos, bingImages, instagram] = await Promise.all([
+    const [brave, google, bingWeb, bing, gnews, ddg, ddgHtml, videos, bingImages, instagram] = await Promise.all([
       searchBrave(searchQuery, fresh, window),
       searchGoogle(searchQuery, fresh, window),
       searchBingWeb(searchQuery),
       searchBingNews(searchQuery),
       searchGoogleNews(searchQuery),
       searchDDG(searchQuery),
+      searchDDGHtml(searchQuery),
       shouldFetchMedia ? searchYouTube(mediaSearchQuery, anchorScope, strictAnchor) : Promise.resolve(null),
       shouldFetchMedia ? searchBingImages(mediaSearchQuery, anchorScope, strictAnchor) : Promise.resolve(null),
       shouldFetchMedia ? searchInstagram(mediaSearchQuery) : Promise.resolve(null),
@@ -592,7 +625,7 @@ export async function POST(req) {
     } else if (brave?.length) { results = brave.slice(0, 6); source = 'brave'; }
     else if (google?.length) { results = google.slice(0, 6); source = 'google'; }
     else {
-      const merged = [...(ddg || []), ...(bingWeb || []), ...(bing || []), ...(gnews || [])];
+      const merged = [...(ddgHtml || []), ...(ddg || []), ...(bingWeb || []), ...(bing || []), ...(gnews || [])];
       const seen = new Set();
       results = merged.filter(r => {
         const key = r.title.toLowerCase().slice(0, 40);
@@ -600,7 +633,7 @@ export async function POST(req) {
         seen.add(key);
         return true;
       }).slice(0, 6);
-      source = results.length ? 'news-rss' : 'none';
+      source = results.length ? (ddgHtml?.length ? 'duckduckgo-html+rss' : 'news-rss') : 'none';
     }
 
     if (strictAnchor) {

@@ -82,7 +82,11 @@ async function fetchChatPrompt(prompt) {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages: [{ role: 'user', content: prompt }], images: [] }),
+    body: JSON.stringify({
+      messages: [{ role: 'user', content: prompt }],
+      images: [],
+      stream: true,
+    }),
   });
 
   return await readSseText(res);

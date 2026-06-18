@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSearchRetryQueries, isSearchResultRelevant, searchWeb } from './webSearch.js';
+import {
+  buildEvidenceFallbackAnswer,
+  buildSearchRetryQueries,
+  isSearchResultRelevant,
+  searchWeb,
+} from './webSearch.js';
 
 test('builds simpler fallback queries for empty search results', () => {
   const queries = buildSearchRetryQueries('What is the most expensive yacht in India?');
@@ -18,6 +23,27 @@ test('adds the current year for freshness retries', () => {
 test('normalizes conversational shorthand and common search typos', () => {
   const queries = buildSearchRetryQueries('most expensive yatch in india rn', true);
   assert.ok(queries.includes('most expensive yacht in india right now'));
+});
+
+test('repairs the common algaetree compound before retrying search', () => {
+  assert.ok(buildSearchRetryQueries('algaetree').includes('algae tree'));
+});
+
+test('extracts the subject from a Hinglish research question', () => {
+  const queries = buildSearchRetryQueries('Mujhe algaetree ke baare mein current verified details batao.');
+  assert.ok(queries.includes('algae tree'));
+});
+
+test('builds a readable evidence answer when model regeneration fails', () => {
+  const answer = buildEvidenceFallbackAnswer({
+    results: [{
+      title: 'Bhopal installs an algae tree',
+      snippet: 'The installation uses microalgae to absorb carbon dioxide.',
+      publishedAt: '2026-05-11',
+    }],
+  }, 'algae tree');
+  assert.match(answer, /live search found/i);
+  assert.match(answer, /Bhopal installs an algae tree/);
 });
 
 test('retries transient failures before succeeding', async () => {

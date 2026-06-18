@@ -34,7 +34,7 @@ import {
   isPotentialWebSearchControl,
   stripWebSearchControl,
 } from '../services/webSearchControl';
-import { searchWeb } from '../services/webSearch';
+import { buildEvidenceFallbackAnswer, searchWeb } from '../services/webSearch';
 import {
   assessResponseQuality,
   buildQualityCorrectionPrompt,
@@ -43,6 +43,7 @@ import {
 } from '../services/responseQuality';
 import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
 import { MIRA_IDENTITY_PROMPT } from '../config/systemPrompt';
+import { diagnosticLog, diagnosticWarn } from '../services/diagnostics.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 const HISTORY_ATTACHMENT_CHAR_LIMIT = 16000;
@@ -68,6 +69,14 @@ const MEDIA_RELEVANCE_STOPWORDS = new Set([
   'tell', 'show', 'find', 'search', 'images', 'image', 'photos', 'photo', 'videos', 'video',
   'something', 'more', 'details', 'information', 'latest', 'current',
 ]);
+
+function normalizeSearchComparison(value = '') {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function filterRelevantMedia(items = [], query = '') {
   const tokens = Array.from(new Set(
@@ -823,6 +832,7 @@ export default function useChat() {
   const streamRafRef = useRef(null);
   const thinkingRafRef = useRef(null);
   const titleSessionRef = useRef({ conversationId: null, messages: [] });
+  const generationRunRef = useRef(0);
 
   const refreshConversationTitle = useCallback(async (conversationId, transcript = []) => {
     if (!user?.uid || !conversationId || !Array.isArray(transcript) || transcript.length === 0) return;
@@ -1007,6 +1017,7 @@ export default function useChat() {
   }, [currentConversationId]);
 
   const stopGenerating = useCallback(() => {
+    generationRunRef.current += 1;
     abortRef.current = true;
     stopChatGeneration();
     cancelPendingStreamFlushes();
@@ -1036,8 +1047,17 @@ export default function useChat() {
 
   const sendMessage = useCallback(
     async (content, attachments = [], webSearch = false, options = {}) => {
-      if ((!content.trim() && attachments.length === 0) || isGenerating || !user) return;
+      if ((!content.trim() && attachments.length === 0) || !user) return;
+      const interruptExisting = Boolean(options.interruptExisting || options.replaceMessageId);
+      if (isGenerating && !interruptExisting) return;
+      if (isGenerating) {
+        stopChatGeneration();
+        cancelPendingStreamFlushes();
+      }
 
+      const runId = generationRunRef.current + 1;
+      generationRunRef.current = runId;
+      const isCurrentRun = () => generationRunRef.current === runId && !abortRef.current;
       abortRef.current = false;
       cancelPendingStreamFlushes();
       setIsGenerating(true);
@@ -1046,6 +1066,7 @@ export default function useChat() {
 
       let convId = currentConversationId;
       const replaceMessageId = options.replaceMessageId || null;
+      let assistantMsgId = null;
 
       const textAttachments = attachments.filter((a) => !a.isImage);
       const imageAttachments = attachments.filter((a) => a.isImage);
@@ -1122,6 +1143,16 @@ export default function useChat() {
       if (effectiveSelectedModel === 'locked') {
         chosenModel = 'locked';
       }
+      diagnosticLog('model', 'routing decision', {
+        runId,
+        selectedMode: selectedModel || 'auto',
+        override: guardedOverride || null,
+        chosenModel,
+        intent: engineResult.classification?.intent || 'unknown',
+        hasImages,
+        forcedLocked: forceLockedByPrompt,
+        needsSearch: Boolean(engineResult.needsSearch),
+      });
       setActiveResponseModel(chosenModel || null);
       let wantsImageGeneration = promptInterpretation.imageIntent === true;
       let wantsVideoGeneration = promptInterpretation.videoIntent === true;
@@ -1145,11 +1176,13 @@ export default function useChat() {
             await addConversationToProject(user.uid, activeProjectId, convId);
           }
         }
+        if (!isCurrentRun()) return;
 
         let historySource = isNewChat ? [] : messages;
         if (replaceMessageId) {
           historySource = await pruneMessagesAfter(convId, replaceMessageId, historySource);
         }
+        if (!isCurrentRun()) return;
 
         const previousImagePrompt = getLatestGeneratedImagePrompt(historySource);
         const previousVideoPrompt = getLatestGeneratedVideoPrompt(historySource);
@@ -1216,13 +1249,15 @@ export default function useChat() {
             ...(attachmentData.length > 0 ? { attachments: attachmentData } : {}),
           });
         }
+        if (!isCurrentRun()) return;
 
-        const assistantMsgId = await addMessage(convId, {
+        assistantMsgId = await addMessage(convId, {
           role: 'assistant',
           content: '',
           type: 'text',
           modelUsed: chosenModel,
         });
+        if (!isCurrentRun()) return;
 
         // ── Prompt enhancer / clarification gate ──
         // Before dispatching to the main model, ask a small/fast model to
@@ -1244,7 +1279,7 @@ export default function useChat() {
         if (enhancerEligible) {
           try {
             const decision = await assessAndRefinePrompt({ content, interpretation: promptInterpretation });
-            if (!abortRef.current) {
+            if (isCurrentRun()) {
               if (decision.action === 'clarify') {
                 await updateMessage(convId, assistantMsgId, {
                   content: decision.question,
@@ -1306,6 +1341,16 @@ export default function useChat() {
           // anchor, then the final answer uses live sources instead of stopping
           // at a vision-only guess.
           const effectiveWebSearch = !simpleGreeting && (webSearch || engineResult.needsSearch || shouldUseVisualAnchor || shouldUseContextualSearch || Boolean(textResearchMediaScope));
+          if (effectiveWebSearch) {
+            diagnosticLog('search', 'web search triggered by router', {
+              runId,
+              manualToggle: Boolean(webSearch),
+              engineRequested: Boolean(engineResult.needsSearch),
+              visualAnchor: Boolean(shouldUseVisualAnchor),
+              contextualSearch: Boolean(shouldUseContextualSearch),
+              researchScope: Boolean(textResearchMediaScope),
+            });
+          }
           let visualSearchAnchor = '';
 
           // Build a context-aware search query. Short follow-up questions like
@@ -1327,6 +1372,10 @@ export default function useChat() {
             if (quoted) return quoted[1].trim();
             // Drop trailing punctuation/question marks.
             value = value.replace(/[?!.]+\s*$/g, '').trim();
+            // Extract the subject from common Hinglish research phrasing:
+            // "Mujhe X ke baare mein ... batao" -> "X".
+            const hinglishSubject = value.match(/^(?:mujhe|mere\s+ko)\s+(.+?)\s+ke\s+baare\s+(?:me|mein)\b/i)?.[1]?.trim();
+            if (hinglishSubject) value = hinglishSubject;
             // Strip leading greetings ("hi", "hello", "hey ...", "good morning") plus comma.
             value = value.replace(/^(?:hi|hello|hey(?:\s+there)?|yo|sup|good\s+(?:morning|afternoon|evening|day))[,!.\s]+/i, '').trim();
             // Strip polite leading fillers ("please", "kindly", "can you", "could you", "would you").
@@ -1418,6 +1467,12 @@ export default function useChat() {
               const visualScope = visualSearchAnchor ? buildVisualSearchScope(visualSearchAnchor, content) : null;
               const freshnessRequested = needsFreshInformation(content) || needsFreshInformation(searchQuery);
               const searchPayload = { query: searchQuery, includeMedia, freshness: freshnessRequested };
+              diagnosticLog('search', 'router search query prepared', {
+                runId,
+                query: String(searchQuery).slice(0, 180),
+                includeMedia,
+                freshness: freshnessRequested,
+              });
               if (visualScope?.query) {
                 searchPayload.anchor = visualScope.entity || visualSearchAnchor;
                 searchPayload.mediaQuery = visualScope.mediaQuery || visualScope.query;
@@ -1428,7 +1483,7 @@ export default function useChat() {
                 searchPayload.strictAnchor = true;
               }
               let searchData = await searchWeb(searchPayload, {
-                attemptsPerQuery: 2,
+                attemptsPerQuery: 3,
                 retryEmpty: true,
               });
               const strictRetryQuery = visualScope?.mediaQuery || textResearchMediaScope?.mediaQuery || visualSearchAnchor;
@@ -1442,7 +1497,7 @@ export default function useChat() {
                   strictAnchor: true,
                   freshness: freshnessRequested,
                 }, {
-                  attemptsPerQuery: 2,
+                  attemptsPerQuery: 3,
                   retryEmpty: true,
                 });
                 const retryHasResults = Array.isArray(retryData.results) && retryData.results.length > 0;
@@ -1551,7 +1606,7 @@ export default function useChat() {
             } catch (e) {
               console.warn('Web search failed:', e.message);
             } finally {
-              setIsSearching(false);
+              if (isCurrentRun()) setIsSearching(false);
             }
           }
 
@@ -1602,6 +1657,7 @@ export default function useChat() {
           }
 
           if (deterministicMediaReply) {
+            if (!isCurrentRun()) return;
             await updateMessage(convId, assistantMsgId, {
               content: deterministicMediaReply,
               modelUsed: 'search',
@@ -1622,10 +1678,8 @@ export default function useChat() {
 
           history.push({ role: 'user', content: userContent });
 
-          const images = [];
-          for (const img of imageAttachments) {
-            images.push(await normalizeImageForUpload(img));
-          }
+          const images = await Promise.all(imageAttachments.map((img) => normalizeImageForUpload(img)));
+          if (!isCurrentRun()) return;
 
           let fullText = '';
           let finalThinkingText = '';
@@ -1638,6 +1692,11 @@ export default function useChat() {
             const normalized = String(nextModel || '').trim();
             if (!normalized) return;
             if (normalized === responseModelUsed) return;
+            diagnosticWarn('model', 'active model switched', {
+              runId,
+              from: responseModelUsed,
+              to: normalized,
+            });
             responseModelUsed = normalized;
             setActiveResponseModel(normalized);
             setMessages((prev) => prev.map((msg) => (
@@ -1653,7 +1712,7 @@ export default function useChat() {
             images,
           });
           const cached = cacheKey ? getCachedResponse(cacheKey) : null;
-          if (cached && !abortRef.current) {
+          if (cached && isCurrentRun()) {
             fullText = humanizeAssistantText(cached);
             setStreamingContent(fullText);
             setIsSearching(false);
@@ -1664,9 +1723,16 @@ export default function useChat() {
               history,
               chosenModel,
               (accumulated) => {
-                if (abortRef.current) return;
+                if (!isCurrentRun()) return;
                 const controlRequest = extractWebSearchRequest(accumulated);
                 if (controlRequest?.query) {
+                  if (requestedWebSearchQuery !== controlRequest.query) {
+                    diagnosticLog('search', 'model requested web search', {
+                      runId,
+                      model: responseModelUsed,
+                      query: String(controlRequest.query).slice(0, 180),
+                    });
+                  }
                   requestedWebSearchQuery = controlRequest.query;
                   setIsSearching(true);
                 }
@@ -1682,7 +1748,19 @@ export default function useChat() {
                 ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                 onModelUsed: applyModelUsed,
                 onThinking: (accumulated) => {
-                  if (abortRef.current) return;
+                  if (!isCurrentRun()) return;
+                  const thinkingControlRequest = extractWebSearchRequest(accumulated);
+                  if (thinkingControlRequest?.query) {
+                    if (requestedWebSearchQuery !== thinkingControlRequest.query) {
+                      diagnosticLog('search', 'model requested web search from thinking', {
+                        runId,
+                        model: responseModelUsed,
+                        query: String(thinkingControlRequest.query).slice(0, 180),
+                      });
+                    }
+                    requestedWebSearchQuery = thinkingControlRequest.query;
+                    setIsSearching(true);
+                  }
                   finalThinkingText = stripWebSearchControl(accumulated);
                   const visibleThinking = finalThinkingText;
                   if (!firstChunkSeen && visibleThinking) { firstChunkSeen = true; setIsSearching(false); }
@@ -1693,6 +1771,24 @@ export default function useChat() {
           } catch (err) {
             if (err?.name === 'AbortError') {
               requestAborted = true;
+            } else if (requestedWebSearchQuery) {
+              // A model may emit only the web-search control marker in its
+              // private reasoning channel. That is a successful tool request,
+              // not an empty-answer failure.
+              requestFailed = false;
+              fullText = `[WEB_SEARCH: ${requestedWebSearchQuery}]`;
+            } else if (groundingSearchData?.results?.length) {
+              requestFailed = false;
+              fullText = buildEvidenceFallbackAnswer(
+                groundingSearchData,
+                groundingSearchQuery || content,
+              );
+              diagnosticWarn('search', 'model failed after retrieval; using evidence fallback', {
+                runId,
+                query: String(groundingSearchQuery || content).slice(0, 180),
+                resultCount: groundingSearchData.results.length,
+                error: err?.message || 'Unknown generation error',
+              });
             } else {
               requestFailed = true;
               fullText = fullText || `Sorry, something went wrong: ${err.message}`;
@@ -1711,14 +1807,14 @@ export default function useChat() {
           }
           }
 
-          if (requestAborted || abortRef.current) {
+          if (requestAborted || !isCurrentRun()) {
             return;
           }
 
           if (wantsImageGeneration && !requestFailed) {
             fullText = normalizeImageGenerationOutput(fullText, content, wantsImageRefinementFollowup ? previousImagePrompt : '');
             const imagePrompt = extractImageGenerationPrompt(fullText);
-            if (imagePrompt && !abortRef.current) {
+            if (imagePrompt && isCurrentRun()) {
               try {
                 const persistedImage = await persistGeneratedImageAsset({
                   prompt: imagePrompt,
@@ -1746,12 +1842,26 @@ export default function useChat() {
           // user toggles web access on.
           const explicitSearchRequest = extractWebSearchRequest(fullText);
           if (explicitSearchRequest?.query) {
+            if (requestedWebSearchQuery !== explicitSearchRequest.query) {
+              diagnosticLog('search', 'web-search control detected after generation', {
+                runId,
+                model: responseModelUsed,
+                query: String(explicitSearchRequest.query).slice(0, 180),
+              });
+            }
             requestedWebSearchQuery = explicitSearchRequest.query;
           }
           const autoSearchEligible =
             !requestFailed &&
-            !abortRef.current &&
-            (!effectiveWebSearch || !groundingSearchData) &&
+            isCurrentRun() &&
+            (
+              !effectiveWebSearch
+              || !groundingSearchData
+              || (
+                Boolean(requestedWebSearchQuery)
+                && normalizeSearchComparison(requestedWebSearchQuery) !== normalizeSearchComparison(groundingSearchQuery)
+              )
+            ) &&
             !wantsImageGeneration &&
             !wantsVideoGeneration &&
             !requestedDocumentFormat &&
@@ -1760,6 +1870,12 @@ export default function useChat() {
             (Boolean(requestedWebSearchQuery) || indicatesLowConfidence(fullText));
 
           if (autoSearchEligible) {
+            diagnosticWarn('search', 'automatic fallback search activated', {
+              runId,
+              reason: requestedWebSearchQuery ? 'model-control' : 'low-confidence-answer',
+              model: responseModelUsed,
+              query: String(requestedWebSearchQuery || buildContextualSearchQuery(content)).slice(0, 180),
+            });
             setIsSearching(true);
             cancelPendingStreamFlushes();
             setStreamingContent('');
@@ -1772,12 +1888,12 @@ export default function useChat() {
                 includeMedia: false,
                 freshness: fallbackFreshnessRequested,
               }, {
-                attemptsPerQuery: 2,
+                attemptsPerQuery: 3,
                 retryEmpty: true,
               });
               const fallbackResults = Array.isArray(fallbackData.results) ? fallbackData.results : [];
 
-              if (fallbackResults.length && !abortRef.current) {
+              if (fallbackResults.length && isCurrentRun()) {
                 groundingSearchData = fallbackData;
                 groundingSearchQuery = fallbackData.searchMeta?.queryUsed || fallbackQuery;
                 groundingFreshnessRequested = fallbackFreshnessRequested;
@@ -1797,7 +1913,7 @@ export default function useChat() {
                     history,
                     chosenModel,
                     (accumulated) => {
-                      if (abortRef.current) return;
+                      if (!isCurrentRun()) return;
                       if (!retryFirstChunkSeen && accumulated) { retryFirstChunkSeen = true; setIsSearching(false); }
                       retryText = accumulated;
                       flushStreamingContent(accumulated);
@@ -1808,7 +1924,7 @@ export default function useChat() {
                       ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                       onModelUsed: applyModelUsed,
                       onThinking: (accumulated) => {
-                        if (abortRef.current) return;
+                        if (!isCurrentRun()) return;
                         finalThinkingText = stripWebSearchControl(accumulated);
                         if (!retryFirstChunkSeen && accumulated) { retryFirstChunkSeen = true; setIsSearching(false); }
                         flushThinkingContent(finalThinkingText);
@@ -1817,10 +1933,15 @@ export default function useChat() {
                   );
                 } catch (retryErr) {
                   console.warn('Auto web-search retry failed:', retryErr?.message);
-                  retryText = '';
+                  retryText = buildEvidenceFallbackAnswer(fallbackData, fallbackQuery);
+                  diagnosticWarn('search', 'grounded regeneration failed; using evidence fallback', {
+                    runId,
+                    query: String(fallbackQuery).slice(0, 180),
+                    error: retryErr?.message || 'Unknown regeneration error',
+                  });
                 }
 
-                if (retryText && retryText.trim() && !abortRef.current) {
+                if (retryText && retryText.trim() && isCurrentRun()) {
                   fullText = stripWebSearchControl(retryText);
                 }
               } else if (requestedWebSearchQuery) {
@@ -1832,7 +1953,7 @@ export default function useChat() {
                 fullText = 'I tried to search the internet for this, but the search service is temporarily unavailable. Please try again in a moment.';
               }
             } finally {
-              setIsSearching(false);
+              if (isCurrentRun()) setIsSearching(false);
             }
           }
 
@@ -1845,7 +1966,7 @@ export default function useChat() {
           // stronger model and a precise correction contract.
           const qualityEligible =
             !requestFailed
-            && !abortRef.current
+            && isCurrentRun()
             && !wantsImageGeneration
             && !wantsVideoGeneration
             && !requestedDocumentFormat
@@ -1860,7 +1981,13 @@ export default function useChat() {
             })
             : { ok: true, reasons: [] };
 
-          if (!qualityAssessment.ok && !abortRef.current) {
+          if (!qualityAssessment.ok && isCurrentRun()) {
+            diagnosticWarn('model', 'quality rewrite activated', {
+              runId,
+              model: responseModelUsed,
+              reasons: qualityAssessment.reasons,
+              grounded: Boolean(groundingSearchData),
+            });
             cancelPendingStreamFlushes();
             setStreamingContent('');
             setThinkingContent('');
@@ -1891,7 +2018,7 @@ export default function useChat() {
                 correctedHistory,
                 qualityModel,
                 (accumulated) => {
-                  if (abortRef.current) return;
+                  if (!isCurrentRun()) return;
                   correctedText = stripWebSearchControl(accumulated);
                   flushStreamingContent(correctedText);
                 },
@@ -1901,7 +2028,7 @@ export default function useChat() {
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onModelUsed: applyModelUsed,
                   onThinking: (accumulated) => {
-                    if (abortRef.current) return;
+                    if (!isCurrentRun()) return;
                     finalThinkingText = stripWebSearchControl(accumulated);
                     flushThinkingContent(finalThinkingText);
                   },
@@ -1910,10 +2037,10 @@ export default function useChat() {
             } catch (qualityErr) {
               console.warn('Quality correction retry failed:', qualityErr?.message);
             } finally {
-              setIsSearching(false);
+              if (isCurrentRun()) setIsSearching(false);
             }
 
-            if (correctedText.trim() && !abortRef.current) {
+            if (correctedText.trim() && isCurrentRun()) {
               fullText = correctedText.trim();
             }
 
@@ -1928,7 +2055,13 @@ export default function useChat() {
 
             // Lite gets the first opportunity to repair its own answer. If it
             // still ignores clearly relevant evidence, escalate only then.
-            if (!correctedAssessment.ok && chosenModel === 'mira-lite' && !abortRef.current) {
+            if (!correctedAssessment.ok && chosenModel === 'mira-lite' && isCurrentRun()) {
+              diagnosticWarn('model', 'quality escalation activated', {
+                runId,
+                from: chosenModel,
+                to: 'mira',
+                reasons: correctedAssessment.reasons,
+              });
               cancelPendingStreamFlushes();
               setStreamingContent('');
               setThinkingContent('');
@@ -1954,7 +2087,7 @@ export default function useChat() {
                   escalationHistory,
                   'mira',
                   (accumulated) => {
-                    if (abortRef.current) return;
+                    if (!isCurrentRun()) return;
                     escalatedText = stripWebSearchControl(accumulated);
                     flushStreamingContent(escalatedText);
                   },
@@ -1964,7 +2097,7 @@ export default function useChat() {
                     ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                     onModelUsed: applyModelUsed,
                     onThinking: (accumulated) => {
-                      if (abortRef.current) return;
+                      if (!isCurrentRun()) return;
                       finalThinkingText = stripWebSearchControl(accumulated);
                       flushThinkingContent(finalThinkingText);
                     },
@@ -1973,10 +2106,10 @@ export default function useChat() {
               } catch (escalationErr) {
                 console.warn('Grounded answer escalation failed:', escalationErr?.message);
               } finally {
-                setIsSearching(false);
+                if (isCurrentRun()) setIsSearching(false);
               }
 
-              if (escalatedText.trim() && !abortRef.current) {
+              if (escalatedText.trim() && isCurrentRun()) {
                 fullText = escalatedText.trim();
               }
             }
@@ -2046,7 +2179,22 @@ export default function useChat() {
         }
       } catch (err) {
         console.error('Send message error:', err);
+        if (generationRunRef.current === runId && !abortRef.current && assistantMsgId) {
+          const failureText = `Sorry, I couldn't complete that response. ${err?.message || 'Please try again.'}`;
+          setMessages((prev) => prev.map((msg) => (
+            msg.id === assistantMsgId
+              ? { ...msg, content: failureText, isStreaming: false }
+              : msg
+          )));
+          updateMessage(convId, assistantMsgId, {
+            content: failureText,
+            modelUsed: selectedModel || 'auto',
+          }).catch((persistErr) => {
+            console.warn('Failed to persist terminal chat error:', persistErr?.message);
+          });
+        }
       } finally {
+        if (generationRunRef.current !== runId) return;
         cancelPendingStreamFlushes();
         setIsGenerating(false);
         setIsSearching(false);
@@ -2074,25 +2222,25 @@ export default function useChat() {
 
   const retryMessage = useCallback(async (message, webSearch = false) => {
     if (!message?.id || message.role !== 'user') return;
-    stopGenerating();
     await sendMessage(message.content || '', cloneAttachmentsForResend(message), webSearch, {
       replaceMessageId: message.id,
+      interruptExisting: true,
       ...(message.promptContent ? { promptContent: message.promptContent } : {}),
       ...(message.webPage ? { webPage: message.webPage } : {}),
     });
-  }, [sendMessage, stopGenerating]);
+  }, [sendMessage]);
 
   const editMessage = useCallback(async (message, nextContent, webSearch = false, modelOverride = null) => {
     if (!message?.id || message.role !== 'user') return;
     const content = String(nextContent || '').trim();
     if (!content) return;
 
-    stopGenerating();
     await sendMessage(content, cloneAttachmentsForResend(message), webSearch, {
       replaceMessageId: message.id,
+      interruptExisting: true,
       ...(modelOverride ? { modelOverride } : {}),
     });
-  }, [sendMessage, stopGenerating]);
+  }, [sendMessage]);
 
   return {
     messages,

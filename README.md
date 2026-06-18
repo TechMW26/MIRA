@@ -4,7 +4,7 @@ A conversational, research, vision, and media assistant with multi-provider mode
 
 ## Features
 
-- **Multi-provider model routing** — Mira Lite uses Gemini; Mira and Mira Pro use configured Salad/Ollama-compatible endpoints
+- **Multi-provider model routing** — Mira Lite uses Gemini, Mira uses the VPS endpoint, and Mira Pro/Locked use Salad
 - **Automatic internet research** — Deterministic routing plus model-requested live search with citations
 - **Chat Interface** — Streaming responses, markdown rendering, syntax-highlighted code
 - **Voice Mode** — Hands-free conversation with speech-to-text and text-to-speech
@@ -39,16 +39,20 @@ Use these variables locally in `.env` and in Vercel Project Settings -> Environm
 VITE_FIREBASE_DATABASE_URL=
 BLOB_READ_WRITE_TOKEN=
 
-# Salad/Ollama-compatible chat providers
+# Chat providers
 SALAD_API_URL=
 SALAD_API_KEY=
 SALAD_API_KEY_HEADER=Salad-Api-Key
+# Standard Mira (`mira-v4`) runs only on this VPS-hosted Ollama-compatible endpoint.
 OLLAMA_API_URL=http://147.93.102.103:11434/api/chat
 MIRA_MODEL=mira-v4
+# Mira Pro and Locked both run on Salad using `mira-pro`.
 MIRA_PRO_MODEL=mira-pro
-MIRA_LOCKED_MODEL=mira-v4
 OLLAMA_MAX_TOKENS=12000
-OLLAMA_TIMEOUT_MS=300000
+OLLAMA_CONTEXT_TOKENS=8192
+MIRA_V4_TEMPERATURE=0.2
+MIRA_V4_TOP_P=0.85
+MIRA_V4_REPEAT_PENALTY=1.2
 
 # Mira Lite / Gemini
 GEMINI_API_KEYS=
@@ -77,7 +81,7 @@ POLLINATIONS_VIDEO_MODEL=wan-pro
 - **Backend:** Vercel Serverless Functions (Edge Runtime)
 - **Database:** Firebase Realtime Database
 - **Auth:** Custom auth via Firebase RTB (SHA-256 hashed passwords)
-- **AI:** Gemini plus Salad/Ollama-compatible chat endpoints
+- **AI:** Gemini for Mira Lite, the VPS-hosted endpoint for Mira, and Salad for Mira Pro/Locked
 
 ## Internet Search Orchestration
 

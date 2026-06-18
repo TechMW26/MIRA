@@ -1,3 +1,5 @@
+import { diagnosticError, diagnosticLog, diagnosticWarn } from './diagnostics.js';
+
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
 const SEARCH_INTENT_PREFIX = /^(?:what|who|where|when|why|how|which|search|find|look\s+up|check|tell\s+me\s+about|give\s+me\s+(?:information|details)\s+(?:about|on))\s+/i;
 const RELEVANCE_STOPWORDS = new Set([
@@ -6,9 +8,14 @@ const RELEVANCE_STOPWORDS = new Set([
   'latest', 'current', 'currently', 'recent', 'newest', 'today', 'please', 'about',
   'expensive', 'cheap', 'cheapest', 'best', 'largest', 'smallest', 'biggest',
   'highest', 'lowest', 'top', 'popular', 'famous',
+  'mujhe', 'mere', 'mera', 'meri', 'ke', 'ki', 'ka', 'baare', 'mein', 'me',
+  'batao', 'bata', 'details', 'jaankari', 'jankari', 'kuch',
 ]);
 
 const QUERY_NORMALIZATIONS = [
+  [/\balgaetree\b/gi, 'algae tree'],
+  [/\balgea\s*tree\b/gi, 'algae tree'],
+  [/\balge\s*tree\b/gi, 'algae tree'],
   [/\byatch\b/gi, 'yacht'],
   [/\byaht\b/gi, 'yacht'],
   [/\brn\b/gi, 'right now'],
@@ -32,6 +39,10 @@ export function buildSearchRetryQueries(query = '', freshness = false) {
   const cleaned = original
     .replace(/[?!.]+$/g, '')
     .replace(SEARCH_INTENT_PREFIX, '')
+    .replace(/^(?:mujhe|mere\s+ko)\s+/i, '')
+    .replace(/\s+ke\s+baare\s+(?:me|mein)\b[\s\S]*$/i, '')
+    .replace(/\s+(?:ke\s+)?(?:current\s+)?(?:verified\s+)?details?\s+batao\b[\s\S]*$/i, '')
+    .replace(/\s+(?:kuch\s+)?batao\b[\s\S]*$/i, '')
     .replace(/^(?:is|are|was|were)\s+/i, '')
     .replace(/^(?:the|a|an)\s+/i, '')
     .trim();
@@ -47,16 +58,35 @@ export function buildSearchRetryQueries(query = '', freshness = false) {
     ? `"${locationMatch[1].trim()}" ${locationMatch[2].trim()}`
     : '';
   const currentYear = new Date().getUTCFullYear();
+  const spacedCompound = withoutFillers
+    .replace(/\b(algae)(tree)\b/gi, '$1 $2')
+    .trim();
 
   return Array.from(new Set([
     raw,
     original,
     cleaned,
     withoutFillers,
+    spacedCompound,
     quotedLocation,
     locationFirst,
     freshness && !new RegExp(`\\b${currentYear}\\b`).test(withoutFillers) ? `${withoutFillers} ${currentYear}` : '',
   ].filter((value) => value && value.length >= 3))).slice(0, freshness ? 5 : 4);
+}
+
+export function buildEvidenceFallbackAnswer(payload = {}, query = '') {
+  const results = (Array.isArray(payload?.results) ? payload.results : [])
+    .filter((result) => result?.title && result?.snippet)
+    .slice(0, 4);
+  if (!results.length) {
+    return `I searched for “${String(query || '').trim()}”, but the available sources did not contain enough relevant evidence to answer reliably.`;
+  }
+
+  const details = results.map((result) => {
+    const date = result.publishedAt ? ` (${result.publishedAt})` : '';
+    return `- **${result.title}**${date}: ${String(result.snippet).replace(/\s+/g, ' ').trim()}`;
+  });
+  return `Here’s what the live search found about **${String(query || '').trim()}**:\n\n${details.join('\n')}`;
 }
 
 async function readSearchResponse(response) {
@@ -114,11 +144,23 @@ export async function searchWeb(payload = {}, options = {}) {
   let lastPayload = null;
   let lastError = null;
   let requestCount = 0;
+  diagnosticLog('search', 'search started', {
+    query: String(payload?.query || '').slice(0, 180),
+    freshness,
+    includeMedia: Boolean(payload?.includeMedia),
+    variants: queryVariants.length,
+  });
 
   for (const query of queryVariants) {
     for (let attempt = 1; attempt <= attemptsPerQuery; attempt += 1) {
       requestCount += 1;
+      const startedAt = Date.now();
       try {
+        diagnosticLog('search', 'search attempt', {
+          query: String(query).slice(0, 180),
+          attempt,
+          requestCount,
+        });
         const response = await fetch('/api/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -128,6 +170,15 @@ export async function searchWeb(payload = {}, options = {}) {
         const data = await readSearchResponse(response);
         lastPayload = data;
         if (hasUsefulSearchData(data, query)) {
+          diagnosticLog('search', 'search completed', {
+            queryUsed: String(query).slice(0, 180),
+            attempts: requestCount,
+            source: data?.source || 'unknown',
+            resultCount: Array.isArray(data?.results) ? data.results.length : 0,
+            videoCount: Array.isArray(data?.media?.videos) ? data.media.videos.length : 0,
+            imageCount: Array.isArray(data?.media?.images) ? data.media.images.length : 0,
+            elapsedMs: Date.now() - startedAt,
+          });
           return {
             ...data,
             searchMeta: {
@@ -139,11 +190,23 @@ export async function searchWeb(payload = {}, options = {}) {
             },
           };
         }
+        diagnosticWarn('search', 'search returned no useful results', {
+          query: String(query).slice(0, 180),
+          attempt,
+          requestCount,
+        });
         break;
       } catch (error) {
         if (error?.name === 'AbortError') throw error;
         lastError = error;
         const retryable = !error?.status || RETRYABLE_STATUS.has(error.status);
+        diagnosticWarn('search', retryable ? 'search attempt failed; retrying' : 'search attempt failed', {
+          query: String(query).slice(0, 180),
+          attempt,
+          requestCount,
+          status: error?.status || 'network',
+          error: error?.message || 'Unknown search error',
+        });
         if (!retryable || attempt >= attemptsPerQuery) break;
         await sleep(250 * (2 ** (attempt - 1)));
       }
@@ -151,6 +214,10 @@ export async function searchWeb(payload = {}, options = {}) {
   }
 
   if (lastPayload) {
+    diagnosticWarn('search', 'search exhausted without useful results', {
+      originalQuery: String(payload?.query || '').slice(0, 180),
+      attempts: requestCount,
+    });
     return {
       ...lastPayload,
       searchMeta: {
@@ -164,5 +231,10 @@ export async function searchWeb(payload = {}, options = {}) {
     };
   }
 
+  diagnosticError('search', 'search exhausted with error', {
+    originalQuery: String(payload?.query || '').slice(0, 180),
+    attempts: requestCount,
+    error: lastError?.message || 'Web search failed after retries.',
+  });
   throw lastError || new Error('Web search failed after retries.');
 }
