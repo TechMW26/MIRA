@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { sendChatMessage, stopChatGeneration } from '../services/api';
 import { analyzeImage } from '../services/imageAnalysis.js';
-import { processQuery } from '../services/engine';
+import { needsFreshInformation, processQuery } from '../services/engine';
 import { assessAndRefinePrompt, shouldRunEnhancer } from '../services/promptEnhancer';
 import {
   createConversation,
@@ -28,8 +28,9 @@ import {
   extractWebSearchRequest,
   isPotentialWebSearchControl,
   stripWebSearchControl,
-  thinkingSuggestsWebSearch,
 } from '../services/webSearchControl';
+import { searchWeb } from '../services/webSearch';
+import { assessResponseQuality, buildQualityCorrectionPrompt } from '../services/responseQuality';
 import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
 import { MIRA_IDENTITY_PROMPT } from '../config/systemPrompt';
 
@@ -316,19 +317,16 @@ function ensureVerifiedDocumentImages(content = '', verifiedImages = []) {
 async function fetchDocumentVisualImages(scope) {
   if (!scope?.query) return [];
   try {
-    const res = await fetch('/api/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query: scope.query,
-        includeMedia: true,
-        mediaQuery: scope.mediaQuery || scope.query,
-        anchor: scope.entity || scope.mediaQuery || scope.query,
-        strictAnchor: true,
-      }),
+    const data = await searchWeb({
+      query: scope.query,
+      includeMedia: true,
+      mediaQuery: scope.mediaQuery || scope.query,
+      anchor: scope.entity || scope.mediaQuery || scope.query,
+      strictAnchor: true,
+    }, {
+      attemptsPerQuery: 2,
+      retryEmpty: true,
     });
-    if (!res.ok) return [];
-    const data = await res.json();
     const images = Array.isArray(data.media?.images) ? data.media.images : [];
     return images
       .filter((image) => /^https?:\/\//i.test(image?.thumbnail || image?.url || ''))
@@ -1028,15 +1026,9 @@ export default function useChat() {
       const requestedDocumentFormat = (wantsImageGeneration || wantsVideoGeneration)
         ? null
         : detectDocumentRequest(content, textAttachments.length > 0);
-      const shouldThink = !simpleGreeting && (
-        promptInterpretation.codeIntent
-        || hasImages
-        || wantsImageGeneration
-        || wantsVideoGeneration
-        || requestedDocumentFormat != null
-        || engineResult.classification.intent === 'math'
-        || engineResult.classification.complexity === 'high'
-      );
+      // Mira Lite stays fast/plain. Every other model may use the structured
+      // thinking channel, which the UI contains and collapses separately.
+      const shouldThink = chosenModel !== 'mira-lite' && !simpleGreeting;
       let documentVisualImages = [];
 
       try {
@@ -1178,6 +1170,9 @@ export default function useChat() {
         let mediaForMessage = null;
         let generatedMediaForMessage = null;
         let deterministicMediaReply = null;
+        let groundingSearchData = null;
+        let groundingSearchQuery = '';
+        let groundingFreshnessRequested = false;
 
         {
           let userContent = options.promptContent || enhancedContent || content;
@@ -1293,7 +1288,12 @@ export default function useChat() {
                   console.warn('Visual search anchor failed:', visualErr.message);
                 }
               }
-              let searchQuery = textResearchMediaScope?.query || buildContextualSearchQuery(content);
+              // Keep the primary web query natural. The entity scope is useful
+              // for validating media, but quoting the entire interpreted entity
+              // can over-constrain web results (for example
+              // "Most Expensive Yacht In India" misses "India's most expensive
+              // yacht"). The retry layer can quote a narrower subject later.
+              let searchQuery = buildContextualSearchQuery(content) || textResearchMediaScope?.query || content;
               // Only attach a related-media gallery when the user has actually
               // signalled they want media (explicit "videos/images/...", an
               // image attachment, or a "this device" follow-up). Plain
@@ -1304,7 +1304,8 @@ export default function useChat() {
               const shouldAttachRelatedMedia = wantsMediaGallery || shouldUseVisualAnchor || shouldAttachContextualMedia;
               const includeMedia = shouldAttachRelatedMedia;
               const visualScope = visualSearchAnchor ? buildVisualSearchScope(visualSearchAnchor, content) : null;
-              const searchPayload = { query: searchQuery, includeMedia };
+              const freshnessRequested = needsFreshInformation(content) || needsFreshInformation(searchQuery);
+              const searchPayload = { query: searchQuery, includeMedia, freshness: freshnessRequested };
               if (visualScope?.query) {
                 searchPayload.anchor = visualScope.entity || visualSearchAnchor;
                 searchPayload.mediaQuery = visualScope.mediaQuery || visualScope.query;
@@ -1314,27 +1315,24 @@ export default function useChat() {
                 searchPayload.mediaQuery = textResearchMediaScope.mediaQuery || textResearchMediaScope.query;
                 searchPayload.strictAnchor = true;
               }
-              let searchRes = await fetch('/api/search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(searchPayload),
+              let searchData = await searchWeb(searchPayload, {
+                attemptsPerQuery: 2,
+                retryEmpty: true,
               });
-              let searchData = await searchRes.json();
               const strictRetryQuery = visualScope?.mediaQuery || textResearchMediaScope?.mediaQuery || visualSearchAnchor;
               const strictRetryAnchor = visualScope?.entity || textResearchMediaScope?.entity || visualSearchAnchor;
               if ((!Array.isArray(searchData.results) || searchData.results.length === 0) && strictRetryQuery && searchQuery !== strictRetryQuery) {
-                const retryRes = await fetch('/api/search', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    query: strictRetryQuery,
-                    includeMedia,
-                    mediaQuery: strictRetryQuery,
-                    anchor: strictRetryAnchor,
-                    strictAnchor: true,
-                  }),
+                const retryData = await searchWeb({
+                  query: strictRetryQuery,
+                  includeMedia,
+                  mediaQuery: strictRetryQuery,
+                  anchor: strictRetryAnchor,
+                  strictAnchor: true,
+                  freshness: freshnessRequested,
+                }, {
+                  attemptsPerQuery: 2,
+                  retryEmpty: true,
                 });
-                const retryData = await retryRes.json();
                 const retryHasResults = Array.isArray(retryData.results) && retryData.results.length > 0;
                 const retryHasMedia = Array.isArray(retryData.media?.videos) && retryData.media.videos.length > 0
                   || Array.isArray(retryData.media?.images) && retryData.media.images.length > 0;
@@ -1381,13 +1379,19 @@ export default function useChat() {
                 mediaForMessage = { videos: realVideos, images: realImages, query: mediaQueryForMessage };
               }
               if (searchData.results?.length) {
+                groundingSearchData = searchData;
+                groundingSearchQuery = searchData.searchMeta?.queryUsed || searchQuery;
+                groundingFreshnessRequested = freshnessRequested;
                 const snippets = searchData.results
-                  .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}${r.url ? '\nSource: ' + r.url : ''}`)
+                  .map((r, i) => `[${i + 1}] ${r.title}${r.publishedAt ? `\nPublished: ${r.publishedAt}` : '\nPublished: date unavailable'}\n${r.snippet}${r.url ? '\nSource: ' + r.url : ''}`)
                   .join('\n\n');
                 const contextBlock = recentContextAnchor
                   ? `\nConversation context anchor from previous turns: "${recentContextAnchor}"`
                   : '';
-                userContent = `${content}${recentConversationContextBlock}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${new Date().toUTCString()}) ===\nSearch query used: "${searchQuery}"${contextBlock}\n\n${snippets}\n=== END SEARCH DATA ===${mediaBlock}\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.\n- Conversation context comes FIRST. Resolve pronouns and phrases like "this device", "that product", "it", or "the company" from the conversation context anchor before interpreting search results.\n- If the search results clearly do not match the entity the user is referring to in this conversation, IGNORE the search results and answer from prior turns / your own knowledge instead. Do NOT pivot to an unrelated topic just because it appeared in the search results.\n- If the user asks who makes, produces, owns, founded, launched, or sells the referenced thing, search results are required evidence. Do not say you need more details when the context anchor already names the referenced thing.\n- When the results are on-topic, cite the sources by their [number].\n- MEDIA RULES (strict, NON-NEGOTIABLE):\n   • NEVER write or paste any YouTube, Instagram, Twitter/X, TikTok, or article URL as text or as a markdown link in your reply. The user has already had real links/embeds rendered for them by the UI (see the MEDIA GALLERY block above and the [number] citations).\n   • NEVER invent video titles, image descriptions, durations, channel names, view counts, or URLs. If you do not have a verified value, omit it.\n   • The UI auto-renders an embedded video player + image gallery directly under your reply for every item in the MEDIA GALLERY block. Do NOT enumerate them.\n   • When the user asks for "videos", "images", "more media", "social posts", or similar, reply with ONE short sentence pointing at the gallery (e.g. "Here are the most relevant clips and photos I found — see the gallery below.") and stop.\n   • If the MEDIA GALLERY block is empty, say plainly that you couldn't find relevant media this time. Do NOT invent placeholder links to fill the gap.\n\nAnswer:`;
+                const freshnessRules = freshnessRequested
+                  ? `\n- FRESHNESS IS MANDATORY: The user requested latest/current information. The host has ranked the evidence newest-first and limited it to the freshest retrieved cohort.\n- Use ONLY the newest relevant retrieved facts. Prefer the greatest Published timestamp. Ignore older claims when a newer source updates, supersedes, or conflicts with them.\n- State the exact date of the newest evidence you rely on. If every result says "date unavailable", say that recency could not be independently confirmed instead of presenting it as definitively latest.`
+                  : '';
+                userContent = `${content}${recentConversationContextBlock}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${searchData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${searchQuery}"${contextBlock}\nFreshness requested: ${freshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${searchData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===${mediaBlock}\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${freshnessRules}\n- Conversation context comes FIRST. Resolve pronouns and phrases like "this device", "that product", "it", or "the company" from the conversation context anchor before interpreting search results.\n- If the search results clearly do not match the entity the user is referring to in this conversation, IGNORE the search results and answer from prior turns / your own knowledge instead. Do NOT pivot to an unrelated topic just because it appeared in the search results.\n- If the user asks who makes, produces, owns, founded, launched, or sells the referenced thing, search results are required evidence. Do not say you need more details when the context anchor already names the referenced thing.\n- When the results are on-topic, cite the sources by their [number].\n- MEDIA RULES (strict, NON-NEGOTIABLE):\n   • NEVER write or paste any YouTube, Instagram, Twitter/X, TikTok, or article URL as text or as a markdown link in your reply. The user has already had real links/embeds rendered for them by the UI (see the MEDIA GALLERY block above and the [number] citations).\n   • NEVER invent video titles, image descriptions, durations, channel names, view counts, or URLs. If you do not have a verified value, omit it.\n   • The UI auto-renders an embedded video player + image gallery directly under your reply for every item in the MEDIA GALLERY block. Do NOT enumerate them.\n   • When the user asks for "videos", "images", "more media", "social posts", or similar, reply with ONE short sentence pointing at the gallery (e.g. "Here are the most relevant clips and photos I found — see the gallery below.") and stop.\n   • If the MEDIA GALLERY block is empty, say plainly that you couldn't find relevant media this time. Do NOT invent placeholder links to fill the gap.\n\nAnswer:`;
                 if (!wantsOnlyMediaGallery && shouldAttachRelatedMedia) {
                   userContent = userContent.replace(
                     '   • When the user asks for "videos", "images", "more media", "social posts", or similar, reply with ONE short sentence pointing at the gallery (e.g. "Here are the most relevant clips and photos I found — see the gallery below.") and stop.',
@@ -1484,11 +1488,11 @@ export default function useChat() {
           }
 
           let fullText = '';
+          let finalThinkingText = '';
           let requestFailed = false;
           let requestAborted = false;
           let responseModelUsed = chosenModel;
           let requestedWebSearchQuery = '';
-          let thinkingRequestedWebSearch = false;
 
           const applyModelUsed = (nextModel) => {
             const normalized = String(nextModel || '').trim();
@@ -1539,17 +1543,9 @@ export default function useChat() {
                 onModelUsed: applyModelUsed,
                 onThinking: (accumulated) => {
                   if (abortRef.current) return;
-                  const controlRequest = extractWebSearchRequest(accumulated);
-                  if (controlRequest?.query) {
-                    requestedWebSearchQuery = controlRequest.query;
-                    thinkingRequestedWebSearch = true;
-                    setIsSearching(true);
-                  } else if (thinkingSuggestsWebSearch(accumulated)) {
-                    thinkingRequestedWebSearch = true;
-                    setIsSearching(true);
-                  }
-                  const visibleThinking = stripWebSearchControl(accumulated);
-                  if (!firstChunkSeen && visibleThinking && !thinkingRequestedWebSearch) { firstChunkSeen = true; setIsSearching(false); }
+                  finalThinkingText = stripWebSearchControl(accumulated);
+                  const visibleThinking = finalThinkingText;
+                  if (!firstChunkSeen && visibleThinking) { firstChunkSeen = true; setIsSearching(false); }
                   flushThinkingContent(visibleThinking);
                 },
               },
@@ -1621,11 +1617,7 @@ export default function useChat() {
             !requestedDocumentFormat &&
             !hasImages &&
             content.trim().length > 0 &&
-            (
-              Boolean(requestedWebSearchQuery)
-              || thinkingRequestedWebSearch
-              || indicatesKnowledgeGap(fullText)
-            );
+            Boolean(requestedWebSearchQuery);
 
           if (autoSearchEligible) {
             setIsSearching(true);
@@ -1634,19 +1626,28 @@ export default function useChat() {
             setThinkingContent('');
             try {
               const fallbackQuery = requestedWebSearchQuery || buildContextualSearchQuery(content);
-              const fallbackRes = await fetch('/api/search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query: fallbackQuery, includeMedia: false }),
+              const fallbackFreshnessRequested = needsFreshInformation(content) || needsFreshInformation(fallbackQuery);
+              const fallbackData = await searchWeb({
+                query: fallbackQuery,
+                includeMedia: false,
+                freshness: fallbackFreshnessRequested,
+              }, {
+                attemptsPerQuery: 2,
+                retryEmpty: true,
               });
-              const fallbackData = await fallbackRes.json();
               const fallbackResults = Array.isArray(fallbackData.results) ? fallbackData.results : [];
 
               if (fallbackResults.length && !abortRef.current) {
+                groundingSearchData = fallbackData;
+                groundingSearchQuery = fallbackData.searchMeta?.queryUsed || fallbackQuery;
+                groundingFreshnessRequested = fallbackFreshnessRequested;
                 const snippets = fallbackResults
-                  .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}${r.url ? '\nSource: ' + r.url : ''}`)
+                  .map((r, i) => `[${i + 1}] ${r.title}${r.publishedAt ? `\nPublished: ${r.publishedAt}` : '\nPublished: date unavailable'}\n${r.snippet}${r.url ? '\nSource: ' + r.url : ''}`)
                   .join('\n\n');
-                const groundedUserContent = `${content}${recentConversationContextBlock}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${new Date().toUTCString()}) ===\nSearch query used: "${fallbackQuery}"\n\n${snippets}\n=== END SEARCH DATA ===\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.\n- You previously could not answer this from your own knowledge; now answer the user's question directly using these results.\n- Cite the sources you use by their [number].\n- Do not repeat that you lack current information — you now have it above.\n- Never invent URLs, citations, numbers, or facts beyond these results. If the results still do not cover it, say what is missing.`;
+                const fallbackFreshnessRules = fallbackFreshnessRequested
+                  ? '\n- The user needs latest/current information. Use only the newest relevant retrieved facts, prefer the greatest Published timestamp, state its exact date, and ignore older conflicting claims. If dates are unavailable, say recency could not be confirmed.'
+                  : '';
+                const groundedUserContent = `${content}${recentConversationContextBlock}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${fallbackData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${fallbackQuery}"\nFreshness requested: ${fallbackFreshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${fallbackData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${fallbackFreshnessRules}\n- You previously could not answer this from your own knowledge; now answer the user's question directly using these results.\n- Cite the sources you use by their [number].\n- Do not repeat that you lack current information — you now have it above.\n- Never invent URLs, citations, numbers, or facts beyond these results. If the results still do not cover it, say what is missing.`;
                 history[history.length - 1] = { role: 'user', content: groundedUserContent };
 
                 let retryText = '';
@@ -1668,8 +1669,9 @@ export default function useChat() {
                       onModelUsed: applyModelUsed,
                       onThinking: (accumulated) => {
                         if (abortRef.current) return;
+                        finalThinkingText = stripWebSearchControl(accumulated);
                         if (!retryFirstChunkSeen && accumulated) { retryFirstChunkSeen = true; setIsSearching(false); }
-                        flushThinkingContent(accumulated);
+                        flushThinkingContent(finalThinkingText);
                       },
                     },
                   );
@@ -1696,6 +1698,86 @@ export default function useChat() {
 
           fullText = stripWebSearchControl(fullText);
 
+          // ── Grounded answer quality gate ──
+          // Search can succeed while a weaker model still emits a disclaimer,
+          // talks about the search process, introduces itself, or ignores the
+          // relevant evidence. Reject that draft and regenerate once with a
+          // stronger model and a precise correction contract.
+          const qualityEligible =
+            !requestFailed
+            && !abortRef.current
+            && !wantsImageGeneration
+            && !wantsVideoGeneration
+            && !requestedDocumentFormat
+            && !deterministicMediaReply
+            && String(fullText || '').trim().length > 0;
+          const qualityAssessment = qualityEligible
+            ? assessResponseQuality({
+              answer: fullText,
+              userQuery: content,
+              searchData: groundingSearchData,
+              searchQuery: groundingSearchQuery,
+            })
+            : { ok: true, reasons: [] };
+
+          if (!qualityAssessment.ok && !abortRef.current) {
+            cancelPendingStreamFlushes();
+            setStreamingContent('');
+            setThinkingContent('');
+            setIsSearching(Boolean(groundingSearchData));
+
+            const correction = buildQualityCorrectionPrompt({
+              userQuery: content,
+              reasons: qualityAssessment.reasons,
+              freshnessRequested: groundingFreshnessRequested,
+            });
+            const correctedHistory = history.slice();
+            const lastIndex = correctedHistory.length - 1;
+            if (lastIndex >= 0 && correctedHistory[lastIndex]?.role === 'user') {
+              correctedHistory[lastIndex] = {
+                ...correctedHistory[lastIndex],
+                content: `${correctedHistory[lastIndex].content}\n\n${correction}`,
+              };
+            } else {
+              correctedHistory.push({ role: 'user', content: correction });
+            }
+
+            let correctedText = '';
+            // A quality rewrite is not a provider failure. Keep the user's
+            // selected model; the API fallback chain handles real failures.
+            const qualityModel = chosenModel;
+            try {
+              await sendChatMessage(
+                correctedHistory,
+                qualityModel,
+                (accumulated) => {
+                  if (abortRef.current) return;
+                  correctedText = stripWebSearchControl(accumulated);
+                  flushStreamingContent(correctedText);
+                },
+                images,
+                {
+                  think: true,
+                  ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
+                  onModelUsed: applyModelUsed,
+                  onThinking: (accumulated) => {
+                    if (abortRef.current) return;
+                    finalThinkingText = stripWebSearchControl(accumulated);
+                    flushThinkingContent(finalThinkingText);
+                  },
+                },
+              );
+            } catch (qualityErr) {
+              console.warn('Quality correction retry failed:', qualityErr?.message);
+            } finally {
+              setIsSearching(false);
+            }
+
+            if (correctedText.trim() && !abortRef.current) {
+              fullText = correctedText.trim();
+            }
+          }
+
           if (fullText) {
             // Strip + persist [REMEMBER: key=value] markers before display
             fullText = processRememberMarkers(fullText);
@@ -1713,6 +1795,7 @@ export default function useChat() {
               const documentUpdate = {
                 content: documentContent,
                 modelUsed: responseModelUsed || chosenModel,
+                ...(finalThinkingText ? { thinkingContent: finalThinkingText } : {}),
                 exportFormat: requestedFormat,
                 exportStatus: 'ready',
               };
@@ -1731,6 +1814,7 @@ export default function useChat() {
               const assistantUpdate = {
                 content: fullText,
                 modelUsed: responseModelUsed || chosenModel,
+                ...(finalThinkingText ? { thinkingContent: finalThinkingText } : {}),
                 ...(mediaForMessage ? { media: mediaForMessage } : {}),
                 ...(generatedMediaForMessage ? { generatedMedia: generatedMediaForMessage } : {}),
               };

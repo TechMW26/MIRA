@@ -58,7 +58,7 @@ const COMPLEXITY_SIGNALS = {
 
 // ── Search / Internet detection ────────────────────────────────
 const SEARCH_SIGNALS = [
-  /\b(latest|recent|current|today|yesterday|this week|this month|this year|right now|breaking)\b/i,
+  /\b(latest|recent|current|today|yesterday|this week|this month|this year|right now|rn|breaking)\b/i,
   /\b(news|headlines|updates?|trending)\b/i,
   /\b(price|cost|rate|stock|market|crypto|bitcoin|ethereum)\b/i,
   /\b(weather|forecast|temperature)\b/i,
@@ -75,6 +75,12 @@ const SEARCH_SIGNALS = [
   /\b(who\s+(makes|manufactures|produces|produced|created|built|developed|owns|founded)|which\s+company|what\s+company|manufacturer|producer|maker|company\s+behind|brand\s+behind|official\s+website)\b/i,
   /\b(law|legal|regulation|regulatory|tax|visa|immigration|medication|drug\s+interaction|dosage|diagnosis|treatment\s+guideline)\b/i,
 ];
+
+const FRESH_INFORMATION_SIGNAL = /\b(latest|most recent|newest|current|currently|today|tonight|right now|rn|just announced|breaking|recent|recently|this week|this month|this year|live|real[- ]?time|up[- ]?to[- ]?date|202[5-9]|203\d)\b/i;
+
+export function needsFreshInformation(text = '') {
+  return FRESH_INFORMATION_SIGNAL.test(String(text || ''));
+}
 
 // Investigative research intent — user explicitly wants the assistant to
 // go look something up rather than answer from memory.

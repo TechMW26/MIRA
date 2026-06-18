@@ -92,6 +92,8 @@ MIRA uses two complementary search triggers:
 
 The application intercepts this signal—including when it appears in the provider's reasoning stream—runs `/api/search`, and regenerates the answer with live source snippets. Control signals are removed before responses are rendered, cached, or persisted.
 
+For latest/current requests, the search layer applies provider recency filters, merges dated results, ranks them newest-first, and supplies only the freshest dated cohort to MIRA. Grounding instructions require the answer to state the newest evidence date and ignore older superseded claims.
+
 Run the routing and control-protocol tests with:
 
 ```bash

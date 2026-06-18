@@ -1,6 +1,13 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import {
+  detectFreshnessIntent,
+  extractGooglePublishedAt,
+  freshnessWindow,
+  normalizePublishedAt,
+  rankFreshResults,
+} from './api/_searchFreshness.js';
 
 // Lightweight .env loader (no extra deps). Loads KEY=VALUE pairs from ./.env
 // into process.env if they aren't already defined.
@@ -209,11 +216,9 @@ const GEMINI_API_KEYS = (() => {
   ].map((value) => String(value || '').trim()).filter(Boolean);
   return Array.from(new Set([...fromCsv, ...fromSingles]));
 })();
-const LITE_MAX_MESSAGES = Number(process.env.LITE_MAX_MESSAGES || 16);
-const LITE_MAX_CHARS_PER_MESSAGE = Number(process.env.LITE_MAX_CHARS_PER_MESSAGE || 4000);
-const LITE_MAX_SYSTEM_CHARS = Number(process.env.LITE_MAX_SYSTEM_CHARS || 6000);
 const LITE_MAX_OUTPUT_TOKENS = Number(process.env.LITE_MAX_OUTPUT_TOKENS || 4096);
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 8192);
+const OLLAMA_CONTEXT_TOKENS = Number(process.env.OLLAMA_CONTEXT_TOKENS || 131072);
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);
 const ACTIVE_CHAT_REQUEST_TTL_MS = OLLAMA_TIMEOUT_MS + 120000;
 
@@ -441,29 +446,10 @@ function getGeminiModelCandidates(requestedModel = '') {
 // strictly on the locked model regardless of upstream availability.
 function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
   if (forceLocked) return buildMiraAliases(MIRA_LOCKED_MODEL);
-  // Hierarchy order: Mira Lite -> Mira -> Mira Pro.
-  // Requests climb forward in this order if a model/provider is unavailable.
   const normalizedPrimary = String(primaryModel || '').trim().toLowerCase();
   const liteNames = new Set([String(MIRA_LITE_MODEL).toLowerCase(), 'mira-lite', 'lite', 'auto']);
   const baseNames = new Set([String(MIRA_MODEL).toLowerCase(), 'mira']);
   const proNames = new Set([String(MIRA_PRO_MODEL).toLowerCase(), 'mira-pro', 'pro']);
-
-  if (!normalizedPrimary || liteNames.has(normalizedPrimary)) {
-    return [
-      MIRA_LITE_MODEL,
-      ...buildMiraAliases(MIRA_MODEL),
-      MIRA_PRO_MODEL,
-    ];
-  }
-  if (baseNames.has(normalizedPrimary)) {
-    return [
-      ...buildMiraAliases(MIRA_MODEL),
-      MIRA_PRO_MODEL,
-    ];
-  }
-  if (proNames.has(normalizedPrimary)) {
-    return [MIRA_PRO_MODEL];
-  }
 
   const ordered = [];
   const seen = new Set();
@@ -475,10 +461,19 @@ function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
     seen.add(key);
     ordered.push(name);
   };
-  push(primaryModel);
-  push(MIRA_LITE_MODEL);
-  for (const alias of buildMiraAliases(MIRA_MODEL)) push(alias);
-  push(MIRA_PRO_MODEL);
+  const addLite = () => push(MIRA_LITE_MODEL);
+  const addBase = () => buildMiraAliases(MIRA_MODEL).forEach(push);
+  const addPro = () => push(MIRA_PRO_MODEL);
+
+  if (!normalizedPrimary || liteNames.has(normalizedPrimary)) {
+    addLite(); addBase(); addPro();
+  } else if (baseNames.has(normalizedPrimary)) {
+    addBase(); addPro(); addLite();
+  } else if (proNames.has(normalizedPrimary)) {
+    addPro(); addBase(); addLite();
+  } else {
+    push(primaryModel); addBase(); addPro(); addLite();
+  }
   return ordered;
 }
 
@@ -493,12 +488,6 @@ function buildUnavailableAssistantResponse(primaryModel) {
   };
 }
 
-function truncateText(value, maxChars) {
-  const text = String(value || '');
-  if (text.length <= maxChars) return text;
-  return text.slice(0, maxChars);
-}
-
 function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
   const resolvedModel = (effectiveModel === 'mira-lite' || effectiveModel === 'lite')
     ? GEMINI_PRIMARY_MODEL
@@ -511,19 +500,18 @@ function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
     .filter(Boolean)
     .join('\n\n');
   const nonSystem = list.filter((message) => message?.role !== 'system');
-  const compact = nonSystem.slice(-Math.max(1, LITE_MAX_MESSAGES)).map((message) => ({
+  const contents = nonSystem.map((message) => ({
     role: message?.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: truncateText(message?.content, LITE_MAX_CHARS_PER_MESSAGE) }],
+    parts: [{ text: String(message?.content || '') }],
   }));
 
-  const contents = compact.length > 0 ? compact : [{ role: 'user', parts: [{ text: 'Hello' }] }];
   return {
     model: resolvedModel,
     body: {
       ...(systemCombined
-        ? { systemInstruction: { parts: [{ text: truncateText(systemCombined, LITE_MAX_SYSTEM_CHARS) }] } }
+        ? { systemInstruction: { parts: [{ text: systemCombined }] } }
         : {}),
-      contents,
+      contents: contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: 'Hello' }] }],
       generationConfig: {
         maxOutputTokens: Math.max(LITE_MAX_OUTPUT_TOKENS, Number(safeMax) || LITE_MAX_OUTPUT_TOKENS),
       },
@@ -542,6 +530,7 @@ function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, s
       messages: chatMessages,
       stream,
       max_tokens: safeMax,
+      ...(typeof think === 'boolean' ? { think } : {}),
     };
   }
 
@@ -549,9 +538,19 @@ function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, s
     model: effectiveModel,
     messages: chatMessages,
     ...(toolList.length > 0 && effectiveModel !== MIRA_LOCKED_MODEL ? { tools: toolList } : {}),
-    ...(typeof think === 'boolean' ? { think } : {}),
+    // MIRA's custom Ollama models emit their reasoning as normal `content`
+    // when thinking is disabled. Always use the structured thinking channel
+    // so private reasoning can never leak into the visible answer stream.
+    ...(isMiraFamilyModel(effectiveModel)
+      ? { think: true }
+      : (typeof think === 'boolean' ? { think } : {})),
     stream,
-    options: { num_predict: safeMax },
+    options: {
+      num_predict: safeMax,
+      ...(Number.isFinite(OLLAMA_CONTEXT_TOKENS) && OLLAMA_CONTEXT_TOKENS > 0
+        ? { num_ctx: Math.floor(OLLAMA_CONTEXT_TOKENS) }
+        : {}),
+    },
   };
 }
 
@@ -909,10 +908,10 @@ async function handleChat(body, res, req) {
     if (upstreamOrError?.errorStatus) {
       if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
       if (upstreamOrError.errorStatus !== 499) {
-        const safePayload = buildUnavailableAssistantResponse(triedModel || effectiveModel);
+        const safePayload = buildUnavailableAssistantResponse(effectiveModel);
         res.writeHead(200, {
           'Content-Type': 'application/json',
-          'X-Mira-Model-Used': toUiModelName(triedModel || effectiveModel),
+          'X-Mira-Model-Used': toUiModelName(effectiveModel),
         });
         res.end(JSON.stringify(safePayload));
         return;
@@ -957,6 +956,11 @@ function parseRSS(xml) {
     const desc = block.match(/<description[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/description>/s)?.[1]?.replace(/<[^>]+>/g, '').trim() || '';
     const rawLink = block.match(/<link>([^<]+)<\/link>/)?.[1]?.trim()
       || block.match(/<guid[^>]*>([^<]+)<\/guid>/)?.[1]?.trim() || '';
+    const publishedAt = normalizePublishedAt(
+      block.match(/<pubDate>([^<]+)<\/pubDate>/i)?.[1]
+      || block.match(/<dc:date>([^<]+)<\/dc:date>/i)?.[1]
+      || '',
+    );
     const cleanLink = rawLink.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
     let url = cleanLink;
     try {
@@ -964,7 +968,7 @@ function parseRSS(xml) {
       const real = u.searchParams.get('url') || u.searchParams.get('r');
       if (real) url = decodeURIComponent(real);
     } catch {}
-    if (title.length > 3) items.push({ title, snippet: desc || title, url });
+    if (title.length > 3) items.push({ title, snippet: desc || title, url, ...(publishedAt ? { publishedAt } : {}) });
   }
   return items;
 }
@@ -1036,12 +1040,14 @@ async function handleScrape(body) {
 }
 
 async function handleSearch(body) {
-  const { query, includeMedia = true, mediaQuery, anchor, strictAnchor = false } = JSON.parse(body);
+  const { query, includeMedia = true, mediaQuery, anchor, strictAnchor = false, freshness = false } = JSON.parse(body);
   if (!query?.trim()) return { error: 'Query required', results: [], media: { videos: [], images: [] } };
   const searchQuery = query.trim();
   const mediaSearchQuery = String(mediaQuery || searchQuery).trim();
   const anchorScope = buildAnchorScope(anchor || (strictAnchor ? mediaSearchQuery : ''));
   const shouldFetchMedia = includeMedia !== false;
+  const fresh = detectFreshnessIntent(searchQuery, freshness);
+  const freshWindow = freshnessWindow(searchQuery);
 
   const BRAVE_KEY = process.env.BRAVE_SEARCH_API_KEY || '';
   const GOOGLE_KEY = process.env.GOOGLE_SEARCH_API_KEY || '';
@@ -1178,15 +1184,19 @@ async function handleSearch(body) {
     } catch { return null; }
   })();
 
-  const [braveRes, googleRes, bingRes, gnewsRes, ddgRes, videosRes, imagesRes, instagramRes] = await Promise.allSettled([
-    BRAVE_KEY ? fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(searchQuery)}&count=6`, {
+  const [braveRes, googleRes, bingWebRes, bingRes, gnewsRes, ddgRes, videosRes, imagesRes, instagramRes] = await Promise.allSettled([
+    BRAVE_KEY ? fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(searchQuery)}&count=10${fresh ? `&freshness=${freshWindow.brave}` : ''}`, {
       headers: { 'Accept': 'application/json', 'X-Subscription-Token': BRAVE_KEY },
       signal: AbortSignal.timeout(8000),
     }).then(r => r.ok ? r.json() : null) : Promise.resolve(null),
 
-    (GOOGLE_KEY && GOOGLE_CX) ? fetch(`https://www.googleapis.com/customsearch/v1?key=${GOOGLE_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(searchQuery)}&num=6`, {
+    (GOOGLE_KEY && GOOGLE_CX) ? fetch(`https://www.googleapis.com/customsearch/v1?key=${GOOGLE_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(searchQuery)}&num=10${fresh ? `&dateRestrict=${freshWindow.google}&sort=date` : ''}`, {
       signal: AbortSignal.timeout(8000),
     }).then(r => r.ok ? r.json() : null) : Promise.resolve(null),
+
+    fetch(`https://www.bing.com/search?q=${encodeURIComponent(searchQuery)}&format=rss`, {
+      headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000),
+    }).then(r => r.ok ? r.text() : null),
 
     fetch(`https://www.bing.com/news/search?q=${encodeURIComponent(searchQuery)}&format=rss`, {
       headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000),
@@ -1266,20 +1276,36 @@ async function handleSearch(body) {
   let source;
   const brave = braveRes.value?.web?.results;
   const google = googleRes.value?.items;
-  if (brave?.length) {
-    results = brave.slice(0, 6).map(r => ({ title: r.title, snippet: r.description || r.title, url: r.url }));
+  const braveResults = (brave || []).map(r => ({
+    title: r.title,
+    snippet: r.description || r.title,
+    url: r.url,
+    ...(normalizePublishedAt(r.page_age || r.age || r.published || '') ? { publishedAt: normalizePublishedAt(r.page_age || r.age || r.published || '') } : {}),
+  }));
+  const googleResults = (google || []).map(r => ({
+    title: r.title,
+    snippet: r.snippet || r.title,
+    url: r.link,
+    ...(extractGooglePublishedAt(r) ? { publishedAt: extractGooglePublishedAt(r) } : {}),
+  }));
+  const bingWeb = bingWebRes.value ? parseRSS(bingWebRes.value) : [];
+  const bing = bingRes.value ? parseRSS(bingRes.value) : [];
+  const gnews = gnewsRes.value ? parseRSS(gnewsRes.value) : [];
+  if (fresh) {
+    results = rankFreshResults([...braveResults, ...googleResults, ...bing, ...gnews, ...bingWeb], freshWindow);
+    source = results.length ? 'fresh-mixed' : 'none';
+  } else if (braveResults.length) {
+    results = braveResults.slice(0, 6);
     source = 'brave';
-  } else if (google?.length) {
-    results = google.slice(0, 6).map(r => ({ title: r.title, snippet: r.snippet || r.title, url: r.link }));
+  } else if (googleResults.length) {
+    results = googleResults.slice(0, 6);
     source = 'google';
   } else {
-    const bing = bingRes.value ? parseRSS(bingRes.value) : [];
-    const gnews = gnewsRes.value ? parseRSS(gnewsRes.value) : [];
     const ddgData = ddgRes.value;
     const ddg = [];
     if (ddgData?.Answer) ddg.push({ title: 'Direct Answer', snippet: ddgData.Answer, url: '' });
     if (ddgData?.AbstractText) ddg.push({ title: ddgData.Heading || searchQuery, snippet: ddgData.AbstractText, url: ddgData.AbstractURL || '' });
-    const merged = [...ddg, ...bing, ...gnews];
+    const merged = [...ddg, ...bingWeb, ...bing, ...gnews];
     const seen = new Set();
     results = merged.filter(r => {
       const key = r.title.toLowerCase().slice(0, 40);
@@ -1363,7 +1389,17 @@ async function handleSearch(body) {
   }
 
   const media = { videos: mergedVideos, images: mergedImages };
-  return { results, media, source };
+  return {
+    results,
+    media,
+    source,
+    freshness: {
+      requested: fresh,
+      maxAgeDays: fresh ? freshWindow.maxAgeDays : null,
+      newestPublishedAt: results.find((result) => result.publishedAt)?.publishedAt || '',
+      retrievedAt: new Date().toISOString(),
+    },
+  };
 }
 
 // === Image proxy (dev parity with api/image.js) ===

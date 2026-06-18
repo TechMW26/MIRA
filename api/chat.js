@@ -48,11 +48,9 @@ const GEMINI_API_KEYS = (() => {
   ].map((value) => String(value || '').trim()).filter(Boolean);
   return Array.from(new Set([...fromCsv, ...fromSingles]));
 })();
-const LITE_MAX_MESSAGES = Number(process.env.LITE_MAX_MESSAGES || 16);
-const LITE_MAX_CHARS_PER_MESSAGE = Number(process.env.LITE_MAX_CHARS_PER_MESSAGE || 4000);
-const LITE_MAX_SYSTEM_CHARS = Number(process.env.LITE_MAX_SYSTEM_CHARS || 6000);
 const LITE_MAX_OUTPUT_TOKENS = Number(process.env.LITE_MAX_OUTPUT_TOKENS || 4096);
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 8192);
+const OLLAMA_CONTEXT_TOKENS = Number(process.env.OLLAMA_CONTEXT_TOKENS || 131072);
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 300000);
 const ACTIVE_CHAT_REQUEST_TTL_MS = OLLAMA_TIMEOUT_MS + 120000;
 const UNRESTRICTED_SIGNAL_RE = /\b(nude|nudity|naked|explicit|uncensored|adult\s*content|erotic|porn|pornographic|xxx|18\+|lewd|sexual\s*content|sex|nsfw|fetish|hardcore|boobs?|breasts?|nipples?|genitals?|penis|vagina|anal|blowjob|handjob|cum|orgasm|hentai|bypass|jailbreak|exploit|malware|ransomware|phishing|ddos|credit\s*card\s*fraud|social\s*security\s*number|ssn|doxx|private\s*data|steal\s*data|illegal|unethical|forbidden|restricted)\b/i;
@@ -237,29 +235,10 @@ function getGeminiModelCandidates(requestedModel = '') {
 // Locked mode never falls back to the general pool.
 function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
   if (forceLocked) return buildMiraAliases(MIRA_LOCKED_MODEL);
-  // Hierarchy order: Mira Lite -> Mira -> Mira Pro.
-  // Requests climb forward in this order if a model/provider is unavailable.
   const normalizedPrimary = String(primaryModel || '').trim().toLowerCase();
   const liteNames = new Set([String(MIRA_LITE_MODEL).toLowerCase(), 'mira-lite', 'lite', 'auto']);
   const baseNames = new Set([String(MIRA_MODEL).toLowerCase(), 'mira']);
   const proNames = new Set([String(MIRA_PRO_MODEL).toLowerCase(), 'mira-pro', 'pro']);
-
-  if (!normalizedPrimary || liteNames.has(normalizedPrimary)) {
-    return [
-      MIRA_LITE_MODEL,
-      ...buildMiraAliases(MIRA_MODEL),
-      MIRA_PRO_MODEL,
-    ];
-  }
-  if (baseNames.has(normalizedPrimary)) {
-    return [
-      ...buildMiraAliases(MIRA_MODEL),
-      MIRA_PRO_MODEL,
-    ];
-  }
-  if (proNames.has(normalizedPrimary)) {
-    return [MIRA_PRO_MODEL];
-  }
 
   const ordered = [];
   const seen = new Set();
@@ -271,10 +250,19 @@ function buildModelFallbackChain(primaryModel, { forceLocked = false } = {}) {
     seen.add(key);
     ordered.push(name);
   };
-  push(primaryModel);
-  push(MIRA_LITE_MODEL);
-  for (const alias of buildMiraAliases(MIRA_MODEL)) push(alias);
-  push(MIRA_PRO_MODEL);
+  const addLite = () => push(MIRA_LITE_MODEL);
+  const addBase = () => buildMiraAliases(MIRA_MODEL).forEach(push);
+  const addPro = () => push(MIRA_PRO_MODEL);
+
+  if (!normalizedPrimary || liteNames.has(normalizedPrimary)) {
+    addLite(); addBase(); addPro();
+  } else if (baseNames.has(normalizedPrimary)) {
+    addBase(); addPro(); addLite();
+  } else if (proNames.has(normalizedPrimary)) {
+    addPro(); addBase(); addLite();
+  } else {
+    push(primaryModel); addBase(); addPro(); addLite();
+  }
   return ordered;
 }
 
@@ -289,12 +277,6 @@ function buildUnavailableAssistantResponse(primaryModel) {
   };
 }
 
-function truncateText(value, maxChars) {
-  const text = String(value || '');
-  if (text.length <= maxChars) return text;
-  return text.slice(0, maxChars);
-}
-
 function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
   const resolvedModel = (effectiveModel === 'mira-lite' || effectiveModel === 'lite')
     ? GEMINI_PRIMARY_MODEL
@@ -307,19 +289,18 @@ function buildGeminiRequest({ effectiveModel, chatMessages, safeMax }) {
     .filter(Boolean)
     .join('\n\n');
   const nonSystem = list.filter((message) => message?.role !== 'system');
-  const compact = nonSystem.slice(-Math.max(1, LITE_MAX_MESSAGES)).map((message) => ({
+  const contents = nonSystem.map((message) => ({
     role: message?.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: truncateText(message?.content, LITE_MAX_CHARS_PER_MESSAGE) }],
+    parts: [{ text: String(message?.content || '') }],
   }));
 
-  const contents = compact.length > 0 ? compact : [{ role: 'user', parts: [{ text: 'Hello' }] }];
   return {
     model: resolvedModel,
     body: {
       ...(systemCombined
-        ? { systemInstruction: { parts: [{ text: truncateText(systemCombined, LITE_MAX_SYSTEM_CHARS) }] } }
+        ? { systemInstruction: { parts: [{ text: systemCombined }] } }
         : {}),
-      contents,
+      contents: contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: 'Hello' }] }],
       generationConfig: {
         maxOutputTokens: Math.max(LITE_MAX_OUTPUT_TOKENS, Number(safeMax) || LITE_MAX_OUTPUT_TOKENS),
       },
@@ -338,6 +319,7 @@ function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, s
       messages: chatMessages,
       stream,
       max_tokens: safeMax,
+      ...(typeof think === 'boolean' ? { think } : {}),
     };
   }
 
@@ -345,9 +327,19 @@ function buildUpstreamPayload({ effectiveModel, chatMessages, toolList, think, s
     model: effectiveModel,
     messages: chatMessages,
     ...(toolList.length > 0 && effectiveModel !== MIRA_LOCKED_MODEL ? { tools: toolList } : {}),
-    ...(typeof think === 'boolean' ? { think } : {}),
+    // MIRA's custom Ollama models emit their reasoning as normal `content`
+    // when thinking is disabled. Always use the structured thinking channel
+    // so private reasoning can never leak into the visible answer stream.
+    ...(isMiraFamilyModel(effectiveModel)
+      ? { think: true }
+      : (typeof think === 'boolean' ? { think } : {})),
     stream,
-    options: { num_predict: safeMax },
+    options: {
+      num_predict: safeMax,
+      ...(Number.isFinite(OLLAMA_CONTEXT_TOKENS) && OLLAMA_CONTEXT_TOKENS > 0
+        ? { num_ctx: Math.floor(OLLAMA_CONTEXT_TOKENS) }
+        : {}),
+    },
   };
 }
 
@@ -361,10 +353,9 @@ function hasUnrestrictedSignals(messages = []) {
   return false;
 }
 
-// Hard caps to prevent DoS / runaway requests.
-const MAX_BODY_BYTES = 5 * 1024 * 1024;        // 5 MB request body
-const MAX_MESSAGES = 40;                        // history depth
-const MAX_TEXT_CONTENT_CHARS = 24_000;          // total chars across a single message
+// Retain a transport safety ceiling, but do not truncate conversation history.
+// The selected upstream model/provider remains the final context-window limit.
+const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_IMAGES = 6;
 const MAX_TOKENS_CAP = 12000;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
@@ -460,20 +451,20 @@ function extractLastUserImages(messages = [], fallbackImages = []) {
 }
 
 function normalizeMessages(messages = [], systemPrompt) {
-  const list = Array.isArray(messages) ? messages.slice(-MAX_MESSAGES) : [];
+  const list = Array.isArray(messages) ? messages : [];
   const normalized = list
     .filter((message) => message?.role && message.content != null)
     .map((message) => {
       const role = ALLOWED_ROLES.has(message.role) ? message.role : 'user';
       const content = typeof message.content === 'string'
-        ? message.content.slice(0, MAX_TEXT_CONTENT_CHARS)
-        : String(message.content || '').slice(0, MAX_TEXT_CONTENT_CHARS);
+        ? message.content
+        : String(message.content || '');
       return { role, content };
     });
 
   if (systemPrompt && typeof systemPrompt === 'string') {
     return [
-      { role: 'system', content: systemPrompt.slice(0, MAX_TEXT_CONTENT_CHARS) },
+      { role: 'system', content: systemPrompt },
       ...MIRA_IDENTITY_PRIMER_MESSAGES,
       ...normalized.filter((message) => message.role !== 'system'),
     ];
@@ -730,9 +721,9 @@ export async function POST(req) {
       if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
       if (upstreamResult?.errorStatus !== 499) {
         return jsonResponse(
-          buildUnavailableAssistantResponse(triedModel || effectiveModel),
+          buildUnavailableAssistantResponse(effectiveModel),
           200,
-          { 'X-Mira-Model-Used': toUiModelName(triedModel || effectiveModel) },
+          { 'X-Mira-Model-Used': toUiModelName(effectiveModel) },
         );
       }
       return jsonResponse({ error: upstreamResult?.errorMessage || 'Chat request failed.' }, upstreamResult?.errorStatus || 500);

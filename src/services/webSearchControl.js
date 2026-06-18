@@ -1,6 +1,6 @@
-const WEB_SEARCH_MARKER_RE = /\[WEB_SEARCH\s*:\s*([^\]\r\n]{2,240})\]/i;
+const WEB_SEARCH_MARKER_RE = /\[(?:MIRA_WEB_SEARCH|WEB_SEARCH)\s*:\s*([^\]\r\n]{2,240})\]/i;
 const XML_WEB_SEARCH_RE = /<web_search>\s*([^<\r\n]{2,240})\s*<\/web_search>/i;
-const PARTIAL_WEB_SEARCH_RE = /(?:\[WEB_SEARCH(?:\s*:)?|<web_search>)\s*[^\]\n<]*$/i;
+const PARTIAL_WEB_SEARCH_RE = /(?:\[(?:MIRA_WEB_SEARCH|WEB_SEARCH)(?:\s*:)?|<web_search>)\s*[^\]\n<]*$/i;
 
 function cleanSearchQuery(value = '') {
   return String(value || '')
@@ -35,12 +35,4 @@ export function isPotentialWebSearchControl(value = '') {
   return WEB_SEARCH_MARKER_RE.test(text)
     || XML_WEB_SEARCH_RE.test(text)
     || PARTIAL_WEB_SEARCH_RE.test(text);
-}
-
-export function thinkingSuggestsWebSearch(value = '') {
-  const text = String(value || '');
-  if (text.length < 10) return false;
-  return /\b(?:(?:need|should|must)\s+(?:to\s+)?|(?:have|best)\s+to\s+)(?:search|browse|look up|verify|check)\b/i.test(text)
-    || /\b(?:current|latest|live|real[- ]?time|up[- ]?to[- ]?date)\s+(?:information|data|details|sources?|results?)\b/i.test(text)
-    || /\b(?:not|isn'?t|aren'?t)\s+(?:in|covered by)\s+(?:my\s+)?(?:knowledge|training data)\b/i.test(text);
 }

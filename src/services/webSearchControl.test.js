@@ -4,7 +4,6 @@ import {
   extractWebSearchRequest,
   isPotentialWebSearchControl,
   stripWebSearchControl,
-  thinkingSuggestsWebSearch,
 } from './webSearchControl.js';
 
 test('extracts and cleans a web-search control marker', () => {
@@ -12,17 +11,19 @@ test('extracts and cleans a web-search control marker', () => {
     extractWebSearchRequest('[WEB_SEARCH:  latest MIRA release notes  ]'),
     { query: 'latest MIRA release notes', source: 'marker' },
   );
+  assert.deepEqual(
+    extractWebSearchRequest('[MIRA_WEB_SEARCH: current weather Mumbai]'),
+    { query: 'current weather Mumbai', source: 'marker' },
+  );
 });
 
 test('strips complete and partial control markers from visible output', () => {
-  assert.equal(stripWebSearchControl('[WEB_SEARCH: current weather Mumbai]'), '');
+  assert.equal(stripWebSearchControl('[MIRA_WEB_SEARCH: current weather Mumbai]'), '');
   assert.equal(stripWebSearchControl('Checking.\n[WEB_SEARCH: latest result]'), 'Checking.');
-  assert.equal(stripWebSearchControl('[WEB_SEARCH: latest res'), '');
+  assert.equal(stripWebSearchControl('[MIRA_WEB_SEARCH: latest res'), '');
 });
 
-test('detects control output and search-worthy reasoning language', () => {
-  assert.equal(isPotentialWebSearchControl('[WEB_SEARCH:'), true);
-  assert.equal(thinkingSuggestsWebSearch('I should verify the latest release online.'), true);
-  assert.equal(thinkingSuggestsWebSearch('I can answer this arithmetic problem directly.'), false);
+test('detects only explicit web-search control output', () => {
+  assert.equal(isPotentialWebSearchControl('[MIRA_WEB_SEARCH:'), true);
+  assert.equal(isPotentialWebSearchControl('I should verify the latest release online.'), false);
 });
-

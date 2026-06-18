@@ -477,6 +477,7 @@ export async function sendChatMessage(messages, model, onChunk, images = [], { o
 
   if (finalThinking) onThinking?.(finalThinking);
   if (finalAnswer) return finalAnswer;
-  if (finalThinking) return finalThinking;
+
+  // Never promote private reasoning into the visible answer.
   throw new Error('No result in response');
 }

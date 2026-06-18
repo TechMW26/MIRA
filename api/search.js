@@ -1,5 +1,13 @@
 export const config = { maxDuration: 20 };
 
+import {
+  detectFreshnessIntent,
+  extractGooglePublishedAt,
+  freshnessWindow,
+  normalizePublishedAt,
+  rankFreshResults,
+} from './_searchFreshness.js';
+
 const BRAVE_KEY = process.env.BRAVE_SEARCH_API_KEY;
 const GOOGLE_KEY = process.env.GOOGLE_SEARCH_API_KEY;
 const GOOGLE_CX = process.env.GOOGLE_SEARCH_CX;
@@ -12,6 +20,11 @@ function parseRSS(xml) {
     const desc = block.match(/<description[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/description>/s)?.[1]?.replace(/<[^>]+>/g, '').trim() || '';
     const rawLink = block.match(/<link>([^<]+)<\/link>/)?.[1]?.trim()
       || block.match(/<guid[^>]*>([^<]+)<\/guid>/)?.[1]?.trim() || '';
+    const publishedAt = normalizePublishedAt(
+      block.match(/<pubDate>([^<]+)<\/pubDate>/i)?.[1]
+      || block.match(/<dc:date>([^<]+)<\/dc:date>/i)?.[1]
+      || '',
+    );
     const cleanLink = rawLink.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
     // Decode Bing redirect URLs to get real URL
     let url = cleanLink;
@@ -20,35 +33,45 @@ function parseRSS(xml) {
       const real = u.searchParams.get('url') || u.searchParams.get('r');
       if (real) url = decodeURIComponent(real);
     } catch {}
-    if (title.length > 3) items.push({ title, snippet: desc || title, url });
+    if (title.length > 3) items.push({ title, snippet: desc || title, url, ...(publishedAt ? { publishedAt } : {}) });
   }
   return items;
 }
 
-async function searchBrave(query) {
+async function searchBrave(query, fresh = false, window = freshnessWindow(query)) {
   if (!BRAVE_KEY) return null;
   try {
     const res = await fetch(
-      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=6&search_lang=en`,
+      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=10&search_lang=en${fresh ? `&freshness=${window.brave}` : ''}`,
       { headers: { 'Accept': 'application/json', 'X-Subscription-Token': BRAVE_KEY }, signal: AbortSignal.timeout(8000) }
     );
     if (!res.ok) return null;
     const data = await res.json();
-    const results = (data?.web?.results || []).map(r => ({ title: r.title, snippet: r.description || r.title, url: r.url })).filter(r => r.snippet);
+    const results = (data?.web?.results || []).map(r => ({
+      title: r.title,
+      snippet: r.description || r.title,
+      url: r.url,
+      ...(normalizePublishedAt(r.page_age || r.age || r.published || '') ? { publishedAt: normalizePublishedAt(r.page_age || r.age || r.published || '') } : {}),
+    })).filter(r => r.snippet);
     return results.length ? results : null;
   } catch { return null; }
 }
 
-async function searchGoogle(query) {
+async function searchGoogle(query, fresh = false, window = freshnessWindow(query)) {
   if (!GOOGLE_KEY || !GOOGLE_CX) return null;
   try {
     const res = await fetch(
-      `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(query)}&num=6`,
+      `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(query)}&num=10${fresh ? `&dateRestrict=${window.google}&sort=date` : ''}`,
       { signal: AbortSignal.timeout(8000) }
     );
     if (!res.ok) return null;
     const data = await res.json();
-    const results = (data?.items || []).map(r => ({ title: r.title, snippet: r.snippet || r.title, url: r.link })).filter(r => r.snippet);
+    const results = (data?.items || []).map(r => ({
+      title: r.title,
+      snippet: r.snippet || r.title,
+      url: r.link,
+      ...(extractGooglePublishedAt(r) ? { publishedAt: extractGooglePublishedAt(r) } : {}),
+    })).filter(r => r.snippet);
     return results.length ? results : null;
   } catch { return null; }
 }
@@ -198,6 +221,18 @@ async function searchBingNews(query) {
     );
     if (!res.ok) return null;
     const items = parseRSS(await res.text()).slice(0, 5);
+    return items.length ? items : null;
+  } catch { return null; }
+}
+
+async function searchBingWeb(query) {
+  try {
+    const res = await fetch(
+      `https://www.bing.com/search?q=${encodeURIComponent(query)}&format=rss`,
+      { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) }
+    );
+    if (!res.ok) return null;
+    const items = parseRSS(await res.text()).slice(0, 8);
     return items.length ? items : null;
   } catch { return null; }
 }
@@ -499,16 +534,19 @@ async function searchBingImages(query, anchorScope = null, strictAnchor = false)
 
 export async function POST(req) {
   try {
-    const { query, includeMedia = true, mediaQuery, anchor, strictAnchor = false } = await req.json();
+    const { query, includeMedia = true, mediaQuery, anchor, strictAnchor = false, freshness = false } = await req.json();
     if (!query?.trim()) return new Response(JSON.stringify({ error: 'Query required', results: [] }), { status: 400 });
     const searchQuery = query.trim();
     const mediaSearchQuery = String(mediaQuery || searchQuery).trim();
     const anchorScope = buildAnchorScope(anchor || (strictAnchor ? mediaSearchQuery : ''));
     const shouldFetchMedia = includeMedia !== false;
+    const fresh = detectFreshnessIntent(searchQuery, freshness);
+    const window = freshnessWindow(searchQuery);
 
-    const [brave, google, bing, gnews, ddg, videos, bingImages, instagram] = await Promise.all([
-      searchBrave(searchQuery),
-      searchGoogle(searchQuery),
+    const [brave, google, bingWeb, bing, gnews, ddg, videos, bingImages, instagram] = await Promise.all([
+      searchBrave(searchQuery, fresh, window),
+      searchGoogle(searchQuery, fresh, window),
+      searchBingWeb(searchQuery),
       searchBingNews(searchQuery),
       searchGoogleNews(searchQuery),
       searchDDG(searchQuery),
@@ -521,10 +559,13 @@ export async function POST(req) {
     // og:image / og:video from the top article URLs (highest relevance media).
     let results;
     let source;
-    if (brave?.length) { results = brave.slice(0, 6); source = 'brave'; }
+    if (fresh) {
+      results = rankFreshResults([...(brave || []), ...(google || []), ...(bing || []), ...(gnews || []), ...(bingWeb || [])], window);
+      source = results.length ? 'fresh-mixed' : 'none';
+    } else if (brave?.length) { results = brave.slice(0, 6); source = 'brave'; }
     else if (google?.length) { results = google.slice(0, 6); source = 'google'; }
     else {
-      const merged = [...(ddg || []), ...(bing || []), ...(gnews || [])];
+      const merged = [...(ddg || []), ...(bingWeb || []), ...(bing || []), ...(gnews || [])];
       const seen = new Set();
       results = merged.filter(r => {
         const key = r.title.toLowerCase().slice(0, 40);
@@ -577,7 +618,17 @@ export async function POST(req) {
     }
 
     const media = { videos: mergedVideos, images: mergedImages };
-    return new Response(JSON.stringify({ results, media, source }), {
+    return new Response(JSON.stringify({
+      results,
+      media,
+      source,
+      freshness: {
+        requested: fresh,
+        maxAgeDays: fresh ? window.maxAgeDays : null,
+        newestPublishedAt: results.find((result) => result.publishedAt)?.publishedAt || '',
+        retrievedAt: new Date().toISOString(),
+      },
+    }), {
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (err) {

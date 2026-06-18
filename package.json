@@ -8,7 +8,7 @@
     "dev": "concurrently --kill-others-on-fail --names api,web \"node dev-api.js\" \"vite\"",
     "dev:api": "node dev-api.js",
     "dev:vite": "vite",
-    "test": "node --test src/services/*.test.js",
+    "test": "node --test src/services/*.test.js api/*.test.js",
     "build": "vite build",
     "preview": "vite preview"
   },

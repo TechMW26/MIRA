@@ -1105,71 +1105,125 @@ body[data-locked='true'] ::selection {
 /* ── AI Thinking / Smoky Text ────────────────── */
 .thinking-section {
   position: relative;
-  padding: 8px 0;
+  width: min(100%, 560px);
+  margin: 0 0 12px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 11px;
+  background: rgba(2, 12, 18, 0.28);
+  overflow: hidden;
 }
 
-.thinking-header {
+.thinking-toggle {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 160ms ease;
+}
+
+.thinking-toggle:hover {
+  background: rgba(148, 163, 184, 0.045);
 }
 
 .thinking-label {
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
+  font-size: 0.625rem;
+  font-weight: 550;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: rgba(203, 213, 225, 0.9);
-  opacity: 0.95;
+  color: rgba(148, 163, 184, 0.72);
 }
 
-/* ── Scrollable thinking container ───────────── */
+.thinking-chevron {
+  margin-left: auto;
+  color: rgba(148, 163, 184, 0.48);
+  transition: transform 180ms ease;
+}
+
+.thinking-chevron.is-expanded {
+  transform: rotate(180deg);
+}
+
+.thinking-live-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(94, 234, 212, 0.55);
+  animation: thinkingDot 1.4s ease-in-out infinite;
+}
+
+.thinking-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 200ms ease, opacity 160ms ease;
+}
+
+.thinking-body.is-expanded {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.thinking-body:not(.is-expanded) .thinking-scroll {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
 .thinking-scroll {
-  max-height: 140px;
+  min-height: 0;
+  max-height: 104px;
+  padding: 0 10px 9px;
   overflow-y: auto;
-  mask-image: linear-gradient(to bottom, black 0%, black 50%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, black 0%, black 50%, transparent 100%);
-  padding-right: 4px;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,0.55) 0%, black 20%, black 100%);
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0.55) 0%, black 20%, black 100%);
 }
 
 /* ── Cascading thinking lines (real content) ─── */
 .thinking-lines {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
 .thinking-line {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: 5px;
 }
 
 .thinking-line-marker {
-  color: rgba(148, 163, 184, 0.9);
-  font-size: 0.65rem;
+  color: rgba(94, 234, 212, 0.44);
+  font-size: 0.58rem;
   font-weight: bold;
-  opacity: 0.7;
-  margin-top: 1px;
+  opacity: 0.65;
+  margin-top: 2px;
   flex-shrink: 0;
 }
 
 .thinking-line-text {
-  font-size: 0.7rem;
-  line-height: 1.65;
+  font-size: 0.68rem;
+  line-height: 1.5;
   font-style: italic;
-  color: rgba(203, 213, 225, 0.88);
-  opacity: 0.88;
-  text-shadow: 0 0 6px rgba(148, 163, 184, 0.12);
-  white-space: pre-wrap;
+  color: rgba(148, 163, 184, 0.68);
+  opacity: 0.82;
+  text-shadow: none;
   word-break: break-word;
+}
+
+.thinking-line-text.is-ghosting {
+  animation: thinkingGhostText 1.8s ease-in-out infinite;
 }
 
 /* ── Sparkle icons ───────────────────────────── */
 .thinking-sparkle {
-  color: rgba(226, 232, 240, 0.95);
-  font-size: 0.7rem;
+  color: rgba(94, 234, 212, 0.58);
+  font-size: 0.62rem;
   animation: sparkleGlow 1.5s ease-in-out infinite;
 }
 
@@ -1180,12 +1234,24 @@ body[data-locked='true'] ::selection {
 }
 
 @keyframes sparkleGlow {
-  0%, 100% { opacity: 0.55; text-shadow: 0 0 5px rgba(203, 213, 225, 0.35); }
-  50% { opacity: 1; text-shadow: 0 0 12px rgba(226, 232, 240, 0.48); }
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.72; }
 }
 
-.thinking-expanded {
-  animation: fadeSlideIn 0.3s ease-out;
+@keyframes thinkingGhostText {
+  0%, 100% {
+    opacity: 0.38;
+    filter: blur(0.15px);
+  }
+  50% {
+    opacity: 0.78;
+    filter: blur(0);
+  }
+}
+
+@keyframes thinkingDot {
+  0%, 100% { opacity: 0.28; transform: scale(0.85); }
+  50% { opacity: 0.85; transform: scale(1); }
 }
 
 @keyframes fadeSlideIn {
@@ -1196,6 +1262,10 @@ body[data-locked='true'] ::selection {
 /* ── Prose overrides (dark) ──────────────────── */
 .dark .prose { color: #e6fbff; font-size: 1.0625rem; line-height: 1.75; }
 .dark .prose p, .dark .prose li, .dark .prose td, .dark .prose span { color: #e6fbff; }
+.dark .prose .thinking-label,
+.dark .prose .thinking-line-text {
+  color: rgba(148, 163, 184, 0.68);
+}
 .dark .prose h1, .dark .prose h2, .dark .prose h3, .dark .prose h4 { color: #ffffff; letter-spacing: -0.01em; }
 .dark .prose strong { color: #ffffff; }
 .dark .prose pre {
@@ -1854,6 +1924,23 @@ body.mira-hud-active {
 .hud-chat-bubble-assistant {
   /* assistant inherits the base styling */
 }
+.hud-chat-bubble-assistant.is-thinking-only {
+  width: min(100%, 560px);
+  padding: 10px 14px 11px;
+  background: rgba(2, 16, 22, 0.34);
+  border-color: rgba(94, 234, 212, 0.1);
+  box-shadow: none;
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+}
+.hud-chat-bubble-assistant.is-thinking-only .hud-chat-bubble-label {
+  color: rgba(94, 234, 212, 0.56);
+  margin-bottom: 5px;
+}
+.dark .hud-chat-bubble-assistant.is-thinking-only .thinking-label,
+.dark .hud-chat-bubble-assistant.is-thinking-only .thinking-line-text {
+  color: rgba(148, 163, 184, 0.68);
+}
 @property --hud-shine-angle {
   syntax: '<angle>';
   initial-value: 0deg;
@@ -2207,4 +2294,3 @@ body.mira-hud-active {
     max-width: min(88vw, 260px);
   }
 }
-

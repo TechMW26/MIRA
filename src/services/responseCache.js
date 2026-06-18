@@ -5,7 +5,7 @@
 // so repeated identical queries (refresh, replay, etc.) skip the API call.
 // Capped at MAX_ENTRIES with simple LRU eviction.
 
-const CACHE_KEY = 'mira_response_cache_v1';
+const CACHE_KEY = 'mira_response_cache_v2';
 const MAX_ENTRIES = 40;
 const TTL_MS = 1000 * 60 * 60 * 24; // 24 hours
 
@@ -44,12 +44,15 @@ function hash(str) {
 }
 
 export function makeCacheKey({ messages = [], model = '', systemPrompt = '', images = [] }) {
+  const containsLiveSearchData = messages.some((message) => (
+    String(message?.content || '').includes('REAL-TIME WEB SEARCH DATA')
+  ));
   const msgPart = messages
     .map((m) => `${m.role}:${(m.content || '').slice(0, 500)}`)
     .join('|');
   const hasImages = Array.isArray(images) && images.length > 0;
   // Skip caching when images are attached (binary content not hashable cheaply)
-  if (hasImages) return null;
+  if (hasImages || containsLiveSearchData) return null;
   return hash(`${model}::${systemPrompt.slice(0, 300)}::${msgPart}`);
 }
 

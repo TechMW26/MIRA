@@ -312,7 +312,7 @@ function WebPageCapsule({ page }) {
 }
 
 function ThinkingSection({ content, isActive }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(Boolean(isActive));
   const scrollRef = useRef(null);
   const [lines, setLines] = useState([]);
 
@@ -330,51 +330,38 @@ function ThinkingSection({ content, isActive }) {
     }
   }, [lines, isActive]);
 
+  useEffect(() => {
+    setExpanded(Boolean(isActive));
+  }, [isActive]);
+
   if (!content) return null;
 
-  if (isActive) {
-    return (
-      <div className="thinking-section thinking-active mb-4">
-        <div className="thinking-header">
-          <span className="thinking-sparkle">✦</span>
-          <span className="thinking-label">Thinking</span>
-        </div>
+  return (
+    <div className={`thinking-section${isActive ? ' thinking-active' : ''}`} aria-live={isActive ? 'polite' : undefined}>
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="thinking-toggle"
+        aria-expanded={expanded}
+      >
+        <span className={isActive ? 'thinking-sparkle' : 'thinking-sparkle-static'}>✦</span>
+        <span className="thinking-label">{isActive ? 'Thinking' : 'Thought process'}</span>
+        {isActive && !expanded && <span className="thinking-live-dot" />}
+        <ChevronDown size={12} className={`thinking-chevron${expanded ? ' is-expanded' : ''}`} />
+      </button>
+
+      <div className={`thinking-body${expanded ? ' is-expanded' : ''}`}>
         <div ref={scrollRef} className="thinking-scroll">
           <div className="thinking-lines">
             {lines.map((line, i) => (
-              <div
-                key={i}
-                className="thinking-line"
-              >
-                <span className="thinking-line-marker">›</span>
-                <span className="thinking-line-text">{line}</span>
+              <div key={`${i}-${line}`} className="thinking-line">
+                <span className="thinking-line-marker" aria-hidden="true">›</span>
+                <span className={`thinking-line-text${isActive && i >= lines.length - 2 ? ' is-ghosting' : ''}`}>{line}</span>
               </div>
             ))}
           </div>
         </div>
       </div>
-    );
-  }
-
-  return (
-    <div className="mb-3">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1.5 text-xs py-1.5 px-2.5 rounded-lg transition-all hover:opacity-80"
-        style={{ color: 'var(--text-tertiary)', background: 'var(--hover-bg)' }}
-      >
-        <span className="thinking-sparkle-static">✦</span>
-        <span>Thought process</span>
-        <span className={`transition-transform duration-200 text-[10px] ${expanded ? 'rotate-180' : ''}`}>▾</span>
-      </button>
-      {expanded && (
-        <div
-          className="thinking-expanded mt-2 px-3 py-2 rounded-xl text-xs leading-relaxed max-h-60 overflow-y-auto"
-          style={{ color: 'var(--text-tertiary)', background: 'var(--glass-bg)', fontStyle: 'italic' }}
-        >
-          {content}
-        </div>
-      )}
     </div>
   );
 }
@@ -966,7 +953,9 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
   const imagePrompt = !isUser ? extractImagePrompt(message.content) : '';
   const videoPrompt = !isUser ? extractVideoPrompt(message.content) : '';
   const modelUsedLabel = !isUser ? formatModelUsedLabel(message.modelUsed || message.model) : '';
-  const searchingBubbleActive = !isUser && isLast && isSearching && message.content === '' && !message.thinkingContent;
+  const showThinking = !isUser && modelUsedLabel !== 'MIRA LITE' && Boolean(message.thinkingContent);
+  const searchingBubbleActive = !isUser && isLast && isSearching && message.content === '' && !showThinking;
+  const thinkingOnly = Boolean(message.isThinkingActive && showThinking && !message.content);
   const suggestedExportFormat = !isUser && !message.isStreaming && !imagePrompt && !videoPrompt
     ? getSuggestedExportFormat(message)
     : '';
@@ -1168,13 +1157,13 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
             </div>
           </div>
         ) : (
-          <div className={`hud-chat-bubble hud-chat-bubble-assistant${(message.isStreaming || message.isThinkingActive || searchingBubbleActive) ? ' is-active' : ''}`}>
+          <div className={`hud-chat-bubble hud-chat-bubble-assistant${thinkingOnly ? ' is-thinking-only' : ''}${(!thinkingOnly && (message.isStreaming || searchingBubbleActive)) ? ' is-active' : ''}`}>
             <div className="hud-chat-bubble-label">
-              {searchingBubbleActive ? 'MIRA · SEARCHING' : message.isStreaming ? 'MIRA · THINKING' : 'MIRA'}
+              {searchingBubbleActive ? 'MIRA · SEARCHING' : message.isThinkingActive ? 'MIRA · THINKING' : message.isStreaming ? 'MIRA · RESPONDING' : 'MIRA'}
               {modelUsedLabel ? ` · ${modelUsedLabel}` : ''}
             </div>
             <div className="prose prose-base max-w-none overflow-x-auto break-words prose-headings:font-bold prose-p:leading-relaxed prose-li:leading-relaxed" style={{ color: 'var(--text-primary)' }}>
-              {message.thinkingContent && (
+              {showThinking && (
                 <ThinkingSection content={message.thinkingContent} isActive={message.isThinkingActive} />
               )}
               {message.image && message.image.length > 0 && (
