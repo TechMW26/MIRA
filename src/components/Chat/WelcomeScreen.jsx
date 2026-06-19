@@ -3,7 +3,7 @@ import {
   Code2, Lightbulb, MessageCircle, Eye, Bug, PenLine, Calculator, Database, FlaskConical, FileText,
   BarChart3, Globe, Palette, Shield, Send, X, Paperclip, Camera, RefreshCw,
   Image as ImageIcon, FileCode, File as FileIcon,
-  Mail, Folder, Mic, AudioLines, Wrench, MessageSquare,
+  Mail, Folder, Wrench, MessageSquare,
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 import { useChatContext } from '../../contexts/ChatContext';
@@ -481,7 +481,7 @@ export default function WelcomeScreen({ onSend, onIconHover }) {
       { icon: Database,       template: byLabel('Design a database schema') },
       { icon: Mail,           template: byLabel('Write a professional email') },
       { icon: Wrench,         template: byLabel('Debug my code') },
-      { icon: AudioLines,     template: byLabel('Solve a math problem') },
+      { icon: Calculator,     template: byLabel('Solve a math problem') },
       { icon: Folder,         template: byLabel('Summarize content') },
       { icon: Globe,          template: byLabel('Write an API endpoint') },
       { icon: MessageSquare,  template: byLabel('Write a blog post') },

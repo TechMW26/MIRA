@@ -35,6 +35,25 @@ import {
   stripWebSearchControl,
 } from '../services/webSearchControl';
 import { buildEvidenceFallbackAnswer, searchWeb } from '../services/webSearch';
+import { formSearchQuery } from '../services/searchQuery';
+import {
+  extractBrowserRequest,
+  isPotentialBrowserControl,
+  stripBrowserControl,
+} from '../services/browserControl';
+import {
+  formatBrowserDocumentation,
+  requestBrowserDocumentation,
+} from '../services/mcpBrowser';
+import {
+  detectWebsiteInspectionRequest,
+  extractToolCall,
+  isPotentialToolControl,
+  stripToolControl,
+  TOOL_NAMES,
+  toLegacyBrowserRequest,
+} from '../services/toolControl';
+import { executeHostTool } from '../services/toolExecutor';
 import {
   assessResponseQuality,
   buildQualityCorrectionPrompt,
@@ -238,11 +257,9 @@ function titleCaseEntity(value = '') {
 function canonicalizeTextEntity(value = '') {
   const normalized = String(value || '')
     .replace(/["'`“”‘’]/g, '')
-    .replace(/\b(?:algae\s*tree|algae?tree|alga\s*tree|algatree)\b/ig, 'Algae Tree')
     .replace(/\s+/g, ' ')
     .trim();
   if (!normalized) return '';
-  if (/\bAlgae Tree\b/i.test(normalized)) return 'Algae Tree';
   return /[A-Z]/.test(normalized) ? normalized : titleCaseEntity(normalized);
 }
 
@@ -1071,7 +1088,7 @@ export default function useChat() {
       const textAttachments = attachments.filter((a) => !a.isImage);
       const imageAttachments = attachments.filter((a) => a.isImage);
 
-      let displayContent = content;
+      let displayContent = String(options.displayContent || content);
       const attachmentData = [];
 
       if (imageAttachments.length > 0) {
@@ -1326,6 +1343,7 @@ export default function useChat() {
           const shouldAttachContextualMedia = wantsContextualDeviceMedia(content);
           const textResearchMediaScope = buildTextResearchMediaScope(content);
           const shouldUseContextualSearch = needsContextualWebSearch(content, historySource);
+          const websiteInspectionRequest = detectWebsiteInspectionRequest(content);
           const recentContextAnchor = getRecentContextAnchor(historySource);
           const recentConversationContext = needsRecentConversationContext(content, historySource)
             ? buildRecentConversationContext(historySource)
@@ -1340,7 +1358,17 @@ export default function useChat() {
           // person/product/object/device. The image analysis becomes the search
           // anchor, then the final answer uses live sources instead of stopping
           // at a vision-only guess.
-          const effectiveWebSearch = !simpleGreeting && (webSearch || engineResult.needsSearch || shouldUseVisualAnchor || shouldUseContextualSearch || Boolean(textResearchMediaScope));
+          const effectiveWebSearch = !websiteInspectionRequest
+            && !simpleGreeting
+            && (webSearch || engineResult.needsSearch || shouldUseVisualAnchor || shouldUseContextualSearch || Boolean(textResearchMediaScope));
+          if (websiteInspectionRequest) {
+            diagnosticLog('browser', 'website inspection intent takes precedence over web search', {
+              runId,
+              url: websiteInspectionRequest.arguments.url,
+              task: websiteInspectionRequest.arguments.task,
+            });
+            userContent = `${userContent}\n\nWEBSITE INSPECTION REQUEST: Call browser.inspect now using the MIRA_TOOL safeword. Do not answer from web search or general knowledge.`;
+          }
           if (effectiveWebSearch) {
             diagnosticLog('search', 'web search triggered by router', {
               runId,
@@ -1428,6 +1456,28 @@ export default function useChat() {
             return [...dedup, ...kw].join(' ').trim() || fallback;
           };
 
+          let formedLatestQueryPromise = null;
+          const getLatestMessageSearchQuery = (toolHint = '') => {
+            if (formedLatestQueryPromise) return formedLatestQueryPromise;
+            const latestIsContextDependent = /\b(it|its|this|that|these|those|they|them|the\s+(device|product|tool|item|object|thing|company|brand|person|model|app|service|system))\b/i.test(content)
+              || content.trim().split(/\s+/).length <= 2;
+            const contextParts = [];
+            if (latestIsContextDependent && recentConversationContext) {
+              contextParts.push(recentConversationContext);
+            }
+            if (visualSearchAnchor) {
+              contextParts.push(`Image-derived searchable entity: ${visualSearchAnchor}`);
+            }
+            if (toolHint) {
+              contextParts.push(`Model search hint: ${toolHint}`);
+            }
+            formedLatestQueryPromise = formSearchQuery({
+              latestMessage: content,
+              context: contextParts.join('\n\n'),
+            });
+            return formedLatestQueryPromise;
+          };
+
           // Web search injection — skip when an explicit document export is requested,
           // so unrelated search results don't override the attached/previous file context.
           if (effectiveWebSearch && content.trim() && !requestedDocumentFormat) {
@@ -1450,7 +1500,10 @@ export default function useChat() {
               // can over-constrain web results (for example
               // "Most Expensive Yacht In India" misses "India's most expensive
               // yacht"). The retry layer can quote a narrower subject later.
-              let searchQuery = buildContextualSearchQuery(content) || textResearchMediaScope?.query || content;
+              let searchQuery = await getLatestMessageSearchQuery()
+                || buildContextualSearchQuery(content)
+                || textResearchMediaScope?.query
+                || content;
               // Only attach a related-media gallery when the user has actually
               // signalled they want media (explicit "videos/images/...", an
               // image attachment, or a "this device" follow-up). Plain
@@ -1687,6 +1740,8 @@ export default function useChat() {
           let requestAborted = false;
           let responseModelUsed = chosenModel;
           let requestedWebSearchQuery = '';
+          let requestedBrowserInspection = null;
+          let requestedToolCall = websiteInspectionRequest;
 
           const applyModelUsed = (nextModel) => {
             const normalized = String(nextModel || '').trim();
@@ -1725,6 +1780,32 @@ export default function useChat() {
               (accumulated) => {
                 if (!isCurrentRun()) return;
                 const controlRequest = extractWebSearchRequest(accumulated);
+                const browserRequest = extractBrowserRequest(accumulated);
+                const toolCall = extractToolCall(accumulated);
+                if (toolCall) {
+                  requestedToolCall = toolCall;
+                  if (toolCall.name === TOOL_NAMES.WEB_SEARCH && toolCall.arguments?.query) {
+                    requestedWebSearchQuery = String(toolCall.arguments.query);
+                    setIsSearching(true);
+                  }
+                  if (toolCall.name === TOOL_NAMES.BROWSER_INSPECT) {
+                    requestedBrowserInspection = toLegacyBrowserRequest(toolCall);
+                  }
+                  diagnosticLog('tool', 'model requested host tool', {
+                    runId,
+                    model: responseModelUsed,
+                    tool: toolCall.name,
+                  });
+                }
+                if (browserRequest) {
+                  requestedBrowserInspection = browserRequest;
+                  diagnosticLog('browser', 'model requested Chrome MCP inspection', {
+                    runId,
+                    model: responseModelUsed,
+                    url: browserRequest.url,
+                    task: browserRequest.task,
+                  });
+                }
                 if (controlRequest?.query) {
                   if (requestedWebSearchQuery !== controlRequest.query) {
                     diagnosticLog('search', 'model requested web search', {
@@ -1736,11 +1817,11 @@ export default function useChat() {
                   requestedWebSearchQuery = controlRequest.query;
                   setIsSearching(true);
                 }
-                const visibleText = stripWebSearchControl(accumulated);
-                const controlPending = isPotentialWebSearchControl(accumulated);
-                if (!firstChunkSeen && visibleText && !controlRequest) { firstChunkSeen = true; setIsSearching(false); }
+                const visibleText = stripToolControl(stripBrowserControl(stripWebSearchControl(accumulated)));
+                const controlPending = isPotentialToolControl(accumulated) || isPotentialWebSearchControl(accumulated) || isPotentialBrowserControl(accumulated);
+                if (!firstChunkSeen && visibleText && !controlRequest && !browserRequest && !toolCall) { firstChunkSeen = true; setIsSearching(false); }
                 fullText = accumulated;
-                flushStreamingContent(controlPending ? visibleText : accumulated);
+                flushStreamingContent(visibleText);
               },
               images,
               {
@@ -1750,6 +1831,26 @@ export default function useChat() {
                 onThinking: (accumulated) => {
                   if (!isCurrentRun()) return;
                   const thinkingControlRequest = extractWebSearchRequest(accumulated);
+                  const thinkingBrowserRequest = extractBrowserRequest(accumulated);
+                  const thinkingToolCall = extractToolCall(accumulated);
+                  if (thinkingToolCall) {
+                    requestedToolCall = thinkingToolCall;
+                    if (thinkingToolCall.name === TOOL_NAMES.WEB_SEARCH && thinkingToolCall.arguments?.query) {
+                      requestedWebSearchQuery = String(thinkingToolCall.arguments.query);
+                      setIsSearching(true);
+                    }
+                    if (thinkingToolCall.name === TOOL_NAMES.BROWSER_INSPECT) {
+                      requestedBrowserInspection = toLegacyBrowserRequest(thinkingToolCall);
+                    }
+                  }
+                  if (thinkingBrowserRequest) {
+                    requestedBrowserInspection = thinkingBrowserRequest;
+                    diagnosticLog('browser', 'model requested Chrome MCP inspection from thinking', {
+                      runId,
+                      model: responseModelUsed,
+                      url: thinkingBrowserRequest.url,
+                    });
+                  }
                   if (thinkingControlRequest?.query) {
                     if (requestedWebSearchQuery !== thinkingControlRequest.query) {
                       diagnosticLog('search', 'model requested web search from thinking', {
@@ -1761,7 +1862,7 @@ export default function useChat() {
                     requestedWebSearchQuery = thinkingControlRequest.query;
                     setIsSearching(true);
                   }
-                  finalThinkingText = stripWebSearchControl(accumulated);
+                  finalThinkingText = stripToolControl(stripBrowserControl(stripWebSearchControl(accumulated)));
                   const visibleThinking = finalThinkingText;
                   if (!firstChunkSeen && visibleThinking) { firstChunkSeen = true; setIsSearching(false); }
                   flushThinkingContent(visibleThinking);
@@ -1801,6 +1902,7 @@ export default function useChat() {
             && !requestFailed
             && !requestAborted
             && !extractWebSearchRequest(fullText)
+            && !extractToolCall(fullText)
             && !indicatesKnowledgeGap(fullText)
           ) {
             setCachedResponse(cacheKey, fullText);
@@ -1809,6 +1911,117 @@ export default function useChat() {
 
           if (requestAborted || !isCurrentRun()) {
             return;
+          }
+
+          const finalToolCall = requestedToolCall || extractToolCall(fullText);
+          const browserInspection = requestedBrowserInspection
+            || toLegacyBrowserRequest(finalToolCall)
+            || extractBrowserRequest(fullText);
+          if (browserInspection && !requestFailed && isCurrentRun()) {
+            cancelPendingStreamFlushes();
+            setStreamingContent('');
+            setThinkingContent('');
+            try {
+              const documentation = await requestBrowserDocumentation(browserInspection);
+              if (!isCurrentRun()) return;
+              const documentationBlock = formatBrowserDocumentation(documentation);
+              history[history.length - 1] = {
+                role: 'user',
+                content: `${content}\n\n${documentationBlock}\n\nUse this captured website documentation to complete the user's request. Distinguish visible page facts from your own inferences. Do not claim access to anything outside the supplied capture.`,
+              };
+              let inspectedAnswer = '';
+              await sendChatMessage(
+                history,
+                chosenModel,
+                (accumulated) => {
+                  if (!isCurrentRun()) return;
+                  inspectedAnswer = stripToolControl(stripBrowserControl(stripWebSearchControl(accumulated)));
+                  flushStreamingContent(inspectedAnswer);
+                },
+                images,
+                {
+                  think: shouldThink,
+                  ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
+                  onModelUsed: applyModelUsed,
+                  onThinking: (accumulated) => {
+                    if (!isCurrentRun()) return;
+                    finalThinkingText = stripToolControl(stripBrowserControl(stripWebSearchControl(accumulated)));
+                    flushThinkingContent(finalThinkingText);
+                  },
+                },
+              );
+              fullText = inspectedAnswer;
+            } catch (browserError) {
+              const denied = /not approved/i.test(browserError?.message || '');
+              fullText = denied
+                ? 'I did not inspect the website because browser access was not approved.'
+                : `I could not inspect the website because the Chrome MCP connector is unavailable: ${browserError.message}`;
+            }
+          }
+
+          const inlineToolNames = new Set([
+            TOOL_NAMES.CALCULATOR,
+            TOOL_NAMES.WEATHER,
+            TOOL_NAMES.CURRENCY,
+            TOOL_NAMES.CODE,
+            TOOL_NAMES.TASK,
+          ]);
+          if (finalToolCall && inlineToolNames.has(finalToolCall.name) && !requestFailed && isCurrentRun()) {
+            cancelPendingStreamFlushes();
+            setStreamingContent('');
+            setThinkingContent('');
+            try {
+              const toolResult = await executeHostTool(finalToolCall, {
+                runTask: async (goal) => {
+                  if (!goal) throw new Error('A task goal is required.');
+                  let result = '';
+                  await sendChatMessage(
+                    [{ role: 'user', content: `Complete this task carefully and return the tangible finished output:\n\n${goal}` }],
+                    chosenModel,
+                    (accumulated) => { result = accumulated; },
+                    [],
+                    { think: true, onModelUsed: applyModelUsed },
+                  );
+                  return result;
+                },
+              });
+              history[history.length - 1] = {
+                role: 'user',
+                content: `${content}\n\n=== TOOL RESULT ===\nTool: ${finalToolCall.name}\n${toolResult}\n=== END TOOL RESULT ===\n\nContinue the original request using this result. Do not emit the same tool call again.`,
+              };
+              let continuedAnswer = '';
+              await sendChatMessage(
+                history,
+                chosenModel,
+                (accumulated) => {
+                  if (!isCurrentRun()) return;
+                  continuedAnswer = stripToolControl(accumulated);
+                  flushStreamingContent(continuedAnswer);
+                },
+                images,
+                {
+                  think: shouldThink,
+                  ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
+                  onModelUsed: applyModelUsed,
+                  onThinking: (accumulated) => {
+                    if (!isCurrentRun()) return;
+                    finalThinkingText = stripToolControl(accumulated);
+                    flushThinkingContent(finalThinkingText);
+                  },
+                },
+              );
+              fullText = continuedAnswer;
+            } catch (toolError) {
+              fullText = `The ${finalToolCall.name} tool could not complete: ${toolError.message}`;
+            }
+          }
+
+          if (finalToolCall?.name === TOOL_NAMES.IMAGE && finalToolCall.arguments?.prompt) {
+            wantsImageGeneration = true;
+            fullText = `[IMAGE_GEN: ${String(finalToolCall.arguments.prompt).trim()}]`;
+          } else if (finalToolCall?.name === TOOL_NAMES.VIDEO && finalToolCall.arguments?.prompt) {
+            wantsVideoGeneration = true;
+            fullText = `[VIDEO_GEN: ${String(finalToolCall.arguments.prompt).trim()}]`;
           }
 
           if (wantsImageGeneration && !requestFailed) {
@@ -1881,7 +2094,10 @@ export default function useChat() {
             setStreamingContent('');
             setThinkingContent('');
             try {
-              const fallbackQuery = requestedWebSearchQuery || buildContextualSearchQuery(content);
+              const fallbackQuery = await getLatestMessageSearchQuery(requestedWebSearchQuery)
+                || buildContextualSearchQuery(content)
+                || requestedWebSearchQuery
+                || content;
               const fallbackFreshnessRequested = needsFreshInformation(content) || needsFreshInformation(fallbackQuery);
               const fallbackData = await searchWeb({
                 query: fallbackQuery,
@@ -1957,7 +2173,7 @@ export default function useChat() {
             }
           }
 
-          fullText = stripWebSearchControl(fullText);
+          fullText = stripToolControl(stripBrowserControl(stripWebSearchControl(fullText)));
 
           // ── Grounded answer quality gate ──
           // Search can succeed while a weaker model still emits a disclaimer,

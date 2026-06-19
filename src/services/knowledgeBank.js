@@ -128,6 +128,7 @@ export function buildLearnedFactsBlock() {
 // The model can write to the knowledge bank by including these markers,
 // which we strip from the visible reply and persist as learned facts.
 const REMEMBER_RE = /\[REMEMBER:\s*([^=\]]+?)\s*=\s*([^\]]+?)\s*\]/gi;
+const MALFORMED_REMEMBER_RE = /\[REMEMBER:[^\]]*\]/gi;
 
 export function processRememberMarkers(text = '') {
   let cleaned = String(text || '');
@@ -138,7 +139,11 @@ export function processRememberMarkers(text = '') {
     const value = match[2].trim();
     addLearnedFact(key, value);
   }
-  return cleaned.replace(REMEMBER_RE, '').replace(/\s{2,}/g, ' ').trim();
+  return cleaned
+    .replace(REMEMBER_RE, '')
+    .replace(MALFORMED_REMEMBER_RE, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 // Guard against prompt-leak style responses such as

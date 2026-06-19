@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Check, Volume2, FileText, FileCode, File, X, ExternalLink, Download, RefreshCw, Pencil, Globe, EyeOff, Cpu, ChevronDown, Lock } from 'lucide-react';
+import { Copy, Check, FileText, FileCode, File, X, ExternalLink, Download, RefreshCw, Pencil, Globe, EyeOff, Cpu, ChevronDown, Lock } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
@@ -10,7 +10,6 @@ import ParticleText from './ParticleText';
 import RelatedMedia from './RelatedMedia';
 import UserAvatar from '../common/UserAvatar';
 import { exportDocument, sanitizeDocumentContent } from '../../utils/documentExport';
-import { cleanSpeechText, createSpeechUtterance, pickPreferredVoice, findVoiceById, getPreferredVoiceId } from '../../utils/tts';
 
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
 const VIDEO_GEN_PATTERN = /\[VIDEO_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
@@ -929,25 +928,9 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
 function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, isSearching = false, userProfile = null }) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
-  const [speaking, setSpeaking] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
-  const voiceRef = useRef(null);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.speechSynthesis) return undefined;
-
-    const refreshVoices = () => {
-      const voices = window.speechSynthesis.getVoices();
-      const best = pickPreferredVoice(voices);
-      if (best) voiceRef.current = best;
-    };
-
-    refreshVoices();
-    window.speechSynthesis.addEventListener?.('voiceschanged', refreshVoices);
-    return () => window.speechSynthesis.removeEventListener?.('voiceschanged', refreshVoices);
-  }, []);
   const imagePrompt = !isUser ? extractImagePrompt(message.content) : '';
   const videoPrompt = !isUser ? extractVideoPrompt(message.content) : '';
   const modelUsedLabel = !isUser ? formatModelUsedLabel(message.modelUsed || message.model) : '';
@@ -963,21 +946,6 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }, [message.content]);
-
-  const handleSpeak = useCallback(() => {
-    if (speaking) {
-      window.speechSynthesis.cancel();
-      setSpeaking(false);
-      return;
-    }
-    const cleaned = cleanSpeechText(message.content);
-    const currentVoice = findVoiceById(window.speechSynthesis.getVoices(), getPreferredVoiceId()) || voiceRef.current || pickPreferredVoice(window.speechSynthesis.getVoices());
-    const utter = createSpeechUtterance(cleaned, currentVoice);
-    utter.onend = () => setSpeaking(false);
-    utter.onerror = () => setSpeaking(false);
-    window.speechSynthesis.speak(utter);
-    setSpeaking(true);
-  }, [message.content, speaking]);
 
   const handleExport = useCallback(async (format) => {
     setExporting(true);
@@ -1211,9 +1179,6 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
           <div className="flex items-center gap-1 mt-1.5 ml-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
             <button onClick={handleCopy} className="p-1.5 rounded-md transition-all hover:scale-110" style={{ color: copied ? '#5eead4' : 'var(--hud-cyan-soft)' }} title="Copy">
               {copied ? <Check size={13} /> : <Copy size={13} />}
-            </button>
-            <button onClick={handleSpeak} className="p-1.5 rounded-md transition-all hover:scale-110" style={{ color: speaking ? 'var(--hud-cyan-bright)' : 'var(--hud-cyan-soft)', background: speaking ? 'rgba(94,234,212,0.08)' : 'transparent' }} title="Read aloud">
-              <Volume2 size={13} />
             </button>
             <div className="relative">
               <button

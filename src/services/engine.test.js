@@ -22,3 +22,9 @@ test('routes sufficiently specific niche topics to search', () => {
   assert.equal(processQuery('Tell me about AlgaeTree BioUrban').needsSearch, true);
   assert.equal(processQuery('Tell me something about the Algae tree').needsSearch, true);
 });
+
+test('auto selects models by task complexity', () => {
+  assert.equal(processQuery('Hello there', false, { selectedMode: 'auto' }).model, 'mira-lite');
+  assert.equal(processQuery('Build a React component with state and validation', false, { selectedMode: 'auto' }).model, 'mira');
+  assert.equal(processQuery('Design an in-depth distributed system architecture step-by-step', false, { selectedMode: 'auto' }).model, 'mira-pro');
+});

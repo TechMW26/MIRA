@@ -3,7 +3,6 @@ import {
   CHAT_REQUEST_TIMEOUTS,
   getChatTimeoutMessage,
   getResponseHeadersTimeout,
-  getRetryModel,
 } from './chatRequestPolicy.js';
 import { diagnosticError, diagnosticLog, diagnosticWarn } from './diagnostics.js';
 
@@ -324,10 +323,6 @@ async function readChatResponse(response, onChunk, signal) {
   return { answer: fullAnswer, thinking: fullThinking };
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function extractApiError(response) {
   try {
     const payload = await response.json();
@@ -405,153 +400,79 @@ export function installGenerationExitCancellation() {
 }
 
 async function requestChat({ messages, model, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think, onChunk }) {
-  const transientStatus = new Set([408, 429, 500, 502, 503, 504]);
-  const maxAttempts = 3;
   const controller = new AbortController();
   activeChatAbortController = controller;
+  const requestId = createRequestId();
+  activeChatRequestId = requestId;
+  const { controller: attemptController, cleanup: cleanupAttemptSignal } = createAttemptSignal(controller.signal);
+  const attemptStartedAt = Date.now();
 
   try {
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      if (controller.signal.aborted) {
-        throw new DOMException('Generation stopped by user.', 'AbortError');
-      }
-
-      const requestId = createRequestId();
-      const attemptModel = getRetryModel(model, attempt);
-      activeChatRequestId = requestId;
-      const { controller: attemptController, cleanup: cleanupAttemptSignal } = createAttemptSignal(controller.signal);
-      const attemptStartedAt = Date.now();
-      diagnosticLog('model', attempt === 1 ? 'request started' : 'client fallback activated', {
-        requestId,
-        attempt,
-        requestedModel: model || 'auto',
-        attemptModel: attemptModel || 'auto',
-        streaming: true,
-        imageCount: images.length,
-      });
-      try {
-        const response = await raceWithTimeout(
-          fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: attemptController.signal,
-            body: JSON.stringify({
-              requestId,
-              messages,
-              ...(attemptModel ? { model: attemptModel } : {}),
-              ...(systemPrompt ? { systemPrompt } : {}),
-              images,
-              stream: true,
-              ...(maxTokens ? { max_tokens: maxTokens } : {}),
-              ...(Array.isArray(tools) && tools.length > 0 ? { tools } : {}),
-              ...(typeof think === 'boolean' ? { think } : {}),
-            }),
-          }),
-          getResponseHeadersTimeout(attemptModel),
-          'response-headers',
-          () => attemptController.abort(),
-        );
-
-        const modelUsed = String(response.headers.get('x-mira-model-used') || '').trim();
-        diagnosticLog('stream', 'response headers received', {
+    diagnosticLog('model', 'request started', {
+      requestId,
+      requestedModel: model || 'auto',
+      streaming: true,
+      imageCount: images.length,
+    });
+    const response = await raceWithTimeout(
+      fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: attemptController.signal,
+        body: JSON.stringify({
           requestId,
-          attempt,
-          status: response.status,
-          requestedModel: attemptModel || 'auto',
-          modelUsed: modelUsed || 'not-reported',
-          elapsedMs: Date.now() - attemptStartedAt,
-        });
-
-        if (response.ok) {
-          const streamed = await readChatResponse(response, onChunk, attemptController.signal);
-          const visible = splitThinkingFromRaw(streamed?.answer || '').answer;
-          const hasAnswer = Boolean(String(visible || '').trim());
-          if (!hasAnswer && attempt < maxAttempts) {
-            diagnosticWarn('model', 'empty response; activating fallback', {
-              requestId,
-              attempt,
-              model: attemptModel || 'auto',
-              nextModel: getRetryModel(model, attempt + 1) || 'auto',
-            });
-            continue;
-          }
-          if (!hasAnswer) {
-            throw new Error('The model returned an empty response.');
-          }
-          diagnosticLog('stream', 'response completed', {
-            requestId,
-            attempt,
-            modelUsed: modelUsed || attemptModel || 'auto',
-            answerChars: String(visible || '').length,
-            thinkingChars: String(streamed?.thinking || '').length,
-            elapsedMs: Date.now() - attemptStartedAt,
-          });
-          return {
-            ...streamed,
-            ...(modelUsed ? { modelUsed } : {}),
-          };
-        }
-
-        const message = await extractApiError(response);
-        const shouldRetry = transientStatus.has(response.status) && attempt < maxAttempts;
-        if (shouldRetry) {
-          diagnosticWarn('model', 'transient API error; activating fallback', {
-            requestId,
-            attempt,
-            model: attemptModel || 'auto',
-            status: response.status,
-            nextModel: getRetryModel(model, attempt + 1) || 'auto',
-            message,
-          });
-          await sleep(75 * attempt);
-          continue;
-        }
-
-        throw new Error(message || `API error: ${response.status}`);
-      } catch (err) {
-        if (controller.signal.aborted) {
-          throw new DOMException('Generation stopped by user.', 'AbortError');
-        }
-
-        // The timeout callback aborts only this attempt. Depending on microtask
-        // ordering, fetch() can surface its AbortError before the watchdog's
-        // ChatTimeoutError. Never mistake that per-attempt abort for the user
-        // pressing Stop, or the UI will silently leave an empty assistant row.
-        const normalizedError = isAbortError(err) && attemptController.signal.aborted
-          ? new ChatTimeoutError('response-headers')
-          : err;
-        const likelyNetworkError = normalizedError?.name === 'ChatTimeoutError'
-          || (!isAbortError(normalizedError) && !String(normalizedError?.message || '').startsWith('API error:'));
-        const shouldRetry = likelyNetworkError && attempt < maxAttempts;
-        if (shouldRetry) {
-          diagnosticWarn('stream', 'request failed; activating fallback', {
-            requestId,
-            attempt,
-            model: attemptModel || 'auto',
-            nextModel: getRetryModel(model, attempt + 1) || 'auto',
-            error: normalizedError?.message || 'Unknown request error',
-            errorType: normalizedError?.name || 'Error',
-            elapsedMs: Date.now() - attemptStartedAt,
-          });
-          await sleep(75 * attempt);
-          continue;
-        }
-        diagnosticError('stream', 'request exhausted recovery', {
-          requestId,
-          attempt,
-          model: attemptModel || 'auto',
-          error: normalizedError?.message || 'Unknown request error',
-          errorType: normalizedError?.name || 'Error',
-          elapsedMs: Date.now() - attemptStartedAt,
-        });
-        throw normalizedError;
-      } finally {
-        cleanupAttemptSignal();
-      }
+          messages,
+          ...(model ? { model } : {}),
+          ...(systemPrompt ? { systemPrompt } : {}),
+          images,
+          stream: true,
+          ...(maxTokens ? { max_tokens: maxTokens } : {}),
+          ...(Array.isArray(tools) && tools.length > 0 ? { tools } : {}),
+          ...(typeof think === 'boolean' ? { think } : {}),
+        }),
+      }),
+      getResponseHeadersTimeout(model),
+      'response-headers',
+      () => attemptController.abort(),
+    );
+    const modelUsed = String(response.headers.get('x-mira-model-used') || '').trim();
+    diagnosticLog('stream', 'response headers received', {
+      requestId,
+      status: response.status,
+      requestedModel: model || 'auto',
+      modelUsed: modelUsed || 'not-reported',
+      elapsedMs: Date.now() - attemptStartedAt,
+    });
+    if (!response.ok) {
+      const message = await extractApiError(response);
+      throw new Error(message || `API error: ${response.status}`);
     }
-
-    throw new Error('Chat request failed after retries.');
+    const streamed = await readChatResponse(response, onChunk, attemptController.signal);
+    const visible = splitThinkingFromRaw(streamed?.answer || '').answer;
+    if (!String(visible || '').trim()) throw new Error('The model returned an empty response.');
+    diagnosticLog('stream', 'response completed', {
+      requestId,
+      modelUsed: modelUsed || model || 'auto',
+      answerChars: String(visible || '').length,
+      thinkingChars: String(streamed?.thinking || '').length,
+      elapsedMs: Date.now() - attemptStartedAt,
+    });
+    return { ...streamed, ...(modelUsed ? { modelUsed } : {}) };
+  } catch (err) {
+    if (controller.signal.aborted) throw new DOMException('Generation stopped by user.', 'AbortError');
+    const normalizedError = isAbortError(err) && attemptController.signal.aborted
+      ? new ChatTimeoutError('response-headers')
+      : err;
+    diagnosticError('stream', 'request failed', {
+      requestId,
+      model: model || 'auto',
+      error: normalizedError?.message || 'Unknown request error',
+      errorType: normalizedError?.name || 'Error',
+      elapsedMs: Date.now() - attemptStartedAt,
+    });
+    throw normalizedError;
   } finally {
+    cleanupAttemptSignal();
     if (activeChatAbortController === controller) {
       activeChatAbortController = null;
       activeChatRequestId = null;

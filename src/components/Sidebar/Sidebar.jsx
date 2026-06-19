@@ -21,6 +21,7 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import { useChatContext } from '../../contexts/ChatContext';
 import UserAvatar from '../common/UserAvatar';
+import MiraLogo from '../common/MiraLogo';
 import useUserProfile from '../../hooks/useUserProfile';
 import {
   subscribeConversations,
@@ -388,7 +389,7 @@ export default function Sidebar() {
                   <ArrowLeft size={18} />
                 </button>
               ) : (
-                <img src="/mira-logo.png" alt="MIRA" className="w-9 h-9 rounded-xl object-cover" />
+                <MiraLogo size={36} />
               )}
               <div>
                 <span className="font-bold text-sm" style={{ color: 'var(--text-primary)' }}>

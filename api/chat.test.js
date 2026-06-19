@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildUpstreamPayload,
-  buildModelFallbackChain,
+  selectModelForRequest,
   getChatEndpointConfig,
   resolveModelChoice,
   toUiModelName,
@@ -17,6 +17,21 @@ test('normal Mira stays on Mira while Locked uses the Mira Pro model', () => {
   assert.equal(resolveModelChoice('mira', false, false), process.env.MIRA_MODEL || 'mira-v4');
   assert.equal(resolveModelChoice('locked', false, false), process.env.MIRA_PRO_MODEL || 'mira-pro');
   assert.equal(resolveModelChoice('mira-pro', false, false), resolveModelChoice('locked', false, false));
+});
+
+test('server Auto routing follows latest-message complexity', () => {
+  assert.equal(
+    resolveModelChoice('auto', false, false, [{ role: 'user', content: 'Hello' }]),
+    process.env.MIRA_LITE_MODEL || process.env.GEMINI_PRIMARY_MODEL || 'gemini-2.5-flash',
+  );
+  assert.equal(
+    resolveModelChoice('auto', false, false, [{ role: 'user', content: 'Build a React component with validation' }]),
+    process.env.MIRA_MODEL || 'mira-v4',
+  );
+  assert.equal(
+    resolveModelChoice('auto', false, false, [{ role: 'user', content: 'Design an in-depth distributed system architecture step-by-step' }]),
+    process.env.MIRA_PRO_MODEL || 'mira-pro',
+  );
 });
 
 test('forces streaming for every upstream model payload', () => {
@@ -41,7 +56,7 @@ test('uses the dedicated VPS payload for Mira v4', () => {
   });
   assert.equal(payload.model, process.env.MIRA_MODEL || 'mira-v4');
   assert.equal(payload.stream, true);
-  assert.equal(payload.options.num_ctx, Number(process.env.OLLAMA_CONTEXT_TOKENS || 131072));
+  assert.equal('num_ctx' in payload.options, false);
   assert.equal(payload.options.temperature, 0.2);
   assert.equal(payload.options.top_p, 0.85);
   assert.equal(payload.options.repeat_penalty, 1.2);
@@ -54,7 +69,8 @@ test('keeps provider ownership strict between Mira and Mira Pro', () => {
   assert.equal(getChatEndpointConfig('mira-pro').provider, 'salad');
 });
 
-test('never falls Mira v4 through to Mira Pro or Gemini', () => {
-  assert.deepEqual(buildModelFallbackChain('mira-v4'), [process.env.MIRA_MODEL || 'mira-v4']);
-  assert.deepEqual(buildModelFallbackChain('mira'), [process.env.MIRA_MODEL || 'mira-v4']);
+test('uses only the selected model with no fallback chain', () => {
+  assert.equal(selectModelForRequest('mira-v4'), 'mira-v4');
+  assert.equal(selectModelForRequest('mira-pro'), 'mira-pro');
+  assert.equal(selectModelForRequest('gemini-2.5-flash'), 'gemini-2.5-flash');
 });

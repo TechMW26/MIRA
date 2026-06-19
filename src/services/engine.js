@@ -361,9 +361,19 @@ function pickModel(classification, hasImages, selectedMode = 'auto') {
   if (selectedMode === 'mira-pro') return 'mira-pro';
   if (selectedMode === 'mira-lite') return 'mira-lite';
   if (selectedMode === 'mira') return 'mira';
-  // Auto: keep almost all conversation on Lite unless vision is needed.
   if (hasImages) return 'mira-pro';
+  if (classification.complexity === 'high') return 'mira-pro';
+  if (classification.complexity === 'medium') return 'mira';
+  if (['code', 'math'].includes(classification.intent)) return 'mira';
   return 'mira-lite';
+}
+
+export function resolveModelForTask(prompt = '', selectedMode = 'auto', { forceComplex = false } = {}) {
+  if (selectedMode && selectedMode !== 'auto') return selectedMode;
+  const taskPrompt = forceComplex
+    ? `Analyze and execute this multi-step task in depth, step-by-step: ${prompt}`
+    : prompt;
+  return processQuery(taskPrompt, false, { selectedMode: 'auto' }).model;
 }
 
 // ── Public API ─────────────────────────────────────────────────

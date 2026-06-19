@@ -10,11 +10,6 @@ export default defineConfig({
       injectRegister: 'auto',
       includeAssets: [
         'favicon.svg',
-        'mira-logo.png',
-        'icons/icon-192.png',
-        'icons/icon-512.png',
-        'icons/icon-512-maskable.png',
-        'icons/apple-touch-icon.png',
       ],
       manifest: false,
       workbox: {
@@ -54,8 +49,9 @@ export default defineConfig({
           });
         },
       },
-      '/api/scrape': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/search-query': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/browser-mcp': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/image': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/generate-image': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/generate-video': { target: 'http://localhost:3002', changeOrigin: true },

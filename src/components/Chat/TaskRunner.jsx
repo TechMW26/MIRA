@@ -1,54 +1,13 @@
-import { useState } from 'react';
-import { X, Play, CheckCircle2, Circle, Loader, ChevronDown, ChevronRight, Zap } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { X, Play, CheckCircle2, Circle, Loader, ChevronDown, ChevronRight, Zap, BrainCircuit, Square } from 'lucide-react';
+import { sendChatMessage, stopChatGeneration } from '../../services/api';
+import { useChatContext } from '../../contexts/ChatContext';
+import { resolveModelForTask } from '../../services/engine';
 
-const STATUS = { pending: 'pending', running: 'running', done: 'done', error: 'error' };
-
-async function readSseText(res) {
-  if (!res.ok) {
-    const errorPayload = await res.json().catch(() => ({}));
-    throw new Error(errorPayload?.error || `API error ${res.status}`);
-  }
-
-  const contentType = String(res.headers.get('content-type') || '').toLowerCase();
-  if (contentType.includes('application/json')) {
-    const data = await res.json().catch(() => ({}));
-    return String(data?.result || data?.text || data?.answer || '');
-  }
-
-  if (!res.body) {
-    return await res.text().catch(() => '');
-  }
-
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let text = '';
-  const reader = res.body.getReader();
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const data = trimmed.slice(5).trim();
-      if (!data || data === '[DONE]') continue;
-      try {
-        const payload = JSON.parse(data);
-        if (typeof payload?.text === 'string') text += payload.text;
-      } catch {}
-    }
-  }
-
-  return text;
-}
+const STATUS = { pending: 'pending', running: 'running', done: 'done', error: 'error', stopped: 'stopped' };
 
 function extractJsonArray(text) {
-  const trimmed = String(text || '').trim();
+  const trimmed = String(text || '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
   if (!trimmed) throw new Error('Task plan response was empty.');
 
   try {
@@ -57,16 +16,16 @@ function extractJsonArray(text) {
     if (parsed?.tasks && Array.isArray(parsed.tasks)) return parsed.tasks;
   } catch {}
 
-  const start = text.indexOf('[');
+  const start = trimmed.indexOf('[');
   if (start === -1) throw new Error('Could not find a JSON array in the task plan.');
 
   let depth = 0;
-  for (let i = start; i < text.length; i++) {
-    if (text[i] === '[') depth++;
-    if (text[i] === ']') {
+  for (let i = start; i < trimmed.length; i++) {
+    if (trimmed[i] === '[') depth++;
+    if (trimmed[i] === ']') {
       depth--;
       if (depth === 0) {
-        const candidate = text.slice(start, i + 1);
+        const candidate = trimmed.slice(start, i + 1);
         try {
           const parsed = JSON.parse(candidate);
           if (Array.isArray(parsed)) return parsed;
@@ -78,35 +37,62 @@ function extractJsonArray(text) {
   throw new Error('Could not parse task plan.');
 }
 
-async function fetchChatPrompt(prompt) {
-  const res = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      messages: [{ role: 'user', content: prompt }],
-      images: [],
-      stream: true,
-    }),
-  });
-
-  return await readSseText(res);
-}
-
 export default function TaskRunner({ onSendMessage, onClose }) {
+  const { selectedModel } = useChatContext();
   const [goal, setGoal] = useState('');
   const [tasks, setTasks] = useState([]);
   const [running, setRunning] = useState(false);
   const [expanded, setExpanded] = useState({});
+  const [phase, setPhase] = useState('');
+  const [liveReasoning, setLiveReasoning] = useState('');
+  const [activeModel, setActiveModel] = useState('');
+  const cancelledRef = useRef(false);
+  const runnerModelRef = useRef(selectedModel);
+
+  async function runReasonedPrompt(prompt, onProgress) {
+    let result = '';
+    await sendChatMessage(
+      [{ role: 'user', content: prompt }],
+      runnerModelRef.current,
+      (text) => {
+        result = text;
+        onProgress?.(text);
+      },
+      [],
+      {
+        think: true,
+        onThinking: (thinking) => setLiveReasoning(thinking),
+      },
+    );
+    return result;
+  }
+
+  function stopRunner() {
+    cancelledRef.current = true;
+    stopChatGeneration();
+    setTasks((prev) => prev.map((task) => (
+      task.status === STATUS.running ? { ...task, status: STATUS.stopped } : task
+    )));
+    setRunning(false);
+    setPhase('Stopped');
+  }
 
   async function planTasks() {
     if (!goal.trim()) return;
+    cancelledRef.current = false;
+    const taskModel = resolveModelForTask(goal, selectedModel, { forceComplex: true });
+    runnerModelRef.current = taskModel;
+    setActiveModel(taskModel);
     setRunning(true);
     setTasks([]);
+    setPhase('Planning');
+    setLiveReasoning('');
 
-    const planPrompt = `Break this goal into 3-6 concrete sequential tasks. Reply ONLY with a JSON array of task objects like: [{"title":"Task name","prompt":"Exact prompt to execute this task"}]. Goal: ${goal}`;
+    const planPrompt = `You are MIRA's planning engine. Analyze the goal, identify dependencies, and create 3-6 concrete sequential tasks. Each task must be independently executable by an AI reasoning agent. Reply ONLY with valid JSON in this schema: [{"title":"Task name","prompt":"Complete execution instruction including expected output"}]. Goal: ${goal}`;
 
     try {
-      const planText = await fetchChatPrompt(planPrompt);
+      const planText = await runReasonedPrompt(planPrompt);
+      if (cancelledRef.current) return;
       const parsed = extractJsonArray(planText);
       const taskList = parsed.map((task, index) => ({
         id: index,
@@ -121,9 +107,12 @@ export default function TaskRunner({ onSendMessage, onClose }) {
       }
 
       setTasks(taskList);
+      setPhase('Executing');
       await executeTasks(taskList);
     } catch (e) {
+      if (cancelledRef.current || e?.name === 'AbortError') return;
       setTasks([{ id: 0, title: 'Planning failed', prompt: '', status: STATUS.error, result: e.message }]);
+      setPhase('Planning failed');
     }
     setRunning(false);
   }
@@ -131,28 +120,38 @@ export default function TaskRunner({ onSendMessage, onClose }) {
   async function executeTasks(taskList) {
     const results = [];
     for (let i = 0; i < taskList.length; i++) {
+      if (cancelledRef.current) return;
       setTasks(prev => prev.map((task, index) => index === i ? { ...task, status: STATUS.running } : task));
+      setLiveReasoning('');
 
       try {
-        const context = results.length ? `\nPrevious results:\n${results.map((result, index) => `Step ${index + 1}: ${result}`).join('\n')}\n\n` : '';
-        const fullPrompt = context + taskList[i].prompt;
-        const result = await fetchChatPrompt(fullPrompt);
+        const context = results.length ? `\nPrevious completed results:\n${results.map((result, index) => `Step ${index + 1}:\n${result.slice(0, 2500)}`).join('\n\n')}\n\n` : '';
+        const fullPrompt = `You are executing step ${i + 1} of ${taskList.length} for this goal: "${goal}".\n${context}Current task: ${taskList[i].prompt}\n\nReason carefully, then provide the useful completed result for this step.`;
+        const result = await runReasonedPrompt(fullPrompt, (text) => {
+          setTasks(prev => prev.map((task, index) => index === i ? { ...task, result: text } : task));
+        });
+        if (cancelledRef.current) return;
+        if (!result.trim()) throw new Error('The model returned an empty result.');
 
-        results.push(result.slice(0, 500));
+        results.push(result);
         setTasks(prev => prev.map((task, index) => index === i ? { ...task, status: STATUS.done, result } : task));
       } catch (e) {
+        if (cancelledRef.current || e?.name === 'AbortError') return;
+        results.push(`Error: ${e.message}`);
         setTasks(prev => prev.map((task, index) => index === i ? { ...task, status: STATUS.error, result: e.message } : task));
       }
     }
 
-    const summary = `I completed the multi-step task: "${goal}"\n\nHere's a summary of all steps:\n${taskList.map((task, index) => `**Step ${index + 1}: ${task.title}**\n${results[index] || 'Error'}`).join('\n\n')}`;
-    onSendMessage(summary);
+    setPhase('Completed');
+    const summary = `The Task Runner completed this goal: "${goal}"\n\n${taskList.map((task, index) => `## Step ${index + 1}: ${task.title}\n${results[index] || 'No result.'}`).join('\n\n')}`;
+    onSendMessage(summary, goal);
   }
 
   const statusIcon = (status) => {
     if (status === STATUS.done) return <CheckCircle2 size={14} style={{ color: '#10b981' }} />;
     if (status === STATUS.running) return <Loader size={14} className="animate-spin" style={{ color: 'var(--accent)' }} />;
     if (status === STATUS.error) return <X size={14} style={{ color: '#ef4444' }} />;
+    if (status === STATUS.stopped) return <Square size={12} style={{ color: 'var(--text-tertiary)' }} />;
     return <Circle size={14} style={{ color: 'var(--text-tertiary)' }} />;
   };
 
@@ -161,6 +160,8 @@ export default function TaskRunner({ onSendMessage, onClose }) {
       <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
         <Zap size={13} style={{ color: 'var(--accent)' }} />
         <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary)' }}>Task Runner</span>
+        {activeModel && <span className="text-[9px] uppercase tracking-wider" style={{ color: 'var(--accent)' }}>{activeModel}</span>}
+        {phase && <span className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>{phase}</span>}
         <button onClick={onClose} className="p-1 rounded hover:opacity-70"><X size={13} style={{ color: 'var(--text-tertiary)' }} /></button>
       </div>
 
@@ -174,17 +175,26 @@ export default function TaskRunner({ onSendMessage, onClose }) {
           style={{ background: 'var(--hover-bg)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
         />
         <button
-          onClick={planTasks}
-          disabled={running || !goal.trim()}
+          onClick={running ? stopRunner : planTasks}
+          disabled={!running && !goal.trim()}
           className="mt-2 w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition-all hover:opacity-90 disabled:opacity-50"
           style={{ background: 'var(--accent)', color: '#fff' }}
         >
-          {running ? <Loader size={12} className="animate-spin" /> : <Play size={12} />}
-          {running ? 'Running...' : 'Run Task'}
+          {running ? <Square size={12} /> : <Play size={12} />}
+          {running ? 'Stop Task' : 'Run Task'}
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {running && liveReasoning && (
+          <div className="rounded-xl p-3 text-xs" style={{ background: 'var(--hover-bg)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
+            <div className="flex items-center gap-2 mb-2 uppercase tracking-wider text-[10px]" style={{ color: 'var(--accent)' }}>
+              <BrainCircuit size={12} />
+              Reasoning
+            </div>
+            {liveReasoning.slice(-1000)}
+          </div>
+        )}
         {tasks.length === 0 && (
           <p className="text-xs text-center py-8" style={{ color: 'var(--text-tertiary)' }}>
             Enter a goal above and MIRA will break it into steps and execute each one automatically.

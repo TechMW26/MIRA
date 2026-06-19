@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Eye, EyeOff, ArrowRight, Loader2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import MiraLogo from '../common/MiraLogo';
 
 export default function AuthPage() {
   const { user, login, register, error, authLoading } = useAuth();
@@ -35,7 +36,7 @@ export default function AuthPage() {
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">
           <div className="relative mb-4">
-            <img src="/mira-logo.png" alt="MIRA" className="relative w-16 h-16 rounded-2xl object-cover" />
+            <MiraLogo size={68} className="relative" />
           </div>
           <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
             Welcome to MIRA

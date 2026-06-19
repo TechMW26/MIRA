@@ -1,6 +1,7 @@
 import React from 'react';
 import { Menu, X } from 'lucide-react';
 import { useChatContext } from '../../contexts/ChatContext';
+import MiraLogo from '../common/MiraLogo';
 
 /**
  * HudOverlay — chrome around the chat surface. Top row carries the
@@ -13,13 +14,8 @@ export default function HudOverlay() {
   return (
     <>
       <div className="hud-top-dock pointer-events-none absolute inset-x-0 top-0 z-30 flex items-center justify-center px-4 pb-4">
-        <div className="hud-brand-frame select-none">
-          <div className="hud-bracket-row">
-            <span className="hud-bracket hud-bracket-left" />
-            <h1 className="mira-hero-title">MIRA</h1>
-            <span className="hud-bracket hud-bracket-right" />
-          </div>
-          <span className="mira-hero-sub">AI ASSISTANT</span>
+        <div className="hud-brand-frame select-none" style={{ color: 'var(--hud-cyan-bright)' }}>
+          <MiraLogo size={34} wordmark />
         </div>
       </div>
 

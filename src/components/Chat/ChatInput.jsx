@@ -1,12 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import {
-  Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Loader, Mic,
-  Globe, PanelRight, Code2, Zap, Wrench, BookMarked, Share2, Volume2, Cpu, ChevronDown, Lock, AlertTriangle,
+  Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Loader,
+  Globe, Code2, Zap, Wrench, BookMarked, Share2, Cpu, ChevronDown, Lock, AlertTriangle,
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
-import { formatVoiceLabel, getVoiceKey, pickPreferredVoice, getPreferredVoiceId, setPreferredVoiceId } from '../../utils/tts';
 import { useChatContext } from '../../contexts/ChatContext';
-import VoiceMode from './VoiceMode';
 
 const ACCEPT_TYPES = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic,.sh,.rs,.go,.rb,.php,.sql';
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'heic']);
@@ -121,10 +119,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   const [attachments, setAttachments] = useState([]);
   const [parsing, setParsing] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [voiceOpen, setVoiceOpen] = useState(false);
-  const [voices, setVoices] = useState([]);
-  const [selectedVoiceId, setSelectedVoiceId] = useState(getPreferredVoiceId());
-  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [lockedPinOpen, setLockedPinOpen] = useState(false);
   const [lockedPinInput, setLockedPinInput] = useState('');
@@ -134,22 +128,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   const fileInputRef = useRef(null);
   const dragCounterRef = useRef(0);
 
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.speechSynthesis) return undefined;
-    const refresh = () => {
-      const next = window.speechSynthesis.getVoices();
-      setVoices(next);
-      setSelectedVoiceId((cur) => cur || getPreferredVoiceId());
-    };
-    refresh();
-    window.speechSynthesis.addEventListener?.('voiceschanged', refresh);
-    return () => window.speechSynthesis.removeEventListener?.('voiceschanged', refresh);
-  }, []);
-
-  const preferredVoice = pickPreferredVoice(voices);
-  const voiceOptions = voices
-    .slice()
-    .sort((a, b) => (a.lang || '').localeCompare(b.lang || '') || (a.name || '').localeCompare(b.name || ''));
   const selectedModelLabel = selectedModel === 'locked'
     ? 'Mira Locked'
     : selectedModel === 'mira-pro'
@@ -282,21 +260,8 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   }
 
-  function handleVoiceTranscript(text) {
-    if (!text) return;
-    setVoiceOpen(false);
-    onSend(text, []);
-  }
-
-  function handleVoiceChange(event) {
-    const nextId = event.target.value;
-    setSelectedVoiceId(nextId);
-    setPreferredVoiceId(nextId);
-  }
-
   const toolStrip = [
     { id: 'web', icon: Globe, title: 'Web search', active: webSearch, onClick: onToggleWebSearch },
-    { id: 'browser', icon: PanelRight, title: 'Browser', active: activePanel === 'browser', onClick: () => onTogglePanel('browser') },
     { id: 'canvas', icon: Code2, title: 'Canvas', active: activePanel === 'canvas', onClick: () => onTogglePanel('canvas') },
     { id: 'tasks', icon: Zap, title: 'Tasks', active: activePanel === 'tasks', onClick: () => onTogglePanel('tasks') },
     { id: 'tools', icon: Wrench, title: 'Tools', active: activePanel === 'tools', onClick: () => onTogglePanel('tools') },
@@ -338,41 +303,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                   <span className="hud-tool-tip">{title}</span>
                 </button>
               ))}
-
-              {voices.length > 0 && (
-                <div className="relative hud-popover-anchor">
-                  <button
-                    type="button"
-                    onClick={() => setVoicePickerOpen((v) => !v)}
-                    className="hud-tool"
-                    data-active={voicePickerOpen || undefined}
-                    title={preferredVoice ? formatVoiceLabel(preferredVoice) : 'Voice'}
-                  >
-                    <Volume2 size={15} />
-                    <span className="hud-tool-tip">Voice</span>
-                  </button>
-                  {voicePickerOpen && (
-                    <div className="hud-voice-popover" onMouseLeave={() => setVoicePickerOpen(false)}>
-                      <select
-                        value={selectedVoiceId || ''}
-                        onChange={handleVoiceChange}
-                        className="bg-transparent text-[11px] outline-none w-full uppercase tracking-wider"
-                        style={{ color: 'var(--text-primary)' }}
-                      >
-                        <option value="">Best available</option>
-                        {voiceOptions.map((voice) => {
-                          const id = getVoiceKey(voice);
-                          return (
-                            <option key={id} value={id}>
-                              {formatVoiceLabel(voice)}
-                            </option>
-                          );
-                        })}
-                      </select>
-                    </div>
-                  )}
-                </div>
-              )}
 
               {hasShare && (
                 <button
@@ -520,15 +450,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                 {parsing ? <Loader size={18} className="animate-spin" /> : <Paperclip size={18} />}
               </button>
 
-              <button
-                type="button"
-                onClick={() => setVoiceOpen(true)}
-                className="composer-icon-btn"
-                title="Voice mode"
-              >
-                <Mic size={18} />
-              </button>
-
               {isGenerating ? (
                 <button
                   type="button"
@@ -554,10 +475,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
           </div>
         </div>
       </div>
-
-      {voiceOpen && (
-        <VoiceMode onSend={handleVoiceTranscript} onClose={() => setVoiceOpen(false)} />
-      )}
 
       {/* ── PIN gate for Mira Locked (with inline disclaimer) ── */}
       {lockedPinOpen && (

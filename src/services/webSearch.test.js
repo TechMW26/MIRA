@@ -25,13 +25,13 @@ test('normalizes conversational shorthand and common search typos', () => {
   assert.ok(queries.includes('most expensive yacht in india right now'));
 });
 
-test('repairs the common algaetree compound before retrying search', () => {
-  assert.ok(buildSearchRetryQueries('algaetree').includes('algae tree'));
+test('preserves coined and brand-like compounds for AI query formation', () => {
+  assert.equal(buildSearchRetryQueries('algaetree')[0], 'algaetree');
 });
 
 test('extracts the subject from a Hinglish research question', () => {
   const queries = buildSearchRetryQueries('Mujhe algaetree ke baare mein current verified details batao.');
-  assert.ok(queries.includes('algae tree'));
+  assert.ok(queries.includes('algaetree'));
 });
 
 test('builds a readable evidence answer when model regeneration fails', () => {

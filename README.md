@@ -7,7 +7,7 @@ A conversational, research, vision, and media assistant with multi-provider mode
 - **Multi-provider model routing** — Mira Lite uses Gemini, Mira uses the VPS endpoint, and Mira Pro/Locked use Salad
 - **Automatic internet research** — Deterministic routing plus model-requested live search with citations
 - **Chat Interface** — Streaming responses, markdown rendering, syntax-highlighted code
-- **Voice Mode** — Hands-free conversation with speech-to-text and text-to-speech
+- **Permission-gated Chrome MCP inspection** — Agents can request structured website documentation only after user approval
 - **Image Analysis** — Analyze uploaded images with prompt-based reasoning
 - **Image Generation** — Keeps the current image/video generation pipeline unchanged
 - **Project Management** — Organize conversations into projects
@@ -49,7 +49,7 @@ MIRA_MODEL=mira-v4
 # Mira Pro and Locked both run on Salad using `mira-pro`.
 MIRA_PRO_MODEL=mira-pro
 OLLAMA_MAX_TOKENS=12000
-OLLAMA_CONTEXT_TOKENS=131072
+OLLAMA_CONTEXT_TOKENS=0
 MIRA_V4_TEMPERATURE=0.2
 MIRA_V4_TOP_P=0.85
 MIRA_V4_REPEAT_PENALTY=1.2
@@ -57,9 +57,6 @@ MIRA_V4_REPEAT_PENALTY=1.2
 # Mira Lite / Gemini
 GEMINI_API_KEYS=
 GEMINI_PRIMARY_MODEL=gemini-2.5-flash
-GEMINI_FALLBACK_MODEL=gemini-flash-latest
-GEMINI_LITE_MODEL=gemini-2.5-flash-lite
-GEMINI_PRO_MODEL=gemini-2.5-pro
 MIRA_LITE_MODEL=gemini-2.5-flash
 LITE_MAX_SYSTEM_CHARS=6000
 
@@ -91,7 +88,7 @@ MIRA uses two complementary search triggers:
 2. A model-driven control signal. When MIRA determines that its existing knowledge is insufficient, it returns:
 
    ```text
-   [WEB_SEARCH: concise standalone query]
+   [MIRA_TOOL: {"name":"web.search","arguments":{"query":"concise standalone query"}}]
    ```
 
 The application intercepts this signal—including when it appears in the provider's reasoning stream—runs `/api/search`, and regenerates the answer with live source snippets. Control signals are removed before responses are rendered, cached, or persisted.
@@ -103,3 +100,17 @@ Run the routing and control-protocol tests with:
 ```bash
 npm test
 ```
+
+## Chrome MCP Website Inspection
+
+When a user explicitly asks MIRA to inspect, crawl, audit, or document a URL, the model can emit:
+
+```text
+[MIRA_TOOL: {"name":"browser.inspect","arguments":{"url":"https://example.com","task":"Document the page structure and source"}}]
+```
+
+The app removes this control signal from chat, asks the user for action-time permission, and delegates the request to a connected Chrome MCP host. The host can expose either `window.miraMcp.browser.inspectWebsite(request)` or the `mira:mcp-browser-request` / `mira:mcp-browser-response` event contract and set `window.__MIRA_MCP_BROWSER_CONNECTED__ = true`.
+
+Alternatively, configure `MIRA_BROWSER_MCP_URL`, `MIRA_BROWSER_MCP_TOKEN`, and `MIRA_BROWSER_MCP_TOOL` for a server-side Streamable HTTP MCP gateway. MIRA sends a JSON-RPC `tools/call` request only after the user grants permission.
+
+Returned page structure, accessibility information, links, metadata, and source are normalized into an `MCP CHROME WEBSITE DOCUMENTATION` block before the selected model continues. The legacy scraper panel and `/api/scrape` endpoint are intentionally removed.

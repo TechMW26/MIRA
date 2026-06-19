@@ -1,7 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
-import { Calculator, Code2, Cloud, DollarSign, TrendingUp, X, Play, Loader } from 'lucide-react';
+import { Calculator, Code2, Cloud, DollarSign, TrendingUp, X, Play, Loader, MessageSquareShare } from 'lucide-react';
 
-function CalculatorTool() {
+function PublishButton({ onClick, disabled = false }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium disabled:opacity-40"
+      style={{ background: 'var(--hover-bg)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+    >
+      <MessageSquareShare size={12} /> Send result to chat
+    </button>
+  );
+}
+
+function CalculatorTool({ onPublish }) {
   const [expr, setExpr] = useState('');
   const [result, setResult] = useState('');
 
@@ -39,11 +52,17 @@ function CalculatorTool() {
           </button>
         ))}
       </div>
+      <div className="mt-3">
+        <PublishButton
+          disabled={!result}
+          onClick={() => onPublish('Calculator', `Expression: ${expr}\nResult: ${result}`)}
+        />
+      </div>
     </div>
   );
 }
 
-function CodeRunnerTool() {
+function CodeRunnerTool({ onPublish }) {
   const [code, setCode] = useState('// Write JavaScript here\nconsole.log("Hello from MIRA!");\n\n// Try: Math.random(), Date.now(), etc.');
   const [output, setOutput] = useState('');
   const [running, setRunning] = useState(false);
@@ -129,13 +148,17 @@ function CodeRunnerTool() {
           {output}
         </pre>
       )}
+      <PublishButton
+        disabled={!output}
+        onClick={() => onPublish('Code Runner', `Code:\n\`\`\`javascript\n${code}\n\`\`\`\n\nExecution output:\n\`\`\`text\n${output}\n\`\`\``)}
+      />
       <iframe ref={iframeRef} title="code-runner-sandbox" sandbox="allow-scripts"
         style={{ display: 'none' }} aria-hidden="true" />
     </div>
   );
 }
 
-function WeatherTool() {
+function WeatherTool({ onPublish }) {
   const [city, setCity] = useState('');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -187,11 +210,20 @@ function WeatherTool() {
           </div>
         </div>
       )}
+      <PublishButton
+        disabled={!data && !error}
+        onClick={() => onPublish(
+          'Weather',
+          error
+            ? `Location requested: ${city}\nError: ${error}`
+            : `Location: ${data.location}\nTemperature: ${data.temp}°C\nFeels like: ${data.feels}°C\nConditions: ${data.desc}\nHumidity: ${data.humidity}%\nWind: ${data.wind} km/h`,
+        )}
+      />
     </div>
   );
 }
 
-function CurrencyTool() {
+function CurrencyTool({ onPublish }) {
   const [amount, setAmount] = useState('1');
   const [from, setFrom] = useState('USD');
   const [to, setTo] = useState('EUR');
@@ -231,6 +263,7 @@ function CurrencyTool() {
         {loading ? <Loader size={12} className="animate-spin inline" /> : 'Convert'}
       </button>
       {result && <p className="text-sm font-semibold text-center" style={{ color: 'var(--text-primary)' }}>{result}</p>}
+      <PublishButton disabled={!result} onClick={() => onPublish('Currency Converter', result)} />
     </div>
   );
 }
@@ -242,7 +275,7 @@ const TOOLS = [
   { id: 'currency', label: 'Currency', icon: DollarSign, component: CurrencyTool },
 ];
 
-export default function ToolsPanel({ onClose }) {
+export default function ToolsPanel({ onClose, onPublish }) {
   const [activeTool, setActiveTool] = useState('calc');
   const Tool = TOOLS.find(t => t.id === activeTool)?.component;
 
@@ -265,7 +298,7 @@ export default function ToolsPanel({ onClose }) {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {Tool && <Tool />}
+        {Tool && <Tool onPublish={onPublish} />}
       </div>
     </div>
   );

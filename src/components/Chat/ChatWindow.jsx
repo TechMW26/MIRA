@@ -6,7 +6,6 @@ import MessageBubble from './MessageBubble';
 import WelcomeScreen from './WelcomeScreen';
 import ParticleGlobe from './ParticleGlobe';
 import ChatInput from './ChatInput';
-import BrowserPanel from './BrowserPanel';
 import CanvasPanel from './CanvasPanel';
 import TaskRunner from './TaskRunner';
 import ToolsPanel from './ToolsPanel';
@@ -105,7 +104,7 @@ export default function ChatWindow() {
   const userProfile = useUserProfile();
 
   const [webSearch, setWebSearch] = useState(false);
-  const [panel, setPanel] = useState(null); // 'browser' | 'canvas' | 'tasks' | 'tools' | 'prompts'
+  const [panel, setPanel] = useState(null); // 'canvas' | 'tasks' | 'tools' | 'prompts'
   const [showShare, setShowShare] = useState(false);
   const [chatFontSize, setChatFontSize] = useState(getStoredFontSize);
   const [iconAttractor, setIconAttractor] = useState(null);
@@ -152,17 +151,6 @@ export default function ChatWindow() {
   const sendToChat = useCallback((content, attachments, ws, options = {}) => {
     sendMessage(content, attachments, ws, options);
   }, [sendMessage]);
-
-  const sendBrowserPayloadToChat = useCallback((payload) => {
-    if (typeof payload === 'string') {
-      sendToChat(payload, [], false);
-      return;
-    }
-    sendToChat(payload.content || 'Summarize this page', [], false, {
-      promptContent: payload.promptContent,
-      webPage: payload.webPage,
-    });
-  }, [sendToChat]);
 
   const requestCanvas = useCallback((prompt) => {
     if (!prompt?.trim()) return;
@@ -226,11 +214,6 @@ export default function ChatWindow() {
         />
       </div>
 
-      {panel === 'browser' && (
-        <RightPanel id="browser" defaultWidth={500} minWidth={340} maxWidth={900}>
-          <BrowserPanel onSendToChat={sendBrowserPayloadToChat} onClose={() => setPanel(null)} />
-        </RightPanel>
-      )}
       {panel === 'canvas' && (
         <RightPanel id="canvas" defaultWidth={480} minWidth={320} maxWidth={1000}>
           <CanvasPanel messages={messages} onClose={() => setPanel(null)} onRequestCanvas={requestCanvas} />
@@ -238,12 +221,30 @@ export default function ChatWindow() {
       )}
       {panel === 'tasks' && (
         <RightPanel id="tasks" defaultWidth={360} minWidth={280} maxWidth={720}>
-          <TaskRunner onSendMessage={(c) => sendToChat(c, [], false)} onClose={() => setPanel(null)} />
+          <TaskRunner
+            onSendMessage={(content, goal) => {
+              setPanel(null);
+              const prompt = `Present the completed Task Runner output below as the final answer. Preserve all useful results, remove process chatter, and do not rerun completed steps.\n\n${content}`;
+              sendToChat(`Task Runner completed: ${goal}`, [], false, {
+                promptContent: prompt,
+              });
+            }}
+            onClose={() => setPanel(null)}
+          />
         </RightPanel>
       )}
       {panel === 'tools' && (
         <RightPanel id="tools" defaultWidth={320} minWidth={260} maxWidth={620}>
-          <ToolsPanel onClose={() => setPanel(null)} />
+          <ToolsPanel
+            onPublish={(toolName, result) => {
+              setPanel(null);
+              const prompt = `A ${toolName} tool completed with the result below. Present it clearly as the final answer, preserve exact values and errors, and add only directly useful explanation.\n\n${result}`;
+              sendToChat(`${toolName} result:\n${result}`, [], false, {
+                promptContent: prompt,
+              });
+            }}
+            onClose={() => setPanel(null)}
+          />
         </RightPanel>
       )}
       {panel === 'prompts' && (

@@ -13,9 +13,6 @@ const RELEVANCE_STOPWORDS = new Set([
 ]);
 
 const QUERY_NORMALIZATIONS = [
-  [/\balgaetree\b/gi, 'algae tree'],
-  [/\balgea\s*tree\b/gi, 'algae tree'],
-  [/\balge\s*tree\b/gi, 'algae tree'],
   [/\byatch\b/gi, 'yacht'],
   [/\byaht\b/gi, 'yacht'],
   [/\brn\b/gi, 'right now'],
@@ -58,16 +55,11 @@ export function buildSearchRetryQueries(query = '', freshness = false) {
     ? `"${locationMatch[1].trim()}" ${locationMatch[2].trim()}`
     : '';
   const currentYear = new Date().getUTCFullYear();
-  const spacedCompound = withoutFillers
-    .replace(/\b(algae)(tree)\b/gi, '$1 $2')
-    .trim();
-
   return Array.from(new Set([
     raw,
     original,
     cleaned,
     withoutFillers,
-    spacedCompound,
     quotedLocation,
     locationFirst,
     freshness && !new RegExp(`\\b${currentYear}\\b`).test(withoutFillers) ? `${withoutFillers} ${currentYear}` : '',
