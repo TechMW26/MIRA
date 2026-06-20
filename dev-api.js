@@ -1176,50 +1176,162 @@ async function handleSearch(body) {
     return { images, videos };
   };
 
+  // ── Gemini Google Search Grounding (primary) ────────────
+  let geminiResults = null;
+  const GEMINI_API_KEYS_RAW = String(process.env.GEMINI_API_KEYS || '').trim();
+  if (GEMINI_API_KEYS_RAW) {
+    const GEMINI_API_BASE = (process.env.GEMINI_API_URL_BASE || 'https://generativelanguage.googleapis.com/v1beta/models').trim();
+    const apiKey = GEMINI_API_KEYS_RAW.split(',')[0].trim();
+    try {
+      const geminiUrl = `${GEMINI_API_BASE}/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const geminiPrompt = fresh
+        ? `Search the web for the LATEST information about: ${searchQuery}. Focus on the most recent results. Return the search results with titles, descriptions, and URLs for each result.`
+        : `Search the web for information about: ${searchQuery}. Return the search results with titles, descriptions, and URLs for each result.`;
+      const geminiRes = await fetch(geminiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: geminiPrompt }] }],
+          tools: [{ googleSearch: {} }],
+          safetySettings: [
+            { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+            { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
+            { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
+            { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
+          ],
+          generationConfig: { maxOutputTokens: 600 },
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (geminiRes.ok) {
+        const geminiData = await geminiRes.json();
+        const candidate = geminiData?.candidates?.[0];
+        if (candidate && !geminiData?.promptFeedback?.blockReason) {
+          const groundingMeta = candidate?.groundingMetadata || {};
+          const chunks = groundingMeta?.groundingChunks || [];
+          const generatedText = candidate?.content?.parts?.map((p) => p.text).join(' ') || '';
+
+          // Extract from grounding chunks
+          const chunkResults = chunks.map((chunk) => {
+            const web = chunk?.web || {};
+            return { title: web.title || '', snippet: web.title || '', url: web.uri || '' };
+          }).filter((r) => r.title && r.url);
+
+          // Enrich snippets from grounding supports
+          const supports = groundingMeta?.groundingSupports || [];
+          if (supports.length && chunkResults.length) {
+            const snippetByIndex = {};
+            for (const support of supports) {
+              const segment = support?.segment?.text || '';
+              const indices = support?.groundingChunkIndices || [];
+              if (!segment) continue;
+              for (const idx of indices) {
+                if (!snippetByIndex[idx]) snippetByIndex[idx] = [];
+                snippetByIndex[idx].push(segment);
+              }
+            }
+            for (const [idx, segments] of Object.entries(snippetByIndex)) {
+              const i = Number(idx);
+              if (chunkResults[i]) {
+                const best = segments.sort((a, b) => b.length - a.length)[0];
+                if (best && best.length > chunkResults[i].title.length) {
+                  chunkResults[i].snippet = best;
+                }
+              }
+            }
+          }
+
+          // Parse generated text for additional structured results
+          const textResults = [];
+          if (generatedText) {
+            const lines = generatedText.split('\n');
+            let currentTitle = '';
+            let currentSnippet = '';
+            let currentUrl = '';
+            for (const line of lines) {
+              const trimmed = line.replace(/\*\*/g, '').trim();
+              const numberedMatch = trimmed.match(/^\d+[\.\)]\s+(.+?)(?:\s*[-–—]\s*(.+))?$/);
+              if (numberedMatch) {
+                if (currentTitle && !chunkResults.some((r) => r.title === currentTitle)) {
+                  textResults.push({ title: currentTitle, snippet: currentSnippet || currentTitle, url: currentUrl });
+                }
+                currentTitle = numberedMatch[1].trim();
+                currentSnippet = (numberedMatch[2] || '').trim();
+                currentUrl = '';
+              } else if (trimmed.startsWith('http') && currentTitle) {
+                currentUrl = trimmed;
+              } else if (currentTitle && trimmed && !currentSnippet) {
+                currentSnippet = trimmed;
+              }
+            }
+            if (currentTitle && !chunkResults.some((r) => r.title === currentTitle)) {
+              textResults.push({ title: currentTitle, snippet: currentSnippet || currentTitle, url: currentUrl });
+            }
+          }
+
+          // Merge and deduplicate
+          const seen = new Set();
+          geminiResults = [];
+          for (const r of [...chunkResults, ...textResults]) {
+            const key = r.url || r.title.toLowerCase().slice(0, 40);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            geminiResults.push(r);
+          }
+        }
+      }
+    } catch { /* Gemini search failed, fall through */ }
+  }
+
   // Decide the primary `results` list, then enrich.
   let results;
   let source;
-  const brave = braveRes.value?.web?.results;
-  const google = googleRes.value?.items;
-  const braveResults = (brave || []).map(r => ({
-    title: r.title,
-    snippet: r.description || r.title,
-    url: r.url,
-    ...(normalizePublishedAt(r.page_age || r.age || r.published || '') ? { publishedAt: normalizePublishedAt(r.page_age || r.age || r.published || '') } : {}),
-  }));
-  const googleResults = (google || []).map(r => ({
-    title: r.title,
-    snippet: r.snippet || r.title,
-    url: r.link,
-    ...(extractGooglePublishedAt(r) ? { publishedAt: extractGooglePublishedAt(r) } : {}),
-  }));
-  const bingWeb = bingWebRes.value ? parseRSS(bingWebRes.value) : [];
-  const bing = bingRes.value ? parseRSS(bingRes.value) : [];
-  const gnews = gnewsRes.value ? parseRSS(gnewsRes.value) : [];
-  if (fresh) {
-    results = rankFreshResults([...braveResults, ...googleResults, ...bing, ...gnews, ...bingWeb], freshWindow);
-    source = results.length ? 'fresh-mixed' : 'none';
-  } else if (braveResults.length) {
-    results = braveResults.slice(0, 6);
-    source = 'brave';
-  } else if (googleResults.length) {
-    results = googleResults.slice(0, 6);
-    source = 'google';
+  if (geminiResults?.length) {
+    results = geminiResults.slice(0, 6);
+    source = 'gemini-google';
   } else {
-    const ddgData = ddgRes.value;
-    const ddg = [];
-    if (ddgData?.Answer) ddg.push({ title: 'Direct Answer', snippet: ddgData.Answer, url: '' });
-    if (ddgData?.AbstractText) ddg.push({ title: ddgData.Heading || searchQuery, snippet: ddgData.AbstractText, url: ddgData.AbstractURL || '' });
-    const ddgHtml = Array.isArray(ddgHtmlRes.value) ? ddgHtmlRes.value : [];
-    const merged = [...ddgHtml, ...ddg, ...bingWeb, ...bing, ...gnews];
-    const seen = new Set();
-    results = merged.filter(r => {
-      const key = r.title.toLowerCase().slice(0, 40);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    }).slice(0, 6);
-    source = results.length ? (ddgHtml.length ? 'duckduckgo-html+rss' : 'news-rss') : 'none';
+    const brave = braveRes.value?.web?.results;
+    const google = googleRes.value?.items;
+    const braveResults = (brave || []).map(r => ({
+      title: r.title,
+      snippet: r.description || r.title,
+      url: r.url,
+      ...(normalizePublishedAt(r.page_age || r.age || r.published || '') ? { publishedAt: normalizePublishedAt(r.page_age || r.age || r.published || '') } : {}),
+    }));
+    const googleResults = (google || []).map(r => ({
+      title: r.title,
+      snippet: r.snippet || r.title,
+      url: r.link,
+      ...(extractGooglePublishedAt(r) ? { publishedAt: extractGooglePublishedAt(r) } : {}),
+    }));
+    const bingWeb = bingWebRes.value ? parseRSS(bingWebRes.value) : [];
+    const bing = bingRes.value ? parseRSS(bingRes.value) : [];
+    const gnews = gnewsRes.value ? parseRSS(gnewsRes.value) : [];
+    if (fresh) {
+      results = rankFreshResults([...braveResults, ...googleResults, ...bing, ...gnews, ...bingWeb], freshWindow);
+      source = results.length ? 'fresh-mixed' : 'none';
+    } else if (braveResults.length) {
+      results = braveResults.slice(0, 6);
+      source = 'brave';
+    } else if (googleResults.length) {
+      results = googleResults.slice(0, 6);
+      source = 'google';
+    } else {
+      const ddgData = ddgRes.value;
+      const ddg = [];
+      if (ddgData?.Answer) ddg.push({ title: 'Direct Answer', snippet: ddgData.Answer, url: '' });
+      if (ddgData?.AbstractText) ddg.push({ title: ddgData.Heading || searchQuery, snippet: ddgData.AbstractText, url: ddgData.AbstractURL || '' });
+      const ddgHtml = Array.isArray(ddgHtmlRes.value) ? ddgHtmlRes.value : [];
+      const merged = [...ddgHtml, ...ddg, ...bingWeb, ...bing, ...gnews];
+      const seen = new Set();
+      results = merged.filter(r => {
+        const key = r.title.toLowerCase().slice(0, 40);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).slice(0, 6);
+      source = results.length ? (ddgHtml.length ? 'duckduckgo-html+rss' : 'news-rss') : 'none';
+    }
   }
 
   if (strictAnchor) {
