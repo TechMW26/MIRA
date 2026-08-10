@@ -4,17 +4,18 @@ import {
   buildUpstreamPayload,
   selectModelForRequest,
   getChatEndpointConfig,
+  resolveAvailableOllamaModel,
   resolveModelChoice,
   toUiModelName,
 } from './chat.js';
 
-test('labels mira-v4 as normal Mira unless locked mode was requested', () => {
+test('labels legacy mira-v4 as normal Mira unless locked mode was requested', () => {
   assert.equal(toUiModelName('mira-v4'), 'mira');
   assert.equal(toUiModelName('mira-v4', { locked: true }), 'locked');
 });
 
 test('normal Mira stays on Mira while Locked uses the Mira Pro model', () => {
-  assert.equal(resolveModelChoice('mira', false, false), process.env.MIRA_MODEL || 'mira-v4');
+  assert.equal(resolveModelChoice('mira', false, false), process.env.MIRA_MODEL || 'mira:latest');
   assert.equal(resolveModelChoice('locked', false, false), process.env.MIRA_PRO_MODEL || 'mira-pro');
   assert.equal(resolveModelChoice('mira-pro', false, false), resolveModelChoice('locked', false, false));
 });
@@ -26,7 +27,7 @@ test('server Auto routing follows latest-message complexity', () => {
   );
   assert.equal(
     resolveModelChoice('auto', false, false, [{ role: 'user', content: 'Build a React component with validation' }]),
-    process.env.MIRA_MODEL || 'mira-v4',
+    process.env.MIRA_MODEL || 'mira:latest',
   );
   assert.equal(
     resolveModelChoice('auto', false, false, [{ role: 'user', content: 'Design an in-depth distributed system architecture step-by-step' }]),
@@ -46,7 +47,7 @@ test('forces streaming for every upstream model payload', () => {
   assert.equal(buildUpstreamPayload({ ...common, effectiveModel: 'mira-lite' }).body != null, true);
 });
 
-test('uses the dedicated VPS payload for Mira v4', () => {
+test('uses the dedicated VPS payload for Mira', () => {
   const payload = buildUpstreamPayload({
     effectiveModel: 'mira-v4',
     chatMessages: [{ role: 'user', content: 'Hello' }],
@@ -54,7 +55,7 @@ test('uses the dedicated VPS payload for Mira v4', () => {
     think: true,
     safeMax: 500,
   });
-  assert.equal(payload.model, process.env.MIRA_MODEL || 'mira-v4');
+  assert.equal(payload.model, process.env.MIRA_MODEL || 'mira:latest');
   assert.equal(payload.stream, true);
   assert.equal('num_ctx' in payload.options, false);
   assert.equal(payload.options.temperature, 0.2);
@@ -73,4 +74,9 @@ test('uses only the selected model with no fallback chain', () => {
   assert.equal(selectModelForRequest('mira-v4'), 'mira-v4');
   assert.equal(selectModelForRequest('mira-pro'), 'mira-pro');
   assert.equal(selectModelForRequest('gemini-2.5-flash'), 'gemini-2.5-flash');
+});
+
+test('maps legacy Mira names to the model exposed by the VPS registry', () => {
+  assert.equal(resolveAvailableOllamaModel('mira-v4', ['mira:latest']), 'mira:latest');
+  assert.equal(resolveAvailableOllamaModel('mira:latest', ['mira:latest']), 'mira:latest');
 });

@@ -43,9 +43,9 @@ BLOB_READ_WRITE_TOKEN=
 SALAD_API_URL=
 SALAD_API_KEY=
 SALAD_API_KEY_HEADER=Salad-Api-Key
-# Standard Mira (`mira-v4`) runs only on this VPS-hosted Ollama-compatible endpoint.
+# Standard Mira runs only on this VPS-hosted Ollama-compatible endpoint.
 OLLAMA_API_URL=http://147.93.102.103:11434/api/chat
-MIRA_MODEL=mira-v4
+MIRA_MODEL=mira:latest
 # Mira Pro and Locked both run on Salad using `mira-pro`.
 MIRA_PRO_MODEL=mira-pro
 OLLAMA_MAX_TOKENS=12000

@@ -9,7 +9,7 @@ const OLLAMA_CHAT_API_URL = (process.env.OLLAMA_API_URL || '').trim();
 const DEFAULT_SALAD_CHAT_API_URL = 'https://persimmon-chives-tx4dggpups3smlon.salad.cloud/api/chat';
 const CHAT_API_KEY = (process.env.SALAD_API_KEY || '').trim();
 const CHAT_API_KEY_HEADER = (process.env.SALAD_API_KEY_HEADER || 'Salad-Api-Key').trim();
-const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira-v4').trim();
+const MIRA_MODEL = (process.env.MIRA_MODEL || 'mira:latest').trim();
 const MIRA_PRO_MODEL = (process.env.MIRA_PRO_MODEL || 'mira-pro').trim();
 // Locked is a separate product mode, but it intentionally uses the exact
 // same Salad model deployment as Mira Pro.
@@ -122,7 +122,9 @@ function buildMiraAliases(modelName = '') {
   const aliases = [name];
   if (!name.includes(':')) aliases.push(`${name}:latest`);
 
-  if (normalized === 'mira' || normalized === 'mira-v4' || normalized === 'mira_v4' || normalized.startsWith('mira-v4:') || normalized.startsWith('mira_v4:')) {
+  if (normalized === 'mira' || normalized === 'mira:latest' || normalized === 'mira-v4' || normalized === 'mira_v4' || normalized.startsWith('mira-v4:') || normalized.startsWith('mira_v4:')) {
+    aliases.push('mira');
+    aliases.push('mira:latest');
     aliases.push('mira-v4');
     aliases.push('mira-v4:latest');
     aliases.push('mira_v4');
@@ -137,7 +139,7 @@ function isMiraFamilyModel(modelName = '') {
   if (!normalized) return false;
   if (normalized === 'mira' || normalized === 'locked' || normalized === 'mira-locked' || normalized === 'spec' || normalized === 'mira-spec') return true;
   if (buildMiraAliases(MIRA_MODEL).map((item) => item.toLowerCase()).includes(normalized)) return true;
-  return /^mira[-_](?:v4|spec)(?::latest)?$/.test(normalized);
+  return /^mira(?::latest)?$/.test(normalized) || /^mira[-_](?:v4|spec)(?::latest)?$/.test(normalized);
 }
 
 export function getChatEndpointConfig(modelName = '') {
@@ -195,28 +197,27 @@ async function getOllamaAvailableModels(chatUrl, requestAbortSignal) {
   }
 }
 
+export function resolveAvailableOllamaModel(modelName, availableModels = []) {
+  const requested = String(modelName || '').trim();
+  const requestedNorm = requested.toLowerCase();
+  const available = availableModels.map((name) => String(name || '').trim().toLowerCase()).filter(Boolean);
+  if (!available.length || available.includes(requestedNorm)) return requested;
+
+  for (const alias of buildMiraAliases(requested)) {
+    if (available.includes(alias.toLowerCase())) return alias;
+  }
+
+  const base = requestedNorm.split(':')[0];
+  return available.find((name) => name === base || name.startsWith(`${base}:`)) || requested;
+}
+
 async function resolveOllamaModelAlias(modelName, requestAbortSignal) {
   const endpoint = getChatEndpointConfig(modelName);
   if (endpoint.mode !== 'ollama') return String(modelName || '').trim();
 
   const requested = String(modelName || '').trim();
-  const requestedNorm = requested.toLowerCase();
   const available = await getOllamaAvailableModels(endpoint.url, requestAbortSignal);
-  if (!available.length) return requested;
-  if (available.includes(requestedNorm)) return requested;
-
-  const aliases = buildMiraAliases(requested)
-    .map((name) => String(name || '').trim())
-    .filter(Boolean);
-  for (const alias of aliases) {
-    if (available.includes(alias.toLowerCase())) return alias;
-  }
-
-  const base = requestedNorm.split(':')[0];
-  const prefixHit = available.find((name) => name === base || name.startsWith(`${base}:`));
-  if (prefixHit) return prefixHit;
-
-  return requested;
+  return resolveAvailableOllamaModel(requested, available);
 }
 
 function getGeminiModelCandidates(requestedModel = '') {
@@ -498,7 +499,9 @@ async function fetchUpstream(payload, requestAbortSignal) {
     }
   }
 
-  const endpoint = getChatEndpointConfig(payload?.model);
+  const resolvedModel = await resolveOllamaModelAlias(payload?.model, requestAbortSignal);
+  const outboundPayload = resolvedModel === payload?.model ? payload : { ...payload, model: resolvedModel };
+  const endpoint = getChatEndpointConfig(resolvedModel);
   const url = endpoint.url;
   if (!url) {
     return {
@@ -519,7 +522,7 @@ async function fetchUpstream(payload, requestAbortSignal) {
     const upstream = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload),
+      body: JSON.stringify(outboundPayload),
       signal: controller.signal,
     });
     requestAbortSignal?.removeEventListener?.('abort', abortUpstream);
