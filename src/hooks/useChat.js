@@ -83,6 +83,7 @@ import {
   isSimpleGreeting,
 } from '../services/contextPolicy.js';
 import { selectModelTools } from '../services/modelTools.js';
+import { runAgentTask, shouldRunAgentTask } from '../services/agentTask.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 
@@ -1782,6 +1783,18 @@ export default function useChat() {
 
           history.push({ role: 'user', content: userContent });
 
+          const autoTaskCall = shouldRunAgentTask({
+            text: content,
+            complexity: engineResult.classification?.complexity || 'low',
+            requiresResearch: Boolean(effectiveWebSearch || groundingSearchData),
+            simpleGreeting,
+            mediaIntent: Boolean(wantsImageGeneration || wantsVideoGeneration || wantsOnlyMediaGallery),
+            websiteInspection: Boolean(websiteInspectionRequest),
+          }) ? {
+            name: TOOL_NAMES.TASK,
+            arguments: { goal: content },
+          } : null;
+
           // Raw image bytes stay on the dedicated vision route. The chat model
           // receives only the verified textual analysis above.
           const images = [];
@@ -1793,7 +1806,7 @@ export default function useChat() {
           let requestAborted = false;
           let requestedWebSearchQuery = '';
           let requestedBrowserInspection = null;
-          let requestedToolCall = websiteInspectionRequest;
+          let requestedToolCall = websiteInspectionRequest || autoTaskCall;
 
           // ── Response cache check ──
           const cacheKey = makeCacheKey({
@@ -1802,7 +1815,13 @@ export default function useChat() {
             images,
           });
           const cached = cacheKey ? getCachedResponse(cacheKey) : null;
-          if (cached && isCurrentRun()) {
+          if (autoTaskCall && isCurrentRun()) {
+            diagnosticLog('tool', 'automatic task workflow started', {
+              runId,
+              complexity: engineResult.classification?.complexity || 'low',
+              research: Boolean(effectiveWebSearch || groundingSearchData),
+            });
+          } else if (cached && isCurrentRun()) {
             fullText = humanizeAssistantText(cached);
             setStreamingContent(fullText);
             setIsSearching(false);
@@ -2047,19 +2066,47 @@ export default function useChat() {
               const toolResult = await executeHostTool(finalToolCall, {
                 runTask: async (goal) => {
                   if (!goal) throw new Error('A task goal is required.');
-                  let result = '';
-                  await sendChatMessage(
-                    [{ role: 'user', content: `Complete this task carefully and return the tangible finished output:\n\n${goal}` }],
-                    (accumulated) => { result = accumulated; },
-                    [],
-                    { think: true, tools: allowedModelTools },
-                  );
-                  return result;
+                  const generate = async (prompt) => {
+                    let result = '';
+                    await sendChatMessage(
+                      [{ role: 'user', content: prompt }],
+                      (accumulated) => { result = stripAllControlText(accumulated); },
+                      [],
+                      {
+                        think: true,
+                        tools: [],
+                        systemPrompt: 'You are an internal planning and execution worker. Complete only the requested private phase. Never call or mention tools, never emit control markers, and never address the end user.',
+                      },
+                    );
+                    if (!result.trim()) throw new Error('The task step returned no result.');
+                    return result.trim();
+                  };
+                  return await runAgentTask({
+                    goal,
+                    context: history[history.length - 1]?.content || '',
+                    requiresResearch: Boolean(effectiveWebSearch || groundingSearchData),
+                    freshness: needsFreshInformation(content),
+                    generate,
+                    search: async (query, { freshness }) => searchWeb({
+                      query,
+                      anchor: query,
+                      strictAnchor: false,
+                      freshness,
+                      includeMedia: false,
+                    }, {
+                      attemptsPerQuery: 1,
+                      retryEmpty: true,
+                    }),
+                    onPhase: (phase) => diagnosticLog('tool', 'task workflow progress', { runId, ...phase }),
+                  });
                 },
               });
+              const isTaskResult = finalToolCall.name === TOOL_NAMES.TASK;
               history[history.length - 1] = {
                 role: 'user',
-                content: `${content}\n\n=== TOOL RESULT ===\nTool: ${finalToolCall.name}\n${toolResult}\n=== END TOOL RESULT ===\n\nContinue the original request using this result. Do not emit the same tool call again.`,
+                content: isTaskResult
+                  ? `${content}\n\n=== COMPLETED INTERNAL WORK ===\n${toolResult}\n=== END COMPLETED INTERNAL WORK ===\n\nGive the user one complete final answer now. Do not mention planning, steps, task runners, tools, or internal reasoning, and do not start another workflow.`
+                  : `${content}\n\n=== TOOL RESULT ===\n${toolResult}\n=== END TOOL RESULT ===\n\nContinue the original request using this result. Do not emit the same tool call again.`,
               };
               let continuedAnswer = '';
               await sendChatMessage(
@@ -2072,7 +2119,9 @@ export default function useChat() {
                 images,
                 {
                   think: shouldThink,
-                  tools: allowedModelTools,
+                  tools: isTaskResult
+                    ? []
+                    : allowedModelTools.filter((tool) => tool?.function?.name !== finalToolCall.name),
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
@@ -2083,7 +2132,7 @@ export default function useChat() {
               );
               fullText = continuedAnswer;
             } catch (toolError) {
-              fullText = `The ${finalToolCall.name} tool could not complete: ${toolError.message}`;
+              fullText = `I couldn't complete that operation: ${toolError.message}`;
             }
           }
 

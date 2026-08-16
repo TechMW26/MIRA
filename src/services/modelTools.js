@@ -31,8 +31,8 @@ export const MODEL_TOOLS = [
   functionTool('code.run', 'Run a short JavaScript calculation in the browser sandbox.', {
     code: { type: 'string', description: 'JavaScript code to execute.' },
   }, ['code']),
-  functionTool('task.run', 'Complete a bounded multi-step task.', {
-    goal: { type: 'string', description: 'The concrete task goal.' },
+  functionTool('task.run', 'Plan and execute a bounded multi-step task before producing one final answer. Use for deep research, dependent steps, comparisons, audits, debugging workflows, or multi-deliverable work; do not use for simple one-step questions.', {
+    goal: { type: 'string', description: 'The complete original goal, including constraints and expected final output.' },
   }, ['goal']),
   functionTool('image.generate', 'Generate or refine an image while preserving every user-specified detail.', {
     prompt: { type: 'string', description: 'A complete visual prompt that retains every requested subject, count, attribute, exact text, composition, style, and exclusion; added detail must be compatible.' },

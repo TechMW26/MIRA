@@ -1,0 +1,52 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  parseAgentPlan,
+  runAgentTask,
+  shouldRunAgentTask,
+} from './agentTask.js';
+
+test('automatically plans research and explicit multi-step work but not simple questions', () => {
+  assert.equal(shouldRunAgentTask({ text: 'Research current battery recycling companies', requiresResearch: true }), true);
+  assert.equal(shouldRunAgentTask({ text: 'Create an implementation plan and break it into phases' }), true);
+  assert.equal(shouldRunAgentTask({ text: 'What is 2 + 2?' }), false);
+  assert.equal(shouldRunAgentTask({ text: 'Generate an image', mediaIntent: true }), false);
+});
+
+test('bounds and sanitizes model-generated plans', () => {
+  const plan = parseAgentPlan(JSON.stringify(Array.from({ length: 8 }, (_, index) => ({
+    title: `Step ${index + 1}`,
+    instruction: `Do work ${index + 1}`,
+    tool: index < 4 ? 'web.search' : 'task.run',
+    query: 'current evidence',
+  }))), { goal: 'Research a topic', requiresResearch: true });
+  assert.equal(plan.length, 5);
+  assert.equal(plan[0].tool, 'web.search');
+  assert.equal(plan.filter((step) => step.tool === 'web.search').length, 2);
+  assert.ok(plan.slice(2).every((step) => step.tool === 'reason'));
+});
+
+test('executes planned research and reasoning sequentially before returning the final handoff', async () => {
+  const generatedPrompts = [];
+  let generation = 0;
+  const output = await runAgentTask({
+    goal: 'Compare two products',
+    requiresResearch: true,
+    generate: async (prompt) => {
+      generatedPrompts.push(prompt);
+      generation += 1;
+      if (generation === 1) {
+        return JSON.stringify([
+          { title: 'Research', instruction: 'Gather current facts', tool: 'web.search', query: 'product comparison' },
+          { title: 'Compare', instruction: 'Compare the evidence', tool: 'reason' },
+        ]);
+      }
+      return 'The evidence supports product A for speed and product B for price.';
+    },
+    search: async () => ({ results: [{ title: 'Benchmark', snippet: 'Measured results', url: 'https://example.com' }] }),
+  });
+  assert.equal(generatedPrompts.length, 2);
+  assert.match(output, /Benchmark/);
+  assert.match(output, /product A for speed/);
+  assert.match(output, /Final response requirement/);
+});

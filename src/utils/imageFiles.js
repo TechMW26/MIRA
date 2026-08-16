@@ -23,13 +23,13 @@ export function isSupportedImageUrl(url = '') {
 }
 
 export function getClipboardImageFiles(clipboard) {
-  const candidates = [
-    ...Array.from(clipboard?.files || []),
-    ...Array.from(clipboard?.items || [])
+  const files = Array.from(clipboard?.files || []).filter(isImageFile);
+  const candidates = files.length
+    ? files
+    : Array.from(clipboard?.items || [])
       .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
-      .filter(Boolean),
-  ];
+      .filter(Boolean);
   const seen = new Set();
 
   return candidates.filter((file) => {

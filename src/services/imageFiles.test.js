@@ -7,8 +7,19 @@ import {
 
 test('clipboard image extraction deduplicates file and item representations', () => {
   const image = { name: 'screenshot.png', type: 'image/png', size: 42, lastModified: 1 };
+  const itemImage = { ...image, lastModified: 2 };
   const clipboard = {
     files: [image],
+    items: [{ kind: 'file', type: 'image/png', getAsFile: () => itemImage }],
+  };
+
+  assert.deepEqual(getClipboardImageFiles(clipboard), [image]);
+});
+
+test('clipboard image extraction falls back to item files', () => {
+  const image = { name: 'screenshot.png', type: 'image/png', size: 42, lastModified: 1 };
+  const clipboard = {
+    files: [],
     items: [{ kind: 'file', type: 'image/png', getAsFile: () => image }],
   };
 
