@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Loader,
-  Globe, Code2, Zap, Wrench, BookMarked, Share2, ListPlus, CornerDownRight, Play,
+  Globe, Code2, Zap, Wrench, BookMarked, Share2, ListPlus, CornerDownRight, Pencil, Check,
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 import {
@@ -101,6 +101,7 @@ export default function ChatInput({
   queuedPrompts = [],
   queueLimitReached = false,
   onRemoveQueued,
+  onEditQueued,
   onSendQueuedNow,
 }) {
   const [input, setInput] = useState('');
@@ -108,6 +109,8 @@ export default function ChatInput({
   const [parsing, setParsing] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [attachmentNotice, setAttachmentNotice] = useState('');
+  const [editingQueuedId, setEditingQueuedId] = useState(null);
+  const [editingQueuedContent, setEditingQueuedContent] = useState('');
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const dragCounterRef = useRef(0);
@@ -118,6 +121,40 @@ export default function ChatInput({
       textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 180) + 'px';
     }
   }, [input]);
+
+  useEffect(() => {
+    if (editingQueuedId && !queuedPrompts.some((prompt) => prompt.id === editingQueuedId)) {
+      setEditingQueuedId(null);
+      setEditingQueuedContent('');
+    }
+  }, [editingQueuedId, queuedPrompts]);
+
+  function beginQueuedEdit(prompt) {
+    setEditingQueuedId(prompt.id);
+    setEditingQueuedContent(prompt.content || '');
+  }
+
+  function cancelQueuedEdit() {
+    setEditingQueuedId(null);
+    setEditingQueuedContent('');
+  }
+
+  function saveQueuedEdit(prompt) {
+    const content = editingQueuedContent.trim();
+    if (!content && !prompt.attachments?.length) return;
+    onEditQueued?.(prompt.id, content);
+    cancelQueuedEdit();
+  }
+
+  function handleQueuedEditKeyDown(event, prompt) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelQueuedEdit();
+    } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      saveQueuedEdit(prompt);
+    }
+  }
 
   function handleSubmit(e, mode = isGenerating ? 'queue' : 'send') {
     e?.preventDefault();
@@ -288,6 +325,84 @@ export default function ChatInput({
     <div className="hud-composer-dock mobile-composer-dock px-3 sm:px-6 lg:px-[180px] pb-3 sm:pb-5 pt-4 sm:pt-8 relative z-20">
       <div className="max-w-2xl w-full mx-auto composer-mobile-shell">
         <div className="chat-input-wrap relative">
+          {queuedPrompts.length > 0 && (
+            <section className="queued-prompt-stack" role="region" aria-label="Queued prompts">
+              <div className="queued-prompt-stack__header">
+                <span className="queued-prompt-stack__title"><ListPlus size={13} /> Queued prompts</span>
+                <span className="queued-prompt-stack__count">{queuedPrompts.length}</span>
+              </div>
+              <div className="queued-prompt-stack__list">
+                {queuedPrompts.map((prompt, index) => {
+                  const isEditing = editingQueuedId === prompt.id;
+                  const attachmentCount = prompt.attachments?.length || 0;
+                  return (
+                    <article key={prompt.id} className="queued-prompt-card">
+                      <div className="queued-prompt-card__topline">
+                        <span className="queued-prompt-card__position">{index === 0 ? 'Next' : `Queued ${index + 1}`}</span>
+                        <div className="queued-prompt-card__meta">
+                          {prompt.webSearch && <span><Globe size={11} /> Web</span>}
+                          {attachmentCount > 0 && <span><Paperclip size={11} /> {attachmentCount}</span>}
+                        </div>
+                      </div>
+
+                      {isEditing ? (
+                        <textarea
+                          autoFocus
+                          value={editingQueuedContent}
+                          onChange={(event) => setEditingQueuedContent(event.target.value)}
+                          onKeyDown={(event) => handleQueuedEditKeyDown(event, prompt)}
+                          className="queued-prompt-card__editor"
+                          rows={3}
+                          aria-label={`Edit queued prompt ${index + 1}`}
+                        />
+                      ) : (
+                        <p className="queued-prompt-card__content">
+                          {prompt.content || `${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'}`}
+                        </p>
+                      )}
+
+                      <div className="queued-prompt-card__actions">
+                        {isEditing ? (
+                          <>
+                            <button type="button" onClick={cancelQueuedEdit} className="queued-prompt-action" aria-label={`Discard edits to queued prompt ${index + 1}`}>
+                              <X size={12} /> Discard
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => saveQueuedEdit(prompt)}
+                              disabled={!editingQueuedContent.trim() && !attachmentCount}
+                              className="queued-prompt-action queued-prompt-action--primary"
+                              aria-label={`Save queued prompt ${index + 1}`}
+                            >
+                              <Check size={12} /> Save
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onSendQueuedNow?.(prompt.id)}
+                              className="queued-prompt-action queued-prompt-action--primary"
+                              aria-label={`Steer now with queued prompt ${index + 1}`}
+                            >
+                              <CornerDownRight size={12} /> Steer
+                            </button>
+                            <button type="button" onClick={() => beginQueuedEdit(prompt)} className="queued-prompt-action" aria-label={`Edit queued prompt ${index + 1}`}>
+                              <Pencil size={12} /> Edit
+                            </button>
+                            <button type="button" onClick={() => onRemoveQueued?.(prompt.id)} className="queued-prompt-action queued-prompt-action--danger" aria-label={`Cancel queued prompt ${index + 1}`}>
+                              <X size={12} /> Cancel
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+              <p className="queued-prompt-stack__hint">Runs in order · Steer interrupts the current response</p>
+            </section>
+          )}
           <div
             className="hud-composer chat-input-shell"
             onDragEnter={onDragEnter}
@@ -337,45 +452,6 @@ export default function ChatInput({
                 <p className="text-xs font-medium mt-2 tracking-[0.18em] uppercase" style={{ color: 'var(--hud-cyan-bright)' }}>
                   Drop files
                 </p>
-              </div>
-            )}
-
-            {queuedPrompts.length > 0 && (
-              <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto py-2" role="region" aria-label="Queued prompts">
-                <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.16em]" style={{ color: 'var(--hud-cyan)' }}>
-                  <ListPlus size={13} />
-                  <span>Queued · {queuedPrompts.length}</span>
-                </div>
-                {queuedPrompts.map((prompt, index) => (
-                  <div
-                    key={prompt.id}
-                    className="flex items-center gap-2 rounded px-2.5 py-1.5 text-xs"
-                    style={{ background: 'rgba(94, 234, 212, 0.05)', border: '1px solid var(--hud-cyan-dim)' }}
-                  >
-                    <span className="shrink-0 opacity-50">{index + 1}</span>
-                    <span className="min-w-0 flex-1 truncate" style={{ color: 'var(--text-secondary)' }}>
-                      {prompt.content || `${prompt.attachments?.length || 0} attachment${prompt.attachments?.length === 1 ? '' : 's'}`}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => onSendQueuedNow?.(prompt.id)}
-                      className="composer-icon-btn"
-                      aria-label={`Steer now with queued prompt ${index + 1}`}
-                      title="Steer now"
-                    >
-                      <Play size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onRemoveQueued?.(prompt.id)}
-                      className="composer-icon-btn"
-                      aria-label={`Remove queued prompt ${index + 1}`}
-                      title="Remove from queue"
-                    >
-                      <X size={13} />
-                    </button>
-                  </div>
-                ))}
               </div>
             )}
 

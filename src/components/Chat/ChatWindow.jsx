@@ -8,6 +8,7 @@ import {
   MAX_PROMPT_QUEUE,
   removeQueuedPrompt,
   takeNextQueuedPrompt,
+  updateQueuedPrompt,
 } from '../../utils/promptQueue';
 import MessageBubble from './MessageBubble';
 import WelcomeScreen from './WelcomeScreen';
@@ -179,6 +180,10 @@ export default function ChatWindow() {
     setPromptQueue((current) => removeQueuedPrompt(current, promptId));
   }, []);
 
+  const editPromptInQueue = useCallback((promptId, content) => {
+    setPromptQueue((current) => updateQueuedPrompt(current, promptId, { content }));
+  }, []);
+
   const sendQueuedPromptNow = useCallback((promptId) => {
     const queued = promptQueue.find((prompt) => prompt.id === promptId);
     if (!queued) return;
@@ -277,6 +282,7 @@ export default function ChatWindow() {
           queuedPrompts={promptQueue}
           queueLimitReached={promptQueue.length >= MAX_PROMPT_QUEUE}
           onRemoveQueued={removePromptFromQueue}
+          onEditQueued={editPromptInQueue}
           onSendQueuedNow={sendQueuedPromptNow}
         />
       </div>

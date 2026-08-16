@@ -16,6 +16,14 @@ export function removeQueuedPrompt(queue, promptId) {
   return queue.filter((prompt) => prompt.id !== promptId);
 }
 
+export function updateQueuedPrompt(queue, promptId, updates = {}) {
+  return queue.map((prompt) => {
+    if (prompt.id !== promptId) return prompt;
+    const content = typeof updates.content === 'string' ? updates.content.trim() : prompt.content;
+    return { ...prompt, ...updates, id: prompt.id, queuedAt: prompt.queuedAt, content };
+  });
+}
+
 export function takeNextQueuedPrompt(queue) {
   return {
     next: queue[0] || null,
