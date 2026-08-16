@@ -4,9 +4,17 @@ import {
   Globe, Code2, Zap, Wrench, BookMarked, Share2,
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
+import {
+  getClipboardImageFiles,
+  getExt,
+  IMAGE_EXTS,
+  isImageFile,
+  isSupportedImageUrl,
+  mimeFromName,
+} from '../../utils/imageFiles';
 
 const ACCEPT_TYPES = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic,.sh,.rs,.go,.rb,.php,.sql';
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'heic']);
+const MAX_IMAGES = 6;
 
 function getFileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
@@ -22,32 +30,9 @@ function formatFileSize(bytes) {
   return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
-function getExt(name = '') {
-  return name.split('.').pop().toLowerCase();
-}
-
-function mimeFromName(name = '') {
-  const ext = getExt(name);
-  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
-  if (ext === 'svg') return 'image/svg+xml';
-  if (IMAGE_EXTS.has(ext)) return `image/${ext}`;
-  return '';
-}
-
-function isImageFile(file) {
-  return file?.type?.startsWith('image/') || IMAGE_EXTS.has(getExt(file?.name || ''));
-}
-
 function normalizeImageDataUrl(dataUrl, mimeType) {
   if (!mimeType || !dataUrl.startsWith('data:application/octet-stream;base64,')) return dataUrl;
   return dataUrl.replace('data:application/octet-stream;base64,', `data:${mimeType};base64,`);
-}
-
-function namedClipboardFile(file) {
-  if (file.name && file.name !== 'image.png') return file;
-  const mimeType = file.type || 'image/png';
-  const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
-  return new File([file], `pasted-image-${Date.now()}.${ext}`, { type: mimeType });
 }
 
 function dataUrlToFile(dataUrl) {
@@ -61,11 +46,18 @@ function dataUrlToFile(dataUrl) {
 async function imageUrlToFile(url) {
   if (!url) return null;
   if (url.startsWith('data:image/')) return dataUrlToFile(url);
-  if (!/^https?:\/\//i.test(url)) return null;
   const cleanUrl = url.trim();
+  if (!isSupportedImageUrl(cleanUrl)) return null;
   const extension = getExt(cleanUrl.split('?')[0].split('#')[0]);
-  if (!IMAGE_EXTS.has(extension)) return null;
-  const response = await fetch(cleanUrl);
+  let response;
+  try {
+    response = await fetch(cleanUrl);
+  } catch {
+    response = null;
+  }
+  if (!response?.ok) {
+    response = await fetch(`/api/image?url=${encodeURIComponent(cleanUrl)}`);
+  }
   if (!response.ok) return null;
   const blob = await response.blob();
   if (!blob.type.startsWith('image/') && !IMAGE_EXTS.has(extension)) return null;
@@ -93,31 +85,12 @@ function hasFileLikeDrag(dataTransfer) {
   return types.includes('Files') || types.includes('text/uri-list') || types.includes('text/html');
 }
 
-function getClipboardImageFiles(clipboard) {
-  const candidates = [
-    ...Array.from(clipboard?.files || []),
-    ...Array.from(clipboard?.items || [])
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-      .map((item) => item.getAsFile())
-      .filter(Boolean),
-  ];
-  const seen = new Set();
-  return candidates
-    .filter(isImageFile)
-    .map(namedClipboardFile)
-    .filter((file) => {
-      const key = `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-}
-
 export default function ChatInput({ onSend, onStop, isGenerating, isSearching, webSearch, onToggleWebSearch, activePanel, onTogglePanel, onShare, messages }) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [parsing, setParsing] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [attachmentNotice, setAttachmentNotice] = useState('');
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const dragCounterRef = useRef(0);
@@ -135,6 +108,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
     onSend(input.trim(), attachments);
     setInput('');
     setAttachments([]);
+    setAttachmentNotice('');
   }
 
   function handleKeyDown(e) {
@@ -144,12 +118,26 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
     }
   }
 
-  async function processFiles(files) {
-    const fileList = files.filter(Boolean);
-    if (!fileList.length) return;
+  async function processFiles(files, source = 'files') {
+    const availableImages = Math.max(0, MAX_IMAGES - attachments.filter((attachment) => attachment.isImage).length);
+    let acceptedImages = 0;
+    let skippedImages = 0;
+    const fileList = files.filter(Boolean).filter((file) => {
+      if (!isImageFile(file)) return true;
+      if (acceptedImages >= availableImages) {
+        skippedImages += 1;
+        return false;
+      }
+      acceptedImages += 1;
+      return true;
+    });
+    if (!fileList.length) {
+      if (skippedImages) setAttachmentNotice(`MIRA supports up to ${MAX_IMAGES} images per message.`);
+      return;
+    }
     setParsing(true);
     try {
-      const processed = (await Promise.all(
+      const results = await Promise.allSettled(
         fileList.map(async (file) => {
           const isImage = isImageFile(file);
           const mimeType = file.type || mimeFromName(file.name);
@@ -167,8 +155,22 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
           }
           return { name: file.name, size: file.size, type: mimeType, isImage: false, text, base64, mimeType, parsed: !!text, parseError };
         })
-      )).filter(Boolean);
-      if (processed.length) setAttachments((prev) => [...prev, ...processed]);
+      );
+      const processed = results
+        .filter((result) => result.status === 'fulfilled' && result.value)
+        .map((result) => result.value);
+      const failed = results.length - processed.length;
+      if (processed.length) {
+        setAttachments((prev) => [...prev, ...processed]);
+        if (source === 'clipboard') {
+          setAttachmentNotice(`${processed.length} pasted image${processed.length === 1 ? '' : 's'} attached.`);
+        }
+      }
+      if (skippedImages) {
+        setAttachmentNotice(`MIRA supports up to ${MAX_IMAGES} images per message.`);
+      } else if (failed) {
+        setAttachmentNotice(`${failed} file${failed === 1 ? '' : 's'} could not be attached.`);
+      }
     } finally {
       setParsing(false);
     }
@@ -193,24 +195,28 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   async function handlePaste(e) {
     const clipboard = e.clipboardData;
     if (!clipboard) return;
-    const imageFiles = getClipboardImageFiles(clipboard);
+    let imageFiles = getClipboardImageFiles(clipboard);
+    const imageUrls = imageFiles.length
+      ? []
+      : getImageUrlsFromDataTransfer(clipboard).filter(isSupportedImageUrl);
+    if (!imageFiles.length && !imageUrls.length) return;
+
+    e.preventDefault();
+    textareaRef.current?.focus();
+
+    if (imageUrls.length) {
+      const results = await Promise.allSettled(imageUrls.map((url) => imageUrlToFile(url)));
+      imageFiles = results
+        .filter((result) => result.status === 'fulfilled' && result.value)
+        .map((result) => result.value);
+    }
+
     if (imageFiles.length) {
-      e.preventDefault?.();
-      textareaRef.current?.focus();
-      await processFiles(imageFiles);
+      await processFiles(imageFiles, 'clipboard');
+    } else {
+      setAttachmentNotice('That copied image could not be attached. Try downloading it first.');
     }
   }
-
-  useEffect(() => {
-    const handleDocumentPaste = (event) => {
-      handlePaste(event);
-    };
-
-    document.addEventListener('paste', handleDocumentPaste, true);
-    return () => {
-      document.removeEventListener('paste', handleDocumentPaste, true);
-    };
-  }, []);
 
   function onDragEnter(e) {
     if (!hasFileLikeDrag(e.dataTransfer)) return;
@@ -316,9 +322,11 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                   if (att.isImage) {
                     return (
                       <div key={i} className="relative rounded-md overflow-hidden animate-fade-in group" style={{ width: '64px', height: '64px', border: '1px solid var(--hud-cyan-dim)' }}>
-                        <img src={att.base64} alt="" className="w-full h-full object-cover" />
+                        <img src={att.base64} alt={att.name || 'Attached image'} className="w-full h-full object-cover" />
                         <button
+                          type="button"
                           onClick={() => removeAttachment(i)}
+                          aria-label={`Remove ${att.name || 'attached image'}`}
                           className="absolute top-1 right-1 p-0.5 rounded-full transition-all opacity-0 group-hover:opacity-100"
                           style={{ background: 'rgba(0,0,0,0.6)', color: '#fff' }}
                         >
@@ -342,7 +350,7 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                       <Icon size={14} style={{ color: 'var(--hud-cyan)' }} />
                       <span className="max-w-[120px] truncate">{att.name}</span>
                       <span className="opacity-50">{formatFileSize(att.size)}</span>
-                      <button onClick={() => removeAttachment(i)} className="p-0.5 rounded hover:scale-110 transition-all" style={{ color: 'var(--text-tertiary)' }}>
+                      <button type="button" onClick={() => removeAttachment(i)} aria-label={`Remove ${att.name}`} className="p-0.5 rounded hover:scale-110 transition-all" style={{ color: 'var(--text-tertiary)' }}>
                         <X size={12} />
                       </button>
                     </div>
@@ -357,6 +365,9 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                aria-label="Message MIRA"
+                aria-describedby="attachment-status"
                 placeholder="Message MIRA..."
                 rows={1}
                 className="hud-composer-textarea"
@@ -397,6 +408,9 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                 </button>
               )}
             </div>
+            <p id="attachment-status" role="status" aria-live="polite" className="sr-only">
+              {attachmentNotice}
+            </p>
           </div>
         </div>
       </div>
