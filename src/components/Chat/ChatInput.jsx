@@ -103,6 +103,7 @@ export default function ChatInput({
   onRemoveQueued,
   onEditQueued,
   onSendQueuedNow,
+  onHeightChange,
 }) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState([]);
@@ -114,6 +115,7 @@ export default function ChatInput({
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const dragCounterRef = useRef(0);
+  const dockRef = useRef(null);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -128,6 +130,23 @@ export default function ChatInput({
       setEditingQueuedContent('');
     }
   }, [editingQueuedId, queuedPrompts]);
+
+  useEffect(() => {
+    const dock = dockRef.current;
+    if (!dock || !onHeightChange) return undefined;
+
+    const reportHeight = () => onHeightChange(Math.ceil(dock.getBoundingClientRect().height));
+    reportHeight();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', reportHeight);
+      return () => window.removeEventListener('resize', reportHeight);
+    }
+
+    const observer = new ResizeObserver(reportHeight);
+    observer.observe(dock);
+    return () => observer.disconnect();
+  }, [onHeightChange]);
 
   function beginQueuedEdit(prompt) {
     setEditingQueuedId(prompt.id);
@@ -322,7 +341,7 @@ export default function ChatInput({
   const hasShare = messages?.length > 0;
 
   return (
-    <div className="hud-composer-dock mobile-composer-dock px-3 sm:px-6 lg:px-[180px] pb-3 sm:pb-5 pt-4 sm:pt-8 relative z-20">
+    <div ref={dockRef} className="hud-composer-dock mobile-composer-dock px-3 sm:px-6 lg:px-[180px] pb-3 sm:pb-5 pt-4 sm:pt-8 relative z-20">
       <div className="max-w-2xl w-full mx-auto composer-mobile-shell">
         <div className="chat-input-wrap relative">
           {queuedPrompts.length > 0 && (

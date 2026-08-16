@@ -116,6 +116,7 @@ export default function ChatWindow() {
   const [chatFontSize, setChatFontSize] = useState(getStoredFontSize);
   const [iconAttractor, setIconAttractor] = useState(null);
   const [promptQueue, setPromptQueue] = useState([]);
+  const [composerHeight, setComposerHeight] = useState(176);
   const scrollAreaRef = useRef(null);
   const autoScrollRef = useRef(true);
   const queueDrainRef = useRef(false);
@@ -150,7 +151,11 @@ export default function ChatWindow() {
       if (el) el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(frame);
-  }, [displayMessages.length, streamingContent, thinkingContent]);
+  }, [composerHeight, displayMessages.length, streamingContent, thinkingContent]);
+
+  const handleComposerHeightChange = useCallback((height) => {
+    setComposerHeight((current) => (Math.abs(current - height) > 1 ? height : current));
+  }, []);
 
   useEffect(() => {
     const handler = () => setChatFontSize(getStoredFontSize());
@@ -242,7 +247,10 @@ export default function ChatWindow() {
 
       <div className="flex flex-col flex-1 min-w-0 min-h-0 relative z-10">
         <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden hud-scroll-area" style={{ fontSize: chatFontSize }}>
-          <div className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 pb-44 gap-6 px-4 w-full min-w-0`}>
+          <div
+            className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 gap-6 px-4 w-full min-w-0`}
+            style={{ paddingBottom: `${Math.max(216, composerHeight + 40)}px` }}
+          >
             {showingWelcome ? (
               <WelcomeScreen
                 onSend={(p, atts = []) => sendToChat(p, atts, webSearch)}
@@ -284,6 +292,7 @@ export default function ChatWindow() {
           onRemoveQueued={removePromptFromQueue}
           onEditQueued={editPromptInQueue}
           onSendQueuedNow={sendQueuedPromptNow}
+          onHeightChange={handleComposerHeightChange}
         />
       </div>
 
