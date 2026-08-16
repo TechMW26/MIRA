@@ -2,6 +2,13 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useChatContext } from '../../contexts/ChatContext';
 import useChat from '../../hooks/useChat';
 import useUserProfile from '../../hooks/useUserProfile';
+import {
+  createQueuedPrompt,
+  enqueuePrompt,
+  MAX_PROMPT_QUEUE,
+  removeQueuedPrompt,
+  takeNextQueuedPrompt,
+} from '../../utils/promptQueue';
 import MessageBubble from './MessageBubble';
 import WelcomeScreen from './WelcomeScreen';
 import ParticleGlobe from './ParticleGlobe';
@@ -107,8 +114,11 @@ export default function ChatWindow() {
   const [showShare, setShowShare] = useState(false);
   const [chatFontSize, setChatFontSize] = useState(getStoredFontSize);
   const [iconAttractor, setIconAttractor] = useState(null);
+  const [promptQueue, setPromptQueue] = useState([]);
   const scrollAreaRef = useRef(null);
   const autoScrollRef = useRef(true);
+  const queueDrainRef = useRef(false);
+  const previousConversationRef = useRef(currentConversationId);
 
   const displayMessages = useMemo(() => {
     if (!isGenerating || messages.length === 0) return messages;
@@ -148,8 +158,61 @@ export default function ChatWindow() {
   }, []);
 
   const sendToChat = useCallback((content, attachments, ws, options = {}) => {
-    sendMessage(content, attachments, ws, options);
+    return sendMessage(content, attachments, ws, options);
   }, [sendMessage]);
+
+  const queuePrompt = useCallback((content, attachments, ws) => {
+    const queued = createQueuedPrompt({
+      content,
+      attachments,
+      webSearch: ws,
+      conversationId: currentConversationId,
+    });
+    setPromptQueue((current) => enqueuePrompt(current, queued));
+  }, [currentConversationId]);
+
+  const steerPrompt = useCallback((content, attachments, ws) => (
+    sendToChat(content, attachments, ws, { interruptExisting: true, steering: true })
+  ), [sendToChat]);
+
+  const removePromptFromQueue = useCallback((promptId) => {
+    setPromptQueue((current) => removeQueuedPrompt(current, promptId));
+  }, []);
+
+  const sendQueuedPromptNow = useCallback((promptId) => {
+    const queued = promptQueue.find((prompt) => prompt.id === promptId);
+    if (!queued) return;
+    setPromptQueue((current) => removeQueuedPrompt(current, promptId));
+    if (queued.conversationId && queued.conversationId !== currentConversationId) return;
+    return sendToChat(queued.content, queued.attachments, queued.webSearch, {
+      interruptExisting: isGenerating,
+      steering: isGenerating,
+    });
+  }, [currentConversationId, isGenerating, promptQueue, sendToChat]);
+
+  useEffect(() => {
+    if (isGenerating || queueDrainRef.current || promptQueue.length === 0) return;
+    const { next, remaining } = takeNextQueuedPrompt(promptQueue);
+    if (!next) return;
+
+    setPromptQueue(remaining);
+    if (next.conversationId && next.conversationId !== currentConversationId) return;
+
+    queueDrainRef.current = true;
+    Promise.resolve(sendToChat(next.content, next.attachments, next.webSearch))
+      .finally(() => {
+        queueDrainRef.current = false;
+      });
+  }, [currentConversationId, isGenerating, promptQueue, sendToChat]);
+
+  useEffect(() => {
+    const previousConversationId = previousConversationRef.current;
+    if (previousConversationId && previousConversationId !== currentConversationId) {
+      setPromptQueue([]);
+      queueDrainRef.current = false;
+    }
+    previousConversationRef.current = currentConversationId;
+  }, [currentConversationId]);
 
   const requestCanvas = useCallback((prompt) => {
     if (!prompt?.trim()) return;
@@ -200,6 +263,8 @@ export default function ChatWindow() {
 
         <ChatInput
           onSend={(text, attachments, options = {}) => sendToChat(text, attachments, webSearch, options)}
+          onQueue={(text, attachments) => queuePrompt(text, attachments, webSearch)}
+          onSteer={(text, attachments) => steerPrompt(text, attachments, webSearch)}
           onStop={stopGenerating}
           isGenerating={isGenerating}
           isSearching={isSearching}
@@ -209,6 +274,10 @@ export default function ChatWindow() {
           onTogglePanel={togglePanel}
           onShare={() => setShowShare(true)}
           messages={messages}
+          queuedPrompts={promptQueue}
+          queueLimitReached={promptQueue.length >= MAX_PROMPT_QUEUE}
+          onRemoveQueued={removePromptFromQueue}
+          onSendQueuedNow={sendQueuedPromptNow}
         />
       </div>
 

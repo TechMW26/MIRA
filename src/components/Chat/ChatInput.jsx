@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Loader,
-  Globe, Code2, Zap, Wrench, BookMarked, Share2,
+  Globe, Code2, Zap, Wrench, BookMarked, Share2, ListPlus, CornerDownRight, Play,
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 import {
@@ -85,7 +85,24 @@ function hasFileLikeDrag(dataTransfer) {
   return types.includes('Files') || types.includes('text/uri-list') || types.includes('text/html');
 }
 
-export default function ChatInput({ onSend, onStop, isGenerating, isSearching, webSearch, onToggleWebSearch, activePanel, onTogglePanel, onShare, messages }) {
+export default function ChatInput({
+  onSend,
+  onQueue,
+  onSteer,
+  onStop,
+  isGenerating,
+  isSearching,
+  webSearch,
+  onToggleWebSearch,
+  activePanel,
+  onTogglePanel,
+  onShare,
+  messages,
+  queuedPrompts = [],
+  queueLimitReached = false,
+  onRemoveQueued,
+  onSendQueuedNow,
+}) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [parsing, setParsing] = useState(false);
@@ -102,10 +119,16 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
     }
   }, [input]);
 
-  function handleSubmit(e) {
+  function handleSubmit(e, mode = isGenerating ? 'queue' : 'send') {
     e?.preventDefault();
-    if ((!input.trim() && attachments.length === 0) || isGenerating) return;
-    onSend(input.trim(), attachments);
+    if (!input.trim() && attachments.length === 0) return;
+    if (mode === 'queue' && queueLimitReached) {
+      setAttachmentNotice('The prompt queue is full. Remove one before adding another.');
+      return;
+    }
+    if (mode === 'queue') onQueue?.(input.trim(), attachments);
+    else if (mode === 'steer') onSteer?.(input.trim(), attachments);
+    else onSend(input.trim(), attachments);
     setInput('');
     setAttachments([]);
     setAttachmentNotice('');
@@ -114,7 +137,8 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   function handleKeyDown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit();
+      const mode = isGenerating && (e.metaKey || e.ctrlKey) ? 'steer' : undefined;
+      handleSubmit(undefined, mode);
     }
   }
 
@@ -316,6 +340,51 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
               </div>
             )}
 
+            {queuedPrompts.length > 0 && (
+              <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto py-2" role="region" aria-label="Queued prompts">
+                <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.16em]" style={{ color: 'var(--hud-cyan)' }}>
+                  <ListPlus size={13} />
+                  <span>Queued · {queuedPrompts.length}</span>
+                </div>
+                {queuedPrompts.map((prompt, index) => (
+                  <div
+                    key={prompt.id}
+                    className="flex items-center gap-2 rounded px-2.5 py-1.5 text-xs"
+                    style={{ background: 'rgba(94, 234, 212, 0.05)', border: '1px solid var(--hud-cyan-dim)' }}
+                  >
+                    <span className="shrink-0 opacity-50">{index + 1}</span>
+                    <span className="min-w-0 flex-1 truncate" style={{ color: 'var(--text-secondary)' }}>
+                      {prompt.content || `${prompt.attachments?.length || 0} attachment${prompt.attachments?.length === 1 ? '' : 's'}`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onSendQueuedNow?.(prompt.id)}
+                      className="composer-icon-btn"
+                      aria-label={`Steer now with queued prompt ${index + 1}`}
+                      title="Steer now"
+                    >
+                      <Play size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onRemoveQueued?.(prompt.id)}
+                      className="composer-icon-btn"
+                      aria-label={`Remove queued prompt ${index + 1}`}
+                      title="Remove from queue"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {isGenerating && (
+              <p className="pt-2 text-[10px] tracking-wide" style={{ color: 'var(--text-tertiary)' }}>
+                Enter queues · Command/Control + Enter steers now
+              </p>
+            )}
+
             {attachments.length > 0 && (
               <div className="hud-attachment-strip pt-3 pb-2">
                 {attachments.map((att, i) => {
@@ -387,15 +456,38 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
               </button>
 
               {isGenerating ? (
-                <button
-                  type="button"
-                  onClick={onStop}
-                  className="composer-send-btn"
-                  style={{ background: 'rgba(244, 63, 94, 0.18)', color: '#fda4af' }}
-                  title="Stop"
-                >
-                  <Square size={18} />
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={onStop}
+                    className="composer-icon-btn"
+                    style={{ color: '#fda4af' }}
+                    title="Stop response"
+                    aria-label="Stop response"
+                  >
+                    <Square size={17} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => handleSubmit(event, 'queue')}
+                    disabled={!input.trim() && attachments.length === 0}
+                    className="composer-icon-btn"
+                    title="Queue after current response (Enter)"
+                    aria-label="Queue prompt"
+                  >
+                    <ListPlus size={18} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => handleSubmit(event, 'steer')}
+                    disabled={!input.trim() && attachments.length === 0}
+                    className="composer-send-btn"
+                    title="Steer current response (Command or Control + Enter)"
+                    aria-label="Steer current response"
+                  >
+                    <CornerDownRight size={18} />
+                  </button>
+                </>
               ) : (
                 <button
                   type="button"

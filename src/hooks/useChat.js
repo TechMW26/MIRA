@@ -829,6 +829,7 @@ export default function useChat() {
   const thinkingRafRef = useRef(null);
   const titleSessionRef = useRef({ conversationId: null, messages: [] });
   const generationRunRef = useRef(0);
+  const activeResponseRef = useRef(null);
 
   const refreshConversationTitle = useCallback(async (conversationId, transcript = []) => {
     if (!user?.uid || !conversationId || !Array.isArray(transcript) || transcript.length === 0) return;
@@ -839,7 +840,9 @@ export default function useChat() {
 
   const flushStreamingContent = useCallback((value) => {
     if (abortRef.current) return;
-    pendingStreamRef.current = humanizeAssistantText(value);
+    const visibleValue = humanizeAssistantText(value);
+    pendingStreamRef.current = visibleValue;
+    if (activeResponseRef.current) activeResponseRef.current.content = visibleValue;
     if (streamRafRef.current != null) return;
     const schedule = typeof requestAnimationFrame === 'function'
       ? requestAnimationFrame
@@ -873,6 +876,29 @@ export default function useChat() {
     if (thinkingRafRef.current != null) { cancel(thinkingRafRef.current); thinkingRafRef.current = null; }
     pendingStreamRef.current = null;
     pendingThinkingRef.current = null;
+  }, []);
+
+  const finalizeActiveResponse = useCallback(async () => {
+    const active = activeResponseRef.current;
+    activeResponseRef.current = null;
+    if (!active?.conversationId || !active?.messageId) return;
+
+    const partialContent = String(active.content || '').trim();
+    if (partialContent) {
+      setMessages((prev) => prev.map((message) => (
+        message.id === active.messageId
+          ? { ...message, content: partialContent, interrupted: true, isStreaming: false }
+          : message
+      )));
+      await updateMessage(active.conversationId, active.messageId, {
+        content: partialContent,
+        interrupted: true,
+      });
+      return;
+    }
+
+    setMessages((prev) => prev.filter((message) => message.id !== active.messageId));
+    await deleteMessage(active.conversationId, active.messageId);
   }, []);
 
   const normalizeImageForUpload = useCallback(async (image) => {
@@ -1021,7 +1047,10 @@ export default function useChat() {
     setIsSearching(false);
     setStreamingContent('');
     setThinkingContent('');
-  }, [cancelPendingStreamFlushes, setIsGenerating, setIsSearching]);
+    finalizeActiveResponse().catch((error) => {
+      console.warn('Failed to finalize interrupted response:', error?.message);
+    });
+  }, [cancelPendingStreamFlushes, finalizeActiveResponse, setIsGenerating, setIsSearching]);
 
   useEffect(() => {
     const removeExitCancellation = installGenerationExitCancellation();
@@ -1045,13 +1074,21 @@ export default function useChat() {
       if ((!content.trim() && attachments.length === 0) || !user) return;
       const interruptExisting = Boolean(options.interruptExisting || options.replaceMessageId);
       if (isGenerating && !interruptExisting) return;
+      const runId = generationRunRef.current + 1;
+      generationRunRef.current = runId;
+      const interruptedResponse = options.steering && activeResponseRef.current?.content
+        ? { ...activeResponseRef.current }
+        : null;
       if (isGenerating) {
         stopChatGeneration();
         cancelPendingStreamFlushes();
+        try {
+          await finalizeActiveResponse();
+        } catch (error) {
+          console.warn('Failed to finalize steered response:', error?.message);
+        }
       }
 
-      const runId = generationRunRef.current + 1;
-      generationRunRef.current = runId;
       const isCurrentRun = () => generationRunRef.current === runId && !abortRef.current;
       abortRef.current = false;
       cancelPendingStreamFlushes();
@@ -1157,6 +1194,23 @@ export default function useChat() {
         if (!isCurrentRun()) return;
 
         let historySource = isNewChat ? [] : messages;
+        if (interruptedResponse?.content) {
+          const interruptedIndex = historySource.findIndex(
+            (message) => message.id === interruptedResponse.messageId,
+          );
+          if (interruptedIndex >= 0) {
+            historySource = historySource.map((message, index) => (
+              index === interruptedIndex
+                ? { ...message, content: interruptedResponse.content, interrupted: true }
+                : message
+            ));
+          } else {
+            historySource = [
+              ...historySource,
+              { role: 'assistant', content: interruptedResponse.content, interrupted: true },
+            ];
+          }
+        }
         if (replaceMessageId) {
           historySource = await pruneMessagesAfter(convId, replaceMessageId, historySource);
         }
@@ -1239,7 +1293,16 @@ export default function useChat() {
           content: '',
           type: 'text',
         });
-        if (!isCurrentRun()) return;
+        if (!isCurrentRun()) {
+          await deleteMessage(convId, assistantMsgId).catch(() => {});
+          return;
+        }
+        activeResponseRef.current = {
+          runId,
+          conversationId: convId,
+          messageId: assistantMsgId,
+          content: '',
+        };
 
         // ── Prompt enhancer / clarification gate ──
         // Before dispatching the main request, ask the same model to
@@ -2266,6 +2329,7 @@ export default function useChat() {
         }
       } finally {
         if (generationRunRef.current !== runId) return;
+        if (activeResponseRef.current?.runId === runId) activeResponseRef.current = null;
         cancelPendingStreamFlushes();
         setIsGenerating(false);
         setIsSearching(false);
@@ -2285,6 +2349,7 @@ export default function useChat() {
       normalizeImageForUpload,
       pruneMessagesAfter,
       refreshConversationTitle,
+      finalizeActiveResponse,
     ]
   );
 
