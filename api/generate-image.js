@@ -7,20 +7,19 @@ const MAX_PROMPT_CHARS = 900;
 const UPSTREAM_TIMEOUT_MS = 18000;
 const UPSTREAM_RETRY_ATTEMPTS = 3;
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
-const SAFE_MODEL_CHAIN = ['flux', 'flux-schnell', 'flux-realism', 'flux-pro', 'seedream-pro'];
 const NSFW_PROMPT_PATTERN = /\b(nude|nudity|naked|explicit|erotic|porn|pornographic|xxx|18\+|lewd|nsfw|genitals?|penis|vagina|sex|sexual|breasts?|nipples?)\b/i;
 const INVALID_PROMPT_PATTERN = /(?:^|\[)(?:using tools?|mira_tool)|^(?:\.{2,}|…+|image|picture|photo|generated image)$/i;
 const SAFE_NEGATIVE_PROMPT = 'nsfw, nude, naked, explicit, erotic, porn, sexual content, genitalia, breasts, nipples';
-const POLLINATIONS_HOSTS = ['https://gen.pollinations.ai', 'https://image.pollinations.ai'];
+const POLLINATIONS_ORIGIN = 'https://gen.pollinations.ai';
+const MODEL_CACHE = { expiresAt: 0, models: [] };
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchGeneratedImageWithRetries(target) {
+async function fetchGeneratedImageWithRetries(target, pollinationsKey) {
   let lastResponse = null;
   let lastError = null;
-  const pollinationsKey = String(process.env.POLLINATIONS_API_KEY || '').trim();
 
   for (let attempt = 0; attempt < UPSTREAM_RETRY_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
@@ -74,7 +73,7 @@ function boundedSize(value) {
   return Math.max(512, Math.min(1280, Math.round(size)));
 }
 
-function buildPollinationsUrl({ prompt, model, seed, width, height, host = 'https://gen.pollinations.ai' }) {
+export function buildPollinationsUrl({ prompt, model, seed, width, height }) {
   const params = new URLSearchParams({
     width: String(width),
     height: String(height),
@@ -87,13 +86,47 @@ function buildPollinationsUrl({ prompt, model, seed, width, height, host = 'http
     params.set('negative', SAFE_NEGATIVE_PROMPT);
     params.set('safe', 'true');
   }
-  const key = String(process.env.POLLINATIONS_API_KEY || '').trim();
-  if (key) params.set('key', key);
-  return `${host}/image/${encodeURIComponent(prompt)}?${params.toString()}`;
+  return `${POLLINATIONS_ORIGIN}/image/${encodeURIComponent(prompt)}?${params.toString()}`;
 }
 
-function getModelAttemptOrder() {
-  return SAFE_MODEL_CHAIN;
+export function parsePollinationsImageModels(payload = []) {
+  const items = Array.isArray(payload) ? payload : (payload?.data || payload?.models || []);
+  return Array.from(new Set(items.flatMap((item) => {
+    const id = String(item?.id || item?.name || item?.model || '').trim();
+    const modalities = item?.outputModalities || item?.output_modalities || [];
+    const imageCapable = !Array.isArray(modalities)
+      || modalities.length === 0
+      || modalities.some((value) => String(value).toLowerCase() === 'image');
+    return id && imageCapable ? [id] : [];
+  })));
+}
+
+export function clearPollinationsModelCache() {
+  MODEL_CACHE.expiresAt = 0;
+  MODEL_CACHE.models = [];
+}
+
+async function getModelAttemptOrder(key) {
+  const configured = String(process.env.POLLINATIONS_IMAGE_MODEL || '').trim();
+  if (MODEL_CACHE.models.length && MODEL_CACHE.expiresAt > Date.now()) {
+    return Array.from(new Set([configured, ...MODEL_CACHE.models].filter(Boolean))).slice(0, 3);
+  }
+
+  try {
+    const response = await fetch(`${POLLINATIONS_ORIGIN}/image/models`, {
+      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) throw new Error(`Model registry failed (${response.status}).`);
+    const models = parsePollinationsImageModels(await response.json());
+    if (!models.length) throw new Error('No Pollinations image model is available.');
+    MODEL_CACHE.models = models;
+    MODEL_CACHE.expiresAt = Date.now() + 5 * 60 * 1000;
+    return Array.from(new Set([configured, ...models].filter(Boolean))).slice(0, 3);
+  } catch (error) {
+    if (configured) return [configured];
+    throw error;
+  }
 }
 
 function buildSafePrompt(prompt = '') {
@@ -125,24 +158,25 @@ export async function GET(req) {
     });
   }
 
-  const modelAttempts = getModelAttemptOrder();
+  const pollinationsKey = String(process.env.POLLINATIONS_API_KEY || '').trim();
+  if (!pollinationsKey) {
+    return new Response(JSON.stringify({ error: 'POLLINATIONS_API_KEY is not configured.' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    });
+  }
   const width = boundedSize(url.searchParams.get('width'));
   const height = boundedSize(url.searchParams.get('height'));
   const seed = Number(url.searchParams.get('seed') || 1) || 1;
 
   try {
+    const modelAttempts = await getModelAttemptOrder(pollinationsKey);
     let lastStatus = null;
     let lastContentType = '';
 
     for (const attemptModel of modelAttempts) {
-      let upstream = null;
-
-      for (const host of POLLINATIONS_HOSTS) {
-        const target = buildPollinationsUrl({ prompt, model: attemptModel, seed, width, height, host });
-        const result = await fetchGeneratedImageWithRetries(target);
-        upstream = result.upstream;
-        if (upstream?.ok) break;
-      }
+      const target = buildPollinationsUrl({ prompt, model: attemptModel, seed, width, height });
+      const { upstream } = await fetchGeneratedImageWithRetries(target, pollinationsKey);
 
       if (!upstream) continue;
 
@@ -168,8 +202,8 @@ export async function GET(req) {
           'Content-Type': contentType,
           'Cache-Control': 'public, max-age=86400, immutable',
           'Access-Control-Allow-Origin': '*',
-          'X-MIRA-Image-Model': attemptModel,
           'X-MIRA-Safety': 'safe',
+          'X-MIRA-Image-Provider': 'pollinations',
         },
       });
     }
@@ -178,7 +212,7 @@ export async function GET(req) {
       ? `Unsupported content-type: ${lastContentType}`
       : `Upstream ${lastStatus || 502}`;
 
-    return new Response(JSON.stringify({ error, modelAttempts }), {
+    return new Response(JSON.stringify({ error }), {
       status: 502,
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });

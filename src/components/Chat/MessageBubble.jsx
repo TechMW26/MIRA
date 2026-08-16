@@ -42,10 +42,6 @@ function enhanceImagePrompt(prompt = '') {
   return `${base}, ${missing.join(', ')}`;
 }
 
-const HYPERREALISM_SIGNAL_RE = /\b(hyper[-\s]?real(?:ism)?|photo[-\s]?real(?:istic)?|ultra[-\s]?realistic|dslr|cinematic photo|raw photo|natural skin|85mm|bokeh)\b/i;
-const DEFAULT_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'seedream-pro'];
-const HYPERREAL_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'seedream-pro'];
-
 const MAX_TRANSIENT_RETRIES = 0; // server already retries upstream; avoid client-side request storms
 const MAX_FULL_RETRY_CYCLES = 1; // one extra full pass before hard failure
 const GENERATED_IMAGE_SIZE = '1280';
@@ -59,22 +55,13 @@ function compactImagePrompt(prompt = '') {
   return compact.slice(0, MAX_GENERATED_PROMPT_CHARS).replace(/\s+\S*$/, '').trim();
 }
 
-function getImageModelChain(prompt = '') {
-  return HYPERREALISM_SIGNAL_RE.test(String(prompt || ''))
-    ? HYPERREAL_IMAGE_MODEL_CHAIN
-    : DEFAULT_IMAGE_MODEL_CHAIN;
-}
-
-function buildGeneratedImageUrl(prompt, modelChain, modelIndex = 0, cacheKey = '0-0') {
+function buildGeneratedImageUrl(prompt, cacheKey = '0-0') {
   const enhanced = compactImagePrompt(enhanceImagePrompt(prompt));
-  const chain = Array.isArray(modelChain) && modelChain.length ? modelChain : DEFAULT_IMAGE_MODEL_CHAIN;
-  const model = chain[Math.min(modelIndex, chain.length - 1)];
   const seed = Math.abs(hashString(enhanced)) % 1000000;
   const params = new URLSearchParams({
     prompt: enhanced,
     width: GENERATED_IMAGE_SIZE,
     height: GENERATED_IMAGE_SIZE,
-    model,
     seed: String(seed),
     r: cacheKey,
   });
@@ -367,7 +354,6 @@ function SearchingPlaceholder() {
 }
 
 function GeneratedImageCard({ prompt, image }) {
-  const [modelIndex, setModelIndex] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
   const [transientAttempt, setTransientAttempt] = useState(0);
   const [fullRetryCycle, setFullRetryCycle] = useState(0);
@@ -380,15 +366,14 @@ function GeneratedImageCard({ prompt, image }) {
   );
   const [blurred, setBlurred] = useState(imageMarkedNsfw);
   const transientTimerRef = useRef(null);
-  const modelChain = useMemo(() => getImageModelChain(prompt), [prompt]);
   const persistedImageUrl = typeof image?.url === 'string' ? image.url.trim() : '';
   const hasPersistedImage = Boolean(persistedImageUrl);
   const [persistedLoadMode, setPersistedLoadMode] = useState('direct'); // 'direct' | 'proxy'
   const [persistedRetryNonce, setPersistedRetryNonce] = useState(0);
 
   const generatedImageUrl = useMemo(
-    () => buildGeneratedImageUrl(prompt, modelChain, modelIndex, `${retryNonce}-${transientAttempt}`),
-    [prompt, modelChain, modelIndex, retryNonce, transientAttempt]
+    () => buildGeneratedImageUrl(prompt, `${retryNonce}-${transientAttempt}`),
+    [prompt, retryNonce, transientAttempt]
   );
 
   const persistedImageSource = useMemo(() => {
@@ -446,18 +431,11 @@ function GeneratedImageCard({ prompt, image }) {
       }, delay);
       return;
     }
-    // Same URL exhausted — advance to the next model in the chain.
-    if (modelIndex < modelChain.length - 1) {
-      setTransientAttempt(0);
-      setModelIndex((i) => i + 1);
-      return;
-    }
-
-    // Full model chain exhausted — run another delayed cycle before failing.
+    // The server already rotates through Pollinations' live model registry.
+    // Run one delayed full retry before failing the card.
     if (fullRetryCycle < MAX_FULL_RETRY_CYCLES) {
       const delay = 2000 + (fullRetryCycle * 2200);
       transientTimerRef.current = setTimeout(() => {
-        setModelIndex(0);
         setTransientAttempt(0);
         setRetryNonce((n) => n + 1);
         setFullRetryCycle((n) => n + 1);
@@ -466,7 +444,7 @@ function GeneratedImageCard({ prompt, image }) {
     }
 
     setStatus('error');
-  }, [fullRetryCycle, hasPersistedImage, modelChain.length, modelIndex, persistedLoadMode, transientAttempt]);
+  }, [fullRetryCycle, hasPersistedImage, persistedLoadMode, transientAttempt]);
 
   const handleImgLoad = useCallback(() => {
     if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
@@ -482,7 +460,6 @@ function GeneratedImageCard({ prompt, image }) {
       setStatus('loading');
       return;
     }
-    setModelIndex(0);
     setTransientAttempt(0);
     setFullRetryCycle(0);
     setRetryNonce((n) => n + 1);

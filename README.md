@@ -9,7 +9,7 @@ A conversational, research, vision, and media assistant backed by one dynamicall
 - **Chat Interface** — Streaming responses, markdown rendering, syntax-highlighted code
 - **Permission-gated Chrome MCP inspection** — Agents can request structured website documentation only after user approval
 - **Image Analysis** — Dedicated Gemini vision analysis with ordered API-key fallback; raw images never enter normal chat
-- **Image Generation** — Keeps the current image/video generation pipeline unchanged
+- **Image Generation** — Pollinations unified API with server-side authentication and live image-model discovery
 - **Project Management** — Organize conversations into projects
 - **Authentication** — Email/password registration and login via Firebase
 - **Chat History** — Full conversation persistence with Firebase Realtime Database
@@ -56,8 +56,9 @@ BRAVE_SEARCH_API_KEY=
 GOOGLE_SEARCH_API_KEY=
 GOOGLE_SEARCH_CX=
 
-# Image/video generation
+# Pollinations image/video generation (server-side key)
 POLLINATIONS_API_KEY=
+POLLINATIONS_IMAGE_MODEL=
 POLLINATIONS_VIDEO_MODEL=wan-pro
 ```
 

@@ -38,11 +38,10 @@ function buildImagePath({ userId, conversationId, messageId }) {
   return `generated/${uid}/${cid}/${ts}-${mid}.jpg`;
 }
 
-async function fetchGeneratedImage(req, { prompt, seed = 1, width = 1280, height = 1280, model = 'flux', unsafe = false }) {
+async function fetchGeneratedImage(req, { prompt, seed = 1, width = 1280, height = 1280, unsafe = false }) {
   const origin = new URL(req.url).origin;
   const params = new URLSearchParams({
     prompt,
-    model,
     seed: String(seed),
     width: String(width),
     height: String(height),
@@ -76,7 +75,6 @@ async function handlePersistImage(req, body) {
     return json({ error: 'userId, conversationId and messageId are required' }, 400);
   }
 
-  const model = String(body?.model || 'flux').trim().toLowerCase();
   const suppliedSeed = Number(body?.seed);
   const seed = Number.isFinite(suppliedSeed) && suppliedSeed > 0 ? suppliedSeed : promptSeed(prompt);
   const width = Number(body?.width || 1280) || 1280;
@@ -88,7 +86,6 @@ async function handlePersistImage(req, body) {
     seed,
     width,
     height,
-    model,
     unsafe,
   });
 
@@ -110,7 +107,7 @@ async function handlePersistImage(req, body) {
       url: blob.url,
       pathname,
       contentType,
-      model,
+      provider: 'pollinations',
       prompt,
       safety: effectiveSafety,
       nsfw,

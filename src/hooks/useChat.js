@@ -551,7 +551,6 @@ async function persistGeneratedImageAsset({ prompt, userId, conversationId, mess
     body: JSON.stringify({
       action: 'persist-image',
       prompt: cleanPrompt,
-      model: 'flux-realism',
       unsafe: Boolean(allowNsfw),
       userId,
       conversationId,
