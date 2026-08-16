@@ -23,8 +23,7 @@ test('routes sufficiently specific niche topics to search', () => {
   assert.equal(processQuery('Tell me something about the Algae tree').needsSearch, true);
 });
 
-test('auto selects models by task complexity', () => {
-  assert.equal(processQuery('Hello there', false, { selectedMode: 'auto' }).model, 'mira-lite');
-  assert.equal(processQuery('Build a React component with state and validation', false, { selectedMode: 'auto' }).model, 'mira');
-  assert.equal(processQuery('Design an in-depth distributed system architecture step-by-step', false, { selectedMode: 'auto' }).model, 'mira-pro');
+test('does not expose model-routing metadata', () => {
+  assert.equal('model' in processQuery('Hello there'), false);
+  assert.equal('model' in processQuery('Build a React component'), false);
 });

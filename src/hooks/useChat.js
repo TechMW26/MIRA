@@ -25,6 +25,8 @@ import {
   cacheProfile,
   decideContextMode,
   buildLearnedFactsBlock,
+  buildResponsePreferencesBlock,
+  learnResponsePreferences,
   processRememberMarkers,
   sanitizeMemoryLeakStyleResponse,
 } from '../services/knowledgeBank';
@@ -63,6 +65,7 @@ import {
 import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
 import { MIRA_IDENTITY_PROMPT } from '../config/systemPrompt';
 import { diagnosticLog, diagnosticWarn } from '../services/diagnostics.js';
+import { decideRetrievalPolicy } from '../services/retrievalPolicy.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 const HISTORY_ATTACHMENT_CHAR_LIMIT = 16000;
@@ -82,7 +85,6 @@ const SEARCH_WORTHY_CONTEXT_PATTERN = /\b(company|manufacturer|maker|producer|br
 const SIMPLE_GREETING_PATTERN = /^\s*(?:hi|hello|hey|hey there|hello there|yo|sup|good\s+(?:morning|afternoon|evening))(?:[!.?\s]+)?$/i;
 const CONTEXT_ENTITY_STOP = new Set(['I', 'The', 'A', 'An', 'It', 'This', 'That', 'These', 'Those', 'You', 'He', 'She', 'We', 'They', 'My', 'Your', 'MIRA', 'AI', 'PDF', 'DOCX', 'PPTX']);
 const TEXT_ENTITY_RESEARCH_PATTERN = /\b(tell\s+me\s+about|tell\s+me\s+more\s+about|details?\s+about|information\s+about|info\s+about|background\s+on|research|explain|what\s+is|what\s+are|what\s+an|what\s+a|what's|overview\s+of|in\s+detail|deep\s+dive|let\s+me\s+know\s+what)\b/i;
-const LOCKED_TRIGGER_PATTERN = /\b(nude|nudity|naked|explicit|uncensored|adult\s*content|erotic|porn|pornographic|xxx|18\+|lewd|sexual\s*content|sex|nsfw|fetish|hardcore|boobs?|breasts?|nipples?|genitals?|penis|vagina|anal|blowjob|handjob|cum|orgasm|hentai|bypass|jailbreak|exploit|malware|ransomware|phishing|ddos|credit\s*card\s*fraud|social\s*security\s*number|ssn|doxx|private\s*data|steal\s*data|illegal|unethical|forbidden|restricted)\b/i;
 const MEDIA_RELEVANCE_STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'to', 'for', 'in', 'on', 'with', 'about',
   'tell', 'show', 'find', 'search', 'images', 'image', 'photos', 'photo', 'videos', 'video',
@@ -832,9 +834,7 @@ export default function useChat() {
     isGenerating,
     setIsGenerating,
     setIsSearching,
-    setActiveResponseModel,
     activeProjectId,
-    selectedModel,
   } = useChatContext();
   const [messages, setMessages] = useState([]);
   const [streamingContent, setStreamingContent] = useState('');
@@ -1040,10 +1040,9 @@ export default function useChat() {
     cancelPendingStreamFlushes();
     setIsGenerating(false);
     setIsSearching(false);
-    setActiveResponseModel(null);
     setStreamingContent('');
     setThinkingContent('');
-  }, [cancelPendingStreamFlushes, setActiveResponseModel, setIsGenerating, setIsSearching]);
+  }, [cancelPendingStreamFlushes, setIsGenerating, setIsSearching]);
 
   useEffect(() => {
     const removeExitCancellation = installGenerationExitCancellation();
@@ -1141,36 +1140,19 @@ export default function useChat() {
       }
 
       const hasImages = imageAttachments.length > 0;
-      const modelOverride = options.modelOverride || null;
-      const guardedOverride = modelOverride;
-      const forceLockedByPrompt = LOCKED_TRIGGER_PATTERN.test(String(content || ''));
-      // Locked mode is absolute: once locked is selected (or explicitly triggered),
-      // no downstream router/fallback can switch it back for this request.
-      const effectiveSelectedModel = (selectedModel === 'locked' || guardedOverride === 'locked' || forceLockedByPrompt)
-        ? 'locked'
-        : (guardedOverride || selectedModel || 'auto');
-      const engineResult = processQuery(content, hasImages, { selectedMode: effectiveSelectedModel });
+      const engineResult = processQuery(content, hasImages);
       const promptInterpretation = engineResult.interpretation || {
         route: engineResult.classification.intent,
         codeIntent: engineResult.classification.intent === 'code',
         imageIntent: engineResult.classification.intent === 'image',
         videoIntent: engineResult.classification.intent === 'video',
       };
-      let chosenModel = engineResult.model;
-      if (effectiveSelectedModel === 'locked') {
-        chosenModel = 'locked';
-      }
-      diagnosticLog('model', 'routing decision', {
+      diagnosticLog('model', 'request classification', {
         runId,
-        selectedMode: selectedModel || 'auto',
-        override: guardedOverride || null,
-        chosenModel,
         intent: engineResult.classification?.intent || 'unknown',
         hasImages,
-        forcedLocked: forceLockedByPrompt,
         needsSearch: Boolean(engineResult.needsSearch),
       });
-      setActiveResponseModel(chosenModel || null);
       let wantsImageGeneration = promptInterpretation.imageIntent === true;
       let wantsVideoGeneration = promptInterpretation.videoIntent === true;
       const simpleGreeting = !hasImages && attachments.length === 0 && !replaceMessageId && isSimpleGreeting(content);
@@ -1233,7 +1215,12 @@ export default function useChat() {
           : null;
         const isFirstTurn = (historySource?.length || 0) === 0;
         const contextMode = decideContextMode(content, isFirstTurn);
+        const adaptiveLearningEnabled = profile?.preferences?.adaptiveLearning !== false;
+        if (adaptiveLearningEnabled) learnResponsePreferences(content, { scope: user.uid });
         const learnedFactsBlock = buildLearnedFactsBlock();
+        const responsePreferencesBlock = adaptiveLearningEnabled
+          ? buildResponsePreferencesBlock(profile?.preferences, { scope: user.uid })
+          : '';
         const adaptiveContext = buildAdaptiveContext({
           profile,
           conversation: currentConversation,
@@ -1244,9 +1231,9 @@ export default function useChat() {
         // Always prepend the Mira identity preamble. Without this the model
         // has no anchor and will treat a bare-noun prompt ("Algaetree?") as
         // an identity assignment.
-        const userSystemPrompt = adaptiveContext
-          ? `${MIRA_IDENTITY_PROMPT}\n\n${adaptiveContext}`
-          : MIRA_IDENTITY_PROMPT;
+        const userSystemPrompt = [MIRA_IDENTITY_PROMPT, responsePreferencesBlock, adaptiveContext]
+          .filter(Boolean)
+          .join('\n\n');
 
         if (replaceMessageId) {
           await updateMessage(convId, replaceMessageId, {
@@ -1272,12 +1259,11 @@ export default function useChat() {
           role: 'assistant',
           content: '',
           type: 'text',
-          modelUsed: chosenModel,
         });
         if (!isCurrentRun()) return;
 
         // ── Prompt enhancer / clarification gate ──
-        // Before dispatching to the main model, ask a small/fast model to
+        // Before dispatching the main request, ask the same model to
         // either (a) rewrite the user's basic prompt into a richer end-to-end
         // prompt, or (b) ask a single clarifying question when a creation
         // request is missing critical info. Silent on "pass" / on failure.
@@ -1300,7 +1286,6 @@ export default function useChat() {
               if (decision.action === 'clarify') {
                 await updateMessage(convId, assistantMsgId, {
                   content: decision.question,
-                  modelUsed: decision.model || 'mira',
                   isClarification: true,
                 });
                 if (isNewChat) {
@@ -1358,9 +1343,17 @@ export default function useChat() {
           // person/product/object/device. The image analysis becomes the search
           // anchor, then the final answer uses live sources instead of stopping
           // at a vision-only guess.
-          const effectiveWebSearch = !websiteInspectionRequest
-            && !simpleGreeting
-            && (webSearch || engineResult.needsSearch || shouldUseVisualAnchor || shouldUseContextualSearch || Boolean(textResearchMediaScope));
+          const retrievalPolicy = decideRetrievalPolicy({
+            manualSearch: webSearch,
+            engineNeedsSearch: engineResult.needsSearch,
+            websiteInspection: Boolean(websiteInspectionRequest),
+            simpleGreeting,
+            mediaRequested: wantsMediaGallery,
+            visualSearch: shouldUseVisualAnchor,
+            contextualSearch: shouldUseContextualSearch,
+            contextualMedia: shouldAttachContextualMedia,
+          });
+          const effectiveWebSearch = retrievalPolicy.search;
           if (websiteInspectionRequest) {
             diagnosticLog('browser', 'website inspection intent takes precedence over web search', {
               runId,
@@ -1511,12 +1504,8 @@ export default function useChat() {
               // must NOT trigger an auto media gallery — search engines return
               // off-topic YouTube/image results for bare nouns and pollute the
               // reply with irrelevant embeds.
-              const shouldAttachRelatedMedia = wantsMediaGallery
-                || shouldUseVisualAnchor
-                || shouldAttachContextualMedia
-                || Boolean(textResearchMediaScope)
-                || engineResult.needsSearch;
-              const includeMedia = shouldAttachRelatedMedia;
+              const shouldAttachRelatedMedia = retrievalPolicy.includeMedia;
+              const includeMedia = retrievalPolicy.includeMedia;
               const visualScope = visualSearchAnchor ? buildVisualSearchScope(visualSearchAnchor, content) : null;
               const freshnessRequested = needsFreshInformation(content) || needsFreshInformation(searchQuery);
               const searchPayload = { query: searchQuery, includeMedia, freshness: freshnessRequested };
@@ -1536,7 +1525,7 @@ export default function useChat() {
                 searchPayload.strictAnchor = true;
               }
               let searchData = await searchWeb(searchPayload, {
-                attemptsPerQuery: 3,
+                attemptsPerQuery: 2,
                 retryEmpty: true,
               });
               const strictRetryQuery = visualScope?.mediaQuery || textResearchMediaScope?.mediaQuery || visualSearchAnchor;
@@ -1550,7 +1539,7 @@ export default function useChat() {
                   strictAnchor: true,
                   freshness: freshnessRequested,
                 }, {
-                  attemptsPerQuery: 3,
+                  attemptsPerQuery: 2,
                   retryEmpty: true,
                 });
                 const retryHasResults = Array.isArray(retryData.results) && retryData.results.length > 0;
@@ -1713,7 +1702,6 @@ export default function useChat() {
             if (!isCurrentRun()) return;
             await updateMessage(convId, assistantMsgId, {
               content: deterministicMediaReply,
-              modelUsed: 'search',
               ...(mediaForMessage ? { media: mediaForMessage } : {}),
             });
             if (isNewChat) {
@@ -1738,31 +1726,13 @@ export default function useChat() {
           let finalThinkingText = '';
           let requestFailed = false;
           let requestAborted = false;
-          let responseModelUsed = chosenModel;
           let requestedWebSearchQuery = '';
           let requestedBrowserInspection = null;
           let requestedToolCall = websiteInspectionRequest;
 
-          const applyModelUsed = (nextModel) => {
-            const normalized = String(nextModel || '').trim();
-            if (!normalized) return;
-            if (normalized === responseModelUsed) return;
-            diagnosticWarn('model', 'active model switched', {
-              runId,
-              from: responseModelUsed,
-              to: normalized,
-            });
-            responseModelUsed = normalized;
-            setActiveResponseModel(normalized);
-            setMessages((prev) => prev.map((msg) => (
-              msg.id === assistantMsgId ? { ...msg, modelUsed: normalized } : msg
-            )));
-          };
-
           // ── Response cache check ──
           const cacheKey = makeCacheKey({
             messages: history,
-            model: chosenModel,
             systemPrompt: userSystemPrompt,
             images,
           });
@@ -1776,7 +1746,6 @@ export default function useChat() {
             let firstChunkSeen = false;
             await sendChatMessage(
               history,
-              chosenModel,
               (accumulated) => {
                 if (!isCurrentRun()) return;
                 const controlRequest = extractWebSearchRequest(accumulated);
@@ -1793,7 +1762,6 @@ export default function useChat() {
                   }
                   diagnosticLog('tool', 'model requested host tool', {
                     runId,
-                    model: responseModelUsed,
                     tool: toolCall.name,
                   });
                 }
@@ -1801,7 +1769,6 @@ export default function useChat() {
                   requestedBrowserInspection = browserRequest;
                   diagnosticLog('browser', 'model requested Chrome MCP inspection', {
                     runId,
-                    model: responseModelUsed,
                     url: browserRequest.url,
                     task: browserRequest.task,
                   });
@@ -1810,7 +1777,6 @@ export default function useChat() {
                   if (requestedWebSearchQuery !== controlRequest.query) {
                     diagnosticLog('search', 'model requested web search', {
                       runId,
-                      model: responseModelUsed,
                       query: String(controlRequest.query).slice(0, 180),
                     });
                   }
@@ -1827,7 +1793,6 @@ export default function useChat() {
               {
                 think: shouldThink,
                 ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
-                onModelUsed: applyModelUsed,
                 onThinking: (accumulated) => {
                   if (!isCurrentRun()) return;
                   const thinkingControlRequest = extractWebSearchRequest(accumulated);
@@ -1847,7 +1812,6 @@ export default function useChat() {
                     requestedBrowserInspection = thinkingBrowserRequest;
                     diagnosticLog('browser', 'model requested Chrome MCP inspection from thinking', {
                       runId,
-                      model: responseModelUsed,
                       url: thinkingBrowserRequest.url,
                     });
                   }
@@ -1855,7 +1819,6 @@ export default function useChat() {
                     if (requestedWebSearchQuery !== thinkingControlRequest.query) {
                       diagnosticLog('search', 'model requested web search from thinking', {
                         runId,
-                        model: responseModelUsed,
                         query: String(thinkingControlRequest.query).slice(0, 180),
                       });
                     }
@@ -1932,7 +1895,6 @@ export default function useChat() {
               let inspectedAnswer = '';
               await sendChatMessage(
                 history,
-                chosenModel,
                 (accumulated) => {
                   if (!isCurrentRun()) return;
                   inspectedAnswer = stripToolControl(stripBrowserControl(stripWebSearchControl(accumulated)));
@@ -1942,7 +1904,6 @@ export default function useChat() {
                 {
                   think: shouldThink,
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
-                  onModelUsed: applyModelUsed,
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
                     finalThinkingText = stripToolControl(stripBrowserControl(stripWebSearchControl(accumulated)));
@@ -1977,10 +1938,9 @@ export default function useChat() {
                   let result = '';
                   await sendChatMessage(
                     [{ role: 'user', content: `Complete this task carefully and return the tangible finished output:\n\n${goal}` }],
-                    chosenModel,
                     (accumulated) => { result = accumulated; },
                     [],
-                    { think: true, onModelUsed: applyModelUsed },
+                    { think: true },
                   );
                   return result;
                 },
@@ -1992,7 +1952,6 @@ export default function useChat() {
               let continuedAnswer = '';
               await sendChatMessage(
                 history,
-                chosenModel,
                 (accumulated) => {
                   if (!isCurrentRun()) return;
                   continuedAnswer = stripToolControl(accumulated);
@@ -2002,7 +1961,6 @@ export default function useChat() {
                 {
                   think: shouldThink,
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
-                  onModelUsed: applyModelUsed,
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
                     finalThinkingText = stripToolControl(accumulated);
@@ -2034,7 +1992,7 @@ export default function useChat() {
                   userId: user.uid,
                   conversationId: convId,
                   messageId: assistantMsgId,
-                  allowNsfw: chosenModel === 'locked',
+                  allowNsfw: false,
                 });
                 if (persistedImage?.url) {
                   generatedMediaForMessage = { images: [persistedImage] };
@@ -2058,7 +2016,6 @@ export default function useChat() {
             if (requestedWebSearchQuery !== explicitSearchRequest.query) {
               diagnosticLog('search', 'web-search control detected after generation', {
                 runId,
-                model: responseModelUsed,
                 query: String(explicitSearchRequest.query).slice(0, 180),
               });
             }
@@ -2086,7 +2043,6 @@ export default function useChat() {
             diagnosticWarn('search', 'automatic fallback search activated', {
               runId,
               reason: requestedWebSearchQuery ? 'model-control' : 'low-confidence-answer',
-              model: responseModelUsed,
               query: String(requestedWebSearchQuery || buildContextualSearchQuery(content)).slice(0, 180),
             });
             setIsSearching(true);
@@ -2127,7 +2083,6 @@ export default function useChat() {
                 try {
                   await sendChatMessage(
                     history,
-                    chosenModel,
                     (accumulated) => {
                       if (!isCurrentRun()) return;
                       if (!retryFirstChunkSeen && accumulated) { retryFirstChunkSeen = true; setIsSearching(false); }
@@ -2138,7 +2093,6 @@ export default function useChat() {
                     {
                       think: shouldThink,
                       ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
-                      onModelUsed: applyModelUsed,
                       onThinking: (accumulated) => {
                         if (!isCurrentRun()) return;
                         finalThinkingText = stripWebSearchControl(accumulated);
@@ -2200,7 +2154,6 @@ export default function useChat() {
           if (!qualityAssessment.ok && isCurrentRun()) {
             diagnosticWarn('model', 'quality rewrite activated', {
               runId,
-              model: responseModelUsed,
               reasons: qualityAssessment.reasons,
               grounded: Boolean(groundingSearchData),
             });
@@ -2226,13 +2179,9 @@ export default function useChat() {
             }
 
             let correctedText = '';
-            // A quality rewrite is not a provider failure. Keep the user's
-            // selected model; the API fallback chain handles real failures.
-            const qualityModel = chosenModel;
             try {
               await sendChatMessage(
                 correctedHistory,
-                qualityModel,
                 (accumulated) => {
                   if (!isCurrentRun()) return;
                   correctedText = stripWebSearchControl(accumulated);
@@ -2242,7 +2191,6 @@ export default function useChat() {
                 {
                   think: true,
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
-                  onModelUsed: applyModelUsed,
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
                     finalThinkingText = stripWebSearchControl(accumulated);
@@ -2260,75 +2208,6 @@ export default function useChat() {
               fullText = correctedText.trim();
             }
 
-            const correctedAssessment = correctedText.trim()
-              ? assessResponseQuality({
-                answer: correctedText,
-                userQuery: content,
-                searchData: groundingSearchData,
-                searchQuery: groundingSearchQuery,
-              })
-              : { ok: false, reasons: ['empty-quality-rewrite'] };
-
-            // Lite gets the first opportunity to repair its own answer. If it
-            // still ignores clearly relevant evidence, escalate only then.
-            if (!correctedAssessment.ok && chosenModel === 'mira-lite' && isCurrentRun()) {
-              diagnosticWarn('model', 'quality escalation activated', {
-                runId,
-                from: chosenModel,
-                to: 'mira',
-                reasons: correctedAssessment.reasons,
-              });
-              cancelPendingStreamFlushes();
-              setStreamingContent('');
-              setThinkingContent('');
-              setIsSearching(Boolean(groundingSearchData));
-
-              const escalationPrompt = buildQualityCorrectionPrompt({
-                userQuery: content,
-                reasons: correctedAssessment.reasons,
-                freshnessRequested: groundingFreshnessRequested,
-              });
-              const escalationHistory = correctedHistory.slice();
-              const escalationLastIndex = escalationHistory.length - 1;
-              if (escalationLastIndex >= 0 && escalationHistory[escalationLastIndex]?.role === 'user') {
-                escalationHistory[escalationLastIndex] = {
-                  ...escalationHistory[escalationLastIndex],
-                  content: `${escalationHistory[escalationLastIndex].content}\n\n${escalationPrompt}\nThe faster model failed this grounded task twice. Produce the definitive evidence-based answer now.`,
-                };
-              }
-
-              let escalatedText = '';
-              try {
-                await sendChatMessage(
-                  escalationHistory,
-                  'mira',
-                  (accumulated) => {
-                    if (!isCurrentRun()) return;
-                    escalatedText = stripWebSearchControl(accumulated);
-                    flushStreamingContent(escalatedText);
-                  },
-                  images,
-                  {
-                    think: true,
-                    ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
-                    onModelUsed: applyModelUsed,
-                    onThinking: (accumulated) => {
-                      if (!isCurrentRun()) return;
-                      finalThinkingText = stripWebSearchControl(accumulated);
-                      flushThinkingContent(finalThinkingText);
-                    },
-                  },
-                );
-              } catch (escalationErr) {
-                console.warn('Grounded answer escalation failed:', escalationErr?.message);
-              } finally {
-                if (isCurrentRun()) setIsSearching(false);
-              }
-
-              if (escalatedText.trim() && isCurrentRun()) {
-                fullText = escalatedText.trim();
-              }
-            }
           }
 
           if (fullText) {
@@ -2350,7 +2229,6 @@ export default function useChat() {
               titleSource = documentContent;
               const documentUpdate = {
                 content: documentContent,
-                modelUsed: responseModelUsed || chosenModel,
                 ...(finalThinkingText ? { thinkingContent: finalThinkingText } : {}),
                 exportFormat: requestedFormat,
                 exportStatus: 'ready',
@@ -2369,7 +2247,6 @@ export default function useChat() {
             } else {
               const assistantUpdate = {
                 content: fullText,
-                modelUsed: responseModelUsed || chosenModel,
                 ...(finalThinkingText ? { thinkingContent: finalThinkingText } : {}),
                 ...(mediaForMessage ? { media: mediaForMessage } : {}),
                 ...(generatedMediaForMessage ? { generatedMedia: generatedMediaForMessage } : {}),
@@ -2404,7 +2281,6 @@ export default function useChat() {
           )));
           updateMessage(convId, assistantMsgId, {
             content: failureText,
-            modelUsed: selectedModel || 'auto',
           }).catch((persistErr) => {
             console.warn('Failed to persist terminal chat error:', persistErr?.message);
           });
@@ -2414,7 +2290,6 @@ export default function useChat() {
         cancelPendingStreamFlushes();
         setIsGenerating(false);
         setIsSearching(false);
-        setActiveResponseModel(null);
         setStreamingContent('');
         setThinkingContent('');
       }
@@ -2427,9 +2302,7 @@ export default function useChat() {
       setCurrentConversationId,
       setIsGenerating,
       setIsSearching,
-      setActiveResponseModel,
       activeProjectId,
-      selectedModel,
       normalizeImageForUpload,
       pruneMessagesAfter,
       refreshConversationTitle,
@@ -2446,7 +2319,7 @@ export default function useChat() {
     });
   }, [sendMessage]);
 
-  const editMessage = useCallback(async (message, nextContent, webSearch = false, modelOverride = null) => {
+  const editMessage = useCallback(async (message, nextContent, webSearch = false) => {
     if (!message?.id || message.role !== 'user') return;
     const content = String(nextContent || '').trim();
     if (!content) return;
@@ -2454,7 +2327,6 @@ export default function useChat() {
     await sendMessage(content, cloneAttachmentsForResend(message), webSearch, {
       replaceMessageId: message.id,
       interruptExisting: true,
-      ...(modelOverride ? { modelOverride } : {}),
     });
   }, [sendMessage]);
 

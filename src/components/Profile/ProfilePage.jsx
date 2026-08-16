@@ -14,10 +14,15 @@ import {
   ChevronRight,
   Cake,
   UserCircle2,
+  Brain,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useChatContext } from '../../contexts/ChatContext';
 import { getUserProfile, updateUserProfile } from '../../services/database';
+import {
+  clearLearnedResponsePreferences,
+  getLearnedResponsePreferences,
+} from '../../services/knowledgeBank';
 
 export default function SettingsModal({ onClose }) {
   const { user, logout } = useAuth();
@@ -37,7 +42,9 @@ export default function SettingsModal({ onClose }) {
     fontSize: 'medium',
     notifications: true,
     streamResponses: true,
+    adaptiveLearning: true,
   });
+  const [learnedPreferences, setLearnedPreferences] = useState(() => getLearnedResponsePreferences(user?.uid));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [activeSection, setActiveSection] = useState('profile');
@@ -50,6 +57,7 @@ export default function SettingsModal({ onClose }) {
   }, [user]);
 
   async function loadProfile() {
+    setLearnedPreferences(getLearnedResponsePreferences(user.uid));
     const data = await getUserProfile(user.uid);
     if (data) {
       setProfile({
@@ -112,6 +120,11 @@ export default function SettingsModal({ onClose }) {
       setProfile((prev) => ({ ...prev, photoURL: base64 }));
     };
     reader.readAsDataURL(file);
+  }
+
+  function handleClearLearnedPreferences() {
+    clearLearnedResponsePreferences(user?.uid);
+    setLearnedPreferences({});
   }
 
   const sections = [
@@ -345,6 +358,31 @@ export default function SettingsModal({ onClose }) {
             </div>
 
             <ToggleRow label="Stream responses" desc="Show AI responses as they generate" value={preferences.streamResponses} onChange={(v) => setPreferences((p) => ({ ...p, streamResponses: v }))} />
+            <ToggleRow label="Adaptive learning" desc="Learn only explicit response-style feedback on this device" value={preferences.adaptiveLearning} onChange={(v) => setPreferences((p) => ({ ...p, adaptiveLearning: v }))} />
+            <div className="glass-subtle rounded-2xl p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex gap-3">
+                  <Brain size={18} className="mt-0.5 flex-shrink-0" style={{ color: 'var(--hud-cyan-bright)' }} />
+                  <div>
+                    <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Learned response preferences</h3>
+                    <p className="text-xs mt-1" style={{ color: 'var(--text-tertiary)' }}>
+                      {Object.keys(learnedPreferences).length
+                        ? Object.values(learnedPreferences).map((entry) => entry?.value).filter(Boolean).join(' · ')
+                        : 'No explicit response feedback learned yet.'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleClearLearnedPreferences}
+                  disabled={!Object.keys(learnedPreferences).length}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-40"
+                  style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
             <ToggleRow label="Notifications" desc="Get notified when AI finishes long tasks" value={preferences.notifications} onChange={(v) => setPreferences((p) => ({ ...p, notifications: v }))} />
           </div>
         )}

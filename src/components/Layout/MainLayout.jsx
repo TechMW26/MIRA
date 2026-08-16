@@ -15,8 +15,6 @@ export default function MainLayout() {
     setCurrentConversationId,
     activeProjectId,
     setActiveProjectId,
-    selectedModel,
-    activeResponseModel,
   } = useChatContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const hasResetSessionRef = useRef(false);
@@ -27,15 +25,6 @@ export default function MainLayout() {
       document.body.classList.remove('mira-hud', 'mira-hud-active');
     };
   }, []);
-
-  useEffect(() => {
-    if (selectedModel === 'locked' || activeResponseModel === 'locked') {
-      document.body.setAttribute('data-locked', 'true');
-    } else {
-      document.body.removeAttribute('data-locked');
-    }
-    return () => document.body.removeAttribute('data-locked');
-  }, [selectedModel, activeResponseModel]);
 
   // App reopen should always start a fresh session.
   useEffect(() => {

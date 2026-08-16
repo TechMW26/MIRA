@@ -1,10 +1,10 @@
 # MIRA — Multi-Intelligent Responsive Assistant
 
-A conversational, research, vision, and media assistant with multi-provider model routing.
+A conversational, research, vision, and media assistant backed by one dynamically discovered chat model.
 
 ## Features
 
-- **Multi-provider model routing** — Mira Lite uses Gemini, Mira uses the VPS endpoint, and Mira Pro/Locked use Salad
+- **Single-model chat** — The server selects the available completion model from the Ollama `/api/tags` registry
 - **Automatic internet research** — Deterministic routing plus model-requested live search with citations
 - **Chat Interface** — Streaming responses, markdown rendering, syntax-highlighted code
 - **Permission-gated Chrome MCP inspection** — Agents can request structured website documentation only after user approval
@@ -39,26 +39,13 @@ Use these variables locally in `.env` and in Vercel Project Settings -> Environm
 VITE_FIREBASE_DATABASE_URL=
 BLOB_READ_WRITE_TOKEN=
 
-# Chat providers
-SALAD_API_URL=
-SALAD_API_KEY=
-SALAD_API_KEY_HEADER=Salad-Api-Key
-# Standard Mira runs only on this VPS-hosted Ollama-compatible endpoint.
+# Chat server; the model is discovered from /api/tags.
 OLLAMA_API_URL=http://147.93.102.103:11434/api/chat
-MIRA_MODEL=mira:latest
-# Mira Pro and Locked both run on Salad using `mira-pro`.
-MIRA_PRO_MODEL=mira-pro
 OLLAMA_MAX_TOKENS=12000
 OLLAMA_CONTEXT_TOKENS=0
-MIRA_V4_TEMPERATURE=0.2
-MIRA_V4_TOP_P=0.85
-MIRA_V4_REPEAT_PENALTY=1.2
-
-# Mira Lite / Gemini
-GEMINI_API_KEYS=
-GEMINI_PRIMARY_MODEL=gemini-2.5-flash
-MIRA_LITE_MODEL=gemini-2.5-flash
-LITE_MAX_SYSTEM_CHARS=6000
+OLLAMA_TEMPERATURE=0.2
+OLLAMA_TOP_P=0.85
+OLLAMA_REPEAT_PENALTY=1.2
 
 # Image/video generation
 POLLINATIONS_API_KEY=
@@ -78,7 +65,7 @@ POLLINATIONS_VIDEO_MODEL=wan-pro
 - **Backend:** Vercel Serverless Functions (Edge Runtime)
 - **Database:** Firebase Realtime Database
 - **Auth:** Custom auth via Firebase RTB (SHA-256 hashed passwords)
-- **AI:** Gemini for Mira Lite, the VPS-hosted endpoint for Mira, and Salad for Mira Pro/Locked
+- **AI:** One Ollama-compatible model discovered dynamically from the configured server
 
 ## Internet Search Orchestration
 

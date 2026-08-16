@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Check, FileText, FileCode, File, X, ExternalLink, Download, RefreshCw, Pencil, Globe, EyeOff, Cpu, ChevronDown, Lock } from 'lucide-react';
+import { Copy, Check, FileText, FileCode, File, X, ExternalLink, Download, RefreshCw, Pencil, Globe, EyeOff } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
@@ -46,15 +46,6 @@ const HYPERREALISM_SIGNAL_RE = /\b(hyper[-\s]?real(?:ism)?|photo[-\s]?real(?:ist
 const DEFAULT_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'seedream-pro'];
 const HYPERREAL_IMAGE_MODEL_CHAIN = ['flux-realism', 'flux-pro', 'seedream-pro'];
 
-const MODEL_OPTIONS = [
-  { value: 'auto',   label: 'Auto',       sub: 'best model' },
-  { value: 'mira-lite', label: 'Mira Lite', sub: 'fastest' },
-  { value: 'mira',   label: 'Mira',       sub: 'standard' },
-  { value: 'mira-pro', label: 'Mira Pro', sub: 'chat + vision' },
-  { value: 'locked', label: 'Mira Locked', sub: 'unrestricted · pin required', requiresPin: true },
-];
-
-const LOCKED_PIN = '1512';
 const MAX_TRANSIENT_RETRIES = 0; // server already retries upstream; avoid client-side request storms
 const MAX_FULL_RETRY_CYCLES = 1; // one extra full pass before hard failure
 const GENERATED_IMAGE_SIZE = '1280';
@@ -74,7 +65,7 @@ function getImageModelChain(prompt = '') {
     : DEFAULT_IMAGE_MODEL_CHAIN;
 }
 
-function buildGeneratedImageUrl(prompt, modelChain, modelIndex = 0, cacheKey = '0-0', unsafe = false) {
+function buildGeneratedImageUrl(prompt, modelChain, modelIndex = 0, cacheKey = '0-0') {
   const enhanced = compactImagePrompt(enhanceImagePrompt(prompt));
   const chain = Array.isArray(modelChain) && modelChain.length ? modelChain : DEFAULT_IMAGE_MODEL_CHAIN;
   const model = chain[Math.min(modelIndex, chain.length - 1)];
@@ -86,7 +77,6 @@ function buildGeneratedImageUrl(prompt, modelChain, modelIndex = 0, cacheKey = '
     model,
     seed: String(seed),
     r: cacheKey,
-    unsafe: unsafe ? '1' : '0',
   });
   return `/api/generate-image?${params.toString()}`;
 }
@@ -182,20 +172,6 @@ function formatLabel(format) {
   if (format === 'docx') return 'DOCX';
   if (format === 'pptx') return 'PPTX';
   return 'PDF';
-}
-
-function formatModelUsedLabel(value = '') {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (!normalized) return '';
-  if (normalized === 'search') return 'SEARCH';
-  if (normalized === 'mira-pro') return 'MIRA PRO';
-  if (normalized === 'mira-lite' || normalized === 'lite') return 'MIRA LITE';
-  if (normalized === 'spec' || normalized === 'mira-spec' || normalized.startsWith('mira-spec:')) return 'MIRA SPEC';
-  if (normalized === 'mira' || normalized === 'mira-v4' || normalized === 'mira-v4:latest' || normalized === 'mira_v4' || normalized === 'mira_v4:latest' || normalized === 'auto' || normalized === 'mini' || normalized === 'mira-mini') return 'MIRA';
-  if (normalized === 'vision' || normalized === 'mira-vision') return 'MIRA VISION';
-  if (normalized === 'locked' || normalized === 'mira-locked' || normalized === 'mira-locked:latest') return 'MIRA LOCKED';
-  if (normalized === 'mira:latest') return 'MIRA';
-  return normalized.toUpperCase();
 }
 
 function getFileIcon(name) {
@@ -409,11 +385,10 @@ function GeneratedImageCard({ prompt, image }) {
   const hasPersistedImage = Boolean(persistedImageUrl);
   const [persistedLoadMode, setPersistedLoadMode] = useState('direct'); // 'direct' | 'proxy'
   const [persistedRetryNonce, setPersistedRetryNonce] = useState(0);
-  const unsafeForGeneration = imageMarkedNsfw;
 
   const generatedImageUrl = useMemo(
-    () => buildGeneratedImageUrl(prompt, modelChain, modelIndex, `${retryNonce}-${transientAttempt}`, unsafeForGeneration),
-    [prompt, modelChain, modelIndex, retryNonce, transientAttempt, unsafeForGeneration]
+    () => buildGeneratedImageUrl(prompt, modelChain, modelIndex, `${retryNonce}-${transientAttempt}`),
+    [prompt, modelChain, modelIndex, retryNonce, transientAttempt]
   );
 
   const persistedImageSource = useMemo(() => {
@@ -741,17 +716,10 @@ function DocumentDownloadAction({ format, exporting, exportError, onExport }) {
 
 function EditPromptModal({ open, initialValue, onClose, onSave }) {
   const [value, setValue] = useState(initialValue || '');
-  const [selectedModel, setSelectedModel] = useState('auto');
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
-  const [pinInput, setPinInput] = useState('');
-  const [pinError, setPinError] = useState('');
-  const [pinGateOpen, setPinGateOpen] = useState(false);
-  const [pendingModel, setPendingModel] = useState(null);
 
   useEffect(() => {
     if (open) {
       setValue(initialValue || '');
-      setSelectedModel('auto');
     }
   }, [open, initialValue]);
 
@@ -764,27 +732,13 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, onClose, value, selectedModel]);
+  }, [open, onClose, value]);
 
   function handleResend() {
     const trimmed = String(value || '').trim();
     if (!trimmed) return;
-    onSave(trimmed, selectedModel);
+    onSave(trimmed);
   }
-
-  function handleModelClick(opt) {
-    if (opt.requiresPin) {
-      setPendingModel(opt.value);
-      setPinInput('');
-      setPinError('');
-      setPinGateOpen(true);
-    } else {
-      setSelectedModel(opt.value);
-    }
-    setModelPickerOpen(false);
-  }
-
-  const selectedLabel = MODEL_OPTIONS.find((o) => o.value === selectedModel)?.label || 'Auto';
 
   if (!open) return null;
 
@@ -813,47 +767,7 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
           style={{ background: 'var(--glass-bg)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
         />
 
-        <div className="mt-4 flex items-center justify-between gap-2 flex-wrap">
-          {/* Model selector */}
-          <div className="relative" style={{ zIndex: 400 }}>
-            <button
-              type="button"
-              onClick={() => setModelPickerOpen((v) => !v)}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium"
-              style={{ background: 'var(--glass-bg)', border: '1px solid var(--hud-cyan-dim)', color: 'var(--hud-cyan-bright)' }}
-            >
-              <Cpu size={12} />
-              <span>{selectedLabel}</span>
-              <ChevronDown size={11} className={modelPickerOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
-            </button>
-            {modelPickerOpen && (
-              <div
-                className="absolute bottom-full mb-2 left-0 rounded-xl py-1 shadow-2xl min-w-[190px]"
-                style={{ background: 'rgba(2,16,22,0.97)', border: '1px solid var(--hud-cyan-dim)', zIndex: 410 }}
-                onMouseLeave={() => setModelPickerOpen(false)}
-              >
-                {MODEL_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => handleModelClick(opt)}
-                    className="w-full flex flex-col items-start px-3 py-2 text-xs hover:opacity-80 transition-opacity"
-                    style={{
-                      background: selectedModel === opt.value ? 'rgba(94,234,212,0.08)' : 'transparent',
-                      color: selectedModel === opt.value ? 'var(--hud-cyan-bright)' : 'var(--text-secondary)',
-                    }}
-                  >
-                    <span className="flex items-center gap-1.5">
-                      {opt.requiresPin && <Lock size={10} />}
-                      {opt.label}
-                    </span>
-                    <span style={{ color: 'var(--text-tertiary)', fontSize: '0.62rem' }}>{opt.sub}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
+        <div className="mt-4 flex items-center justify-end gap-2 flex-wrap">
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -875,51 +789,6 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
         </div>
       </div>
 
-      {/* PIN gate for locked model selection */}
-      {pinGateOpen && (
-        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4" onClick={() => setPinGateOpen(false)}>
-          <div className="glass-strong rounded-2xl p-6 w-full max-w-xs shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.15)' }}>
-                <Lock size={18} style={{ color: '#f87171' }} />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Unlock Mira Locked</h3>
-                <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>Unrestricted model — PIN required</p>
-              </div>
-            </div>
-            <input
-              type="password"
-              inputMode="numeric"
-              value={pinInput}
-              onChange={(e) => { setPinInput(e.target.value.replace(/\D/g, '')); setPinError(''); }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  if (pinInput === LOCKED_PIN) { setSelectedModel(pendingModel); setPinGateOpen(false); }
-                  else setPinError('Incorrect PIN');
-                }
-              }}
-              placeholder="Enter PIN..."
-              autoFocus
-              maxLength={8}
-              className="w-full glass-input rounded-xl px-4 py-3 text-sm text-center tracking-[0.5em] outline-none mb-2"
-              style={{ color: 'var(--text-primary)' }}
-            />
-            {pinError && <p className="text-xs text-red-400 text-center mb-2">{pinError}</p>}
-            <div className="flex gap-2 mt-3">
-              <button onClick={() => setPinGateOpen(false)} className="flex-1 py-2.5 rounded-xl text-sm font-medium" style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}>Cancel</button>
-              <button
-                onClick={() => {
-                  if (pinInput === LOCKED_PIN) { setSelectedModel(pendingModel); setPinGateOpen(false); }
-                  else setPinError('Incorrect PIN');
-                }}
-                className="flex-1 py-2.5 rounded-xl text-sm font-medium hover:opacity-90"
-                style={{ background: 'rgba(239,68,68,0.2)', color: '#f87171', border: '1px solid rgba(239,68,68,0.35)' }}
-              >Unlock</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>,
     document.body
   );
@@ -933,7 +802,6 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
   const [showEditModal, setShowEditModal] = useState(false);
   const imagePrompt = !isUser ? extractImagePrompt(message.content) : '';
   const videoPrompt = !isUser ? extractVideoPrompt(message.content) : '';
-  const modelUsedLabel = !isUser ? formatModelUsedLabel(message.modelUsed || message.model) : '';
   const showThinking = !isUser && Boolean(message.thinkingContent);
   const searchingBubbleActive = !isUser && isLast && isSearching && message.content === '' && !showThinking;
   const thinkingOnly = Boolean(message.isThinkingActive && showThinking && !message.content);
@@ -966,12 +834,12 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
     onRetry(message, webSearch);
   }, [isUser, message, onRetry, webSearch]);
 
-  const handleEditSave = useCallback((nextValue, modelOverride) => {
+  const handleEditSave = useCallback((nextValue) => {
     if (!isUser || typeof onEdit !== 'function') return;
     const trimmed = String(nextValue || '').trim();
     if (!trimmed) return;
     setShowEditModal(false);
-    onEdit(message, trimmed, webSearch, modelOverride);
+    onEdit(message, trimmed, webSearch);
   }, [isUser, message, onEdit, webSearch]);
 
   const formattedMarkdownContent = useMemo(
@@ -1126,7 +994,6 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
           <div className={`hud-chat-bubble hud-chat-bubble-assistant${thinkingOnly ? ' is-thinking-only' : ''}${(!thinkingOnly && (message.isStreaming || searchingBubbleActive)) ? ' is-active' : ''}`}>
             <div className="hud-chat-bubble-label">
               {searchingBubbleActive ? 'MIRA · SEARCHING' : message.isThinkingActive ? 'MIRA · THINKING' : message.isStreaming ? 'MIRA · RESPONDING' : 'MIRA'}
-              {modelUsedLabel ? ` · ${modelUsedLabel}` : ''}
             </div>
             <div className="prose prose-base max-w-none overflow-x-auto break-words prose-headings:font-bold prose-p:leading-relaxed prose-li:leading-relaxed" style={{ color: 'var(--text-primary)' }}>
               {showThinking && (

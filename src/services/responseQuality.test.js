@@ -76,3 +76,11 @@ test('humanizes prose and removes em dashes without changing code blocks', () =>
     'This works, and it feels natural.\n\n```js\nconst symbol = "—";\n```',
   );
 });
+
+test('removes canned acknowledgments and generic closing offers', () => {
+  const result = polishAssistantAnswer(
+    "Certainly! OAuth uses delegated authorization.\n\nLet me know if you'd like more details!",
+  );
+  assert.equal(result, 'OAuth uses delegated authorization.');
+  assert.equal(polishAssistantAnswer('Surety bonds protect the project owner.'), 'Surety bonds protect the project owner.');
+});

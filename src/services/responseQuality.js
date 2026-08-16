@@ -102,6 +102,11 @@ export function polishAssistantAnswer(answer = '', { grounded = false } = {}) {
   let text = humanizeAssistantText(answer).trim();
   if (!text) return '';
 
+  text = text
+    .replace(/^\s*(?:(?:sure|certainly|of course|absolutely|great question)\b[!,.]*\s*)+(?=\S)/i, '')
+    .replace(/\n{2,}(?:Let me know if you(?:'d| would) like|Feel free to ask if you(?:'d| would) like|I can also help (?:you )?with)[^\n]*[.!]?\s*$/i, '')
+    .trim();
+
   if (grounded) {
     text = text
       .replace(/\s*\[(?:\d+(?:\s*,\s*\d+)*)\]/g, '')

@@ -40,7 +40,6 @@ export async function analyzeImage(prompt, image, mimeType = 'image/jpeg') {
 
   const normalizedImage = await normalizeImage(image, mimeType);
   return runChatCompletion({
-    model: 'vision',
     messages: [{ role: 'user', content: prompt }],
     images: [normalizedImage],
     think: false,

@@ -12,17 +12,16 @@ export default function ParticleGlobe({
   speaking = false,
   particleCount = 1200,
   iconAttractor = null,
-  locked = false,
   hasMessages = false,
 }) {
   const canvasRef = useRef(null);
-  const stateRef = useRef({ thinking, speaking, iconAttractor, locked, hasMessages });
+  const stateRef = useRef({ thinking, speaking, iconAttractor, hasMessages });
 
   // Keep a live ref so the animation loop reads fresh prop values without
   // restarting on every change.
   useEffect(() => {
-    stateRef.current = { thinking, speaking, iconAttractor, locked, hasMessages };
-  }, [thinking, speaking, iconAttractor, locked, hasMessages]);
+    stateRef.current = { thinking, speaking, iconAttractor, hasMessages };
+  }, [thinking, speaking, iconAttractor, hasMessages]);
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
@@ -94,8 +93,6 @@ export default function ParticleGlobe({
     let mouseInVicinity = false;
     let lastMouseMove = 0;
     let iconInfluence = 0;
-    // 0 = cyan, 1 = red — interpolated smoothly each frame
-    let redLerp = 0;
     let raf = 0;
 
     const handlePointerMove = (event) => {
@@ -124,20 +121,14 @@ export default function ParticleGlobe({
         thinking: isThinking,
         speaking: isSpeaking,
         iconAttractor: activeIconAttractor,
-        locked: isLocked,
         hasMessages: hasChats,
       } = stateRef.current;
-      redLerp += ((isLocked ? 1 : 0) - redLerp) * 0.035;
-      if (redLerp < 0.002) redLerp = 0;
-      if (redLerp > 0.998) redLerp = 1;
-      // Derived colour channels — lerp from cyan (94,234,212) → red (248,113,113)
-      const r1 = Math.round(94  + (248 - 94)  * redLerp);
-      const g1 = Math.round(234 + (113 - 234) * redLerp);
-      const b1 = Math.round(212 + (113 - 212) * redLerp);
-      const r2 = Math.round(34  + (239 - 34)  * redLerp);
-      const g2 = Math.round(211 + (68  - 211) * redLerp);
-      const b2 = Math.round(238 + (68  - 238) * redLerp);
-      const baseHue = 172 * (1 - redLerp); // 172 (cyan-teal) → 0 (red)
+      const r1 = 94;
+      const g1 = 234;
+      const b1 = 212;
+      const r2 = 34;
+      const g2 = 211;
+      const b2 = 238;
       const targetEnergy = isThinking ? 1 : isSpeaking ? 0.55 : 0;
       energy += (targetEnergy - energy) * 0.06;
 
@@ -401,7 +392,7 @@ export default function ParticleGlobe({
         const dot = (0.9 + rim * rim * 1.5 + ripple * 0.4) * (0.82 + 0.3 * band);
         const light = 52 + depth * 26 + rim * 8;
         const sat = 80 - depth * 20;
-        const particleHue = baseHue + (hue[i] - 172) * (1 - redLerp);
+        const particleHue = hue[i];
         ctx.fillStyle = `hsla(${particleHue}, ${sat}%, ${light}%, ${alpha})`;
         ctx.beginPath();
         ctx.arc(projX[i], projY[i], dot, 0, Math.PI * 2);
@@ -421,9 +412,9 @@ export default function ParticleGlobe({
         const my = cy + Math.sin(ang * 1.2) * R * 0.16;
         const r = R * (0.3 + (s % 2) * 0.08);
         const grad = ctx.createRadialGradient(mx, my, 0, mx, my, r);
-        const cr = Math.round(103 + (252 - 103) * redLerp);
-        const cg = Math.round(232 + (100 - 232) * redLerp);
-        const cb = Math.round(249 + (100 - 249) * redLerp);
+        const cr = 103;
+        const cg = 232;
+        const cb = 249;
         grad.addColorStop(0, `rgba(${cr}, ${cg}, ${cb}, ${0.14 + energy * 0.12})`);
         grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
         ctx.fillStyle = grad;
@@ -443,7 +434,7 @@ export default function ParticleGlobe({
       // SUPER bright corona — the black hole's event horizon glow
       const corona = ctx.createRadialGradient(cx, cy, 0, cx, cy, orbR * 6);
       corona.addColorStop(0, `rgba(255, 255, 255, ${(0.7 + energy * 0.2) * orbDimFactor})`);
-      corona.addColorStop(0.15, `rgba(${redLerp > 0.5 ? '255, 150, 150' : '200, 255, 255'}, ${(0.55 + energy * 0.15) * orbDimFactor})`);
+      corona.addColorStop(0.15, `rgba(200, 255, 255, ${(0.55 + energy * 0.15) * orbDimFactor})`);
       corona.addColorStop(0.45, `rgba(${r1}, ${g1}, ${b1}, ${(0.28 + energy * 0.12) * orbDimFactor})`);
       corona.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.globalCompositeOperation = 'lighter';
@@ -457,7 +448,7 @@ export default function ParticleGlobe({
       const orbGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, orbR);
       orbGrad.addColorStop(0, `rgba(255, 255, 255, ${orbDimFactor})`);
       orbGrad.addColorStop(0.3, `rgba(255, 255, 255, ${orbDimFactor})`);
-      orbGrad.addColorStop(0.7, redLerp > 0.5 ? `rgba(255, 153, 153, ${orbDimFactor})` : `rgba(128, 255, 255, ${orbDimFactor})`);
+      orbGrad.addColorStop(0.7, `rgba(128, 255, 255, ${orbDimFactor})`);
       orbGrad.addColorStop(1, `rgba(${r1}, ${g1}, ${b1}, ${orbDimFactor})`);
       ctx.fillStyle = orbGrad;
       ctx.beginPath();

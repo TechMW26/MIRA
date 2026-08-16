@@ -1,4 +1,4 @@
-// Tools are disabled — none of the local Ollama models support the tools API.
+// Native tool calls are disabled; the host handles supported control signals.
 // Search and other capabilities are handled directly by the frontend pipeline.
 export const MODEL_TOOLS = [];
 

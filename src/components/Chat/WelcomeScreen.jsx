@@ -6,7 +6,6 @@ import {
   Mail, Folder, Wrench, MessageSquare,
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
-import { useChatContext } from '../../contexts/ChatContext';
 import { getGlobeLayout } from '../../utils/globeLayout';
 
 const ATTACH_ACCEPT = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic';
@@ -469,7 +468,6 @@ function TemplateForm({ template, onSubmit, onClose }) {
 
 export default function WelcomeScreen({ onSend, onIconHover }) {
   const [selectedTemplate, setSelectedTemplate] = useState(null);
-  const { selectedModel } = useChatContext();
 
   // Fixed orbit lineup matching the reference HUD mockup. Each entry pairs
   // the visual icon shown on the ring with the prompt template it opens.

@@ -2,13 +2,11 @@ export const config = { maxDuration: 60 };
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MIME = /^image\/(png|jpe?g|webp|gif|avif)$/i;
-const ALLOWED_MODELS = new Set(['flux', 'flux-schnell', 'flux-realism', 'flux-pro', 'seedream-pro']);
 const DEFAULT_SIZE = 1024;
 const MAX_PROMPT_CHARS = 900;
 const UPSTREAM_TIMEOUT_MS = 18000;
 const UPSTREAM_RETRY_ATTEMPTS = 3;
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
-const MODEL_FALLBACK_CHAIN = ['flux', 'flux-schnell', 'flux-realism', 'flux-pro', 'seedream-pro'];
 const SAFE_MODEL_CHAIN = ['flux', 'flux-schnell', 'flux-realism', 'flux-pro', 'seedream-pro'];
 const NSFW_PROMPT_PATTERN = /\b(nude|nudity|naked|explicit|erotic|porn|pornographic|xxx|18\+|lewd|nsfw|genitals?|penis|vagina|sex|sexual|breasts?|nipples?)\b/i;
 const SAFE_NEGATIVE_PROMPT = 'nsfw, nude, naked, explicit, erotic, porn, sexual content, genitalia, breasts, nipples';
@@ -94,16 +92,13 @@ function buildPollinationsUrl({ prompt, model, seed, width, height, host = 'http
   return `${host}/image/${encodeURIComponent(prompt)}?${params.toString()}`;
 }
 
-function getModelAttemptOrder(requestedModel = 'flux', unsafe = false) {
-  if (!unsafe) return SAFE_MODEL_CHAIN;
-  const normalized = ALLOWED_MODELS.has(requestedModel) ? requestedModel : 'flux';
-  const rest = MODEL_FALLBACK_CHAIN.filter((model) => model !== normalized);
-  return [normalized, ...rest];
+function getModelAttemptOrder() {
+  return SAFE_MODEL_CHAIN;
 }
 
-function buildSafePrompt(prompt = '', unsafe = false) {
+function buildSafePrompt(prompt = '') {
   const value = compactPrompt(prompt);
-  if (!value || unsafe) return value;
+  if (!value) return value;
   const lower = value.toLowerCase();
   if (lower.includes('safe for work') || lower.includes('no nudity') || lower.includes('family-friendly')) {
     return value;
@@ -114,8 +109,7 @@ function buildSafePrompt(prompt = '', unsafe = false) {
 export async function GET(req) {
   const url = new URL(req.url);
   const rawPrompt = compactPrompt(url.searchParams.get('prompt') || '');
-  const unsafe = String(url.searchParams.get('unsafe') || '0') === '1';
-  const prompt = buildSafePrompt(rawPrompt, unsafe);
+  const prompt = buildSafePrompt(rawPrompt);
   if (!prompt) {
     return new Response(JSON.stringify({ error: 'Missing prompt' }), {
       status: 400,
@@ -123,16 +117,14 @@ export async function GET(req) {
     });
   }
 
-  if (!unsafe && NSFW_PROMPT_PATTERN.test(rawPrompt)) {
-    return new Response(JSON.stringify({ error: 'NSFW prompt blocked in safe mode. Switch to Mira Locked for unrestricted generation.' }), {
+  if (NSFW_PROMPT_PATTERN.test(rawPrompt)) {
+    return new Response(JSON.stringify({ error: 'This prompt is blocked by the image safety policy.' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
   }
 
-  const modelParam = String(url.searchParams.get('model') || 'flux').toLowerCase();
-  const model = ALLOWED_MODELS.has(modelParam) ? modelParam : 'flux';
-  const modelAttempts = getModelAttemptOrder(model, unsafe);
+  const modelAttempts = getModelAttemptOrder();
   const width = boundedSize(url.searchParams.get('width'));
   const height = boundedSize(url.searchParams.get('height'));
   const seed = Number(url.searchParams.get('seed') || 1) || 1;
@@ -176,7 +168,7 @@ export async function GET(req) {
           'Cache-Control': 'public, max-age=86400, immutable',
           'Access-Control-Allow-Origin': '*',
           'X-MIRA-Image-Model': attemptModel,
-          'X-MIRA-Safety': unsafe ? 'unsafe' : 'safe',
+          'X-MIRA-Safety': 'safe',
         },
       });
     }

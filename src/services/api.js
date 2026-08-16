@@ -86,14 +86,7 @@ function toolCallsToText(toolCalls = []) {
 export function extractChatText(payload) {
   if (!payload || typeof payload !== 'object') return '';
 
-  const geminiAnswer = Array.isArray(payload.candidates?.[0]?.content?.parts)
-    ? payload.candidates[0].content.parts
-      .filter((part) => part?.thought !== true)
-      .map((part) => contentToText(part?.text))
-      .join('')
-    : '';
   const candidates = [
-    geminiAnswer,
     payload.text,
     payload.result,
     payload.response,
@@ -116,14 +109,7 @@ export function extractChatText(payload) {
 export function extractThinkingText(payload) {
   if (!payload || typeof payload !== 'object') return '';
 
-  const geminiThinking = Array.isArray(payload.candidates?.[0]?.content?.parts)
-    ? payload.candidates[0].content.parts
-      .filter((part) => part?.thought === true)
-      .map((part) => contentToText(part?.text))
-      .join('')
-    : '';
   const candidates = [
-    geminiThinking,
     payload.thinking,
     payload.reasoning,
     payload.reasoning_content,
@@ -399,7 +385,7 @@ export function installGenerationExitCancellation() {
   };
 }
 
-async function requestChat({ messages, model, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think, onChunk }) {
+async function requestChat({ messages, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think, onChunk }) {
   const controller = new AbortController();
   activeChatAbortController = controller;
   const requestId = createRequestId();
@@ -410,7 +396,6 @@ async function requestChat({ messages, model, images = [], systemPrompt, maxToke
   try {
     diagnosticLog('model', 'request started', {
       requestId,
-      requestedModel: model || 'auto',
       streaming: true,
       imageCount: images.length,
     });
@@ -422,7 +407,6 @@ async function requestChat({ messages, model, images = [], systemPrompt, maxToke
         body: JSON.stringify({
           requestId,
           messages,
-          ...(model ? { model } : {}),
           ...(systemPrompt ? { systemPrompt } : {}),
           images,
           stream: true,
@@ -431,16 +415,13 @@ async function requestChat({ messages, model, images = [], systemPrompt, maxToke
           ...(typeof think === 'boolean' ? { think } : {}),
         }),
       }),
-      getResponseHeadersTimeout(model),
+      getResponseHeadersTimeout(),
       'response-headers',
       () => attemptController.abort(),
     );
-    const modelUsed = String(response.headers.get('x-mira-model-used') || '').trim();
     diagnosticLog('stream', 'response headers received', {
       requestId,
       status: response.status,
-      requestedModel: model || 'auto',
-      modelUsed: modelUsed || 'not-reported',
       elapsedMs: Date.now() - attemptStartedAt,
     });
     if (!response.ok) {
@@ -452,12 +433,11 @@ async function requestChat({ messages, model, images = [], systemPrompt, maxToke
     if (!String(visible || '').trim()) throw new Error('The model returned an empty response.');
     diagnosticLog('stream', 'response completed', {
       requestId,
-      modelUsed: modelUsed || model || 'auto',
       answerChars: String(visible || '').length,
       thinkingChars: String(streamed?.thinking || '').length,
       elapsedMs: Date.now() - attemptStartedAt,
     });
-    return { ...streamed, ...(modelUsed ? { modelUsed } : {}) };
+    return streamed;
   } catch (err) {
     if (controller.signal.aborted) throw new DOMException('Generation stopped by user.', 'AbortError');
     const normalizedError = isAbortError(err) && attemptController.signal.aborted
@@ -465,7 +445,6 @@ async function requestChat({ messages, model, images = [], systemPrompt, maxToke
       : err;
     diagnosticError('stream', 'request failed', {
       requestId,
-      model: model || 'auto',
       error: normalizedError?.message || 'Unknown request error',
       errorType: normalizedError?.name || 'Error',
       elapsedMs: Date.now() - attemptStartedAt,
@@ -509,19 +488,18 @@ function splitThinkingFromRaw(raw = '') {
   };
 }
 
-export async function runChatCompletion({ messages, model, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think } = {}) {
-  const result = await requestChat({ messages, model, images, systemPrompt, maxTokens, tools, think });
+export async function runChatCompletion({ messages, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think } = {}) {
+  const result = await requestChat({ messages, images, systemPrompt, maxTokens, tools, think });
   const answer = result?.answer || '';
   if (!answer) throw new Error('No result in response');
   return { result: answer };
 }
 
-export async function sendChatMessage(messages, model, onChunk, images = [], { onThinking, onModelUsed, systemPrompt, tools = MODEL_TOOLS, think } = {}) {
+export async function sendChatMessage(messages, onChunk, images = [], { onThinking, systemPrompt, tools = MODEL_TOOLS, think } = {}) {
   let latestAnswer = '';
   let latestThinking = '';
   const streamed = await requestChat({
     messages,
-    model,
     images,
     systemPrompt,
     tools,
@@ -553,12 +531,6 @@ export async function sendChatMessage(messages, model, onChunk, images = [], { o
     .replace(/<\/think>/gi, '')
     .trim();
   const finalAnswer = split.answer || latestAnswer || rawWithoutThinkTags;
-  const finalModelUsed = String(streamed?.modelUsed || '').trim();
-
-  if (finalModelUsed) {
-    onModelUsed?.(finalModelUsed);
-  }
-
   if (finalThinking) onThinking?.(finalThinking);
   if (finalAnswer) return finalAnswer;
 

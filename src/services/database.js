@@ -43,7 +43,6 @@ export async function createConversation(uid, title = 'New Chat') {
     title,
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    model: 'llama3.2-vision',
   };
   await set(convRef, conv);
   return { id: convRef.key, ...conv };

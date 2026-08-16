@@ -1,8 +1,6 @@
 import { useRef, useState } from 'react';
 import { X, Play, CheckCircle2, Circle, Loader, ChevronDown, ChevronRight, Zap, BrainCircuit, Square } from 'lucide-react';
 import { sendChatMessage, stopChatGeneration } from '../../services/api';
-import { useChatContext } from '../../contexts/ChatContext';
-import { resolveModelForTask } from '../../services/engine';
 
 const STATUS = { pending: 'pending', running: 'running', done: 'done', error: 'error', stopped: 'stopped' };
 
@@ -38,22 +36,18 @@ function extractJsonArray(text) {
 }
 
 export default function TaskRunner({ onSendMessage, onClose }) {
-  const { selectedModel } = useChatContext();
   const [goal, setGoal] = useState('');
   const [tasks, setTasks] = useState([]);
   const [running, setRunning] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [phase, setPhase] = useState('');
   const [liveReasoning, setLiveReasoning] = useState('');
-  const [activeModel, setActiveModel] = useState('');
   const cancelledRef = useRef(false);
-  const runnerModelRef = useRef(selectedModel);
 
   async function runReasonedPrompt(prompt, onProgress) {
     let result = '';
     await sendChatMessage(
       [{ role: 'user', content: prompt }],
-      runnerModelRef.current,
       (text) => {
         result = text;
         onProgress?.(text);
@@ -80,9 +74,6 @@ export default function TaskRunner({ onSendMessage, onClose }) {
   async function planTasks() {
     if (!goal.trim()) return;
     cancelledRef.current = false;
-    const taskModel = resolveModelForTask(goal, selectedModel, { forceComplex: true });
-    runnerModelRef.current = taskModel;
-    setActiveModel(taskModel);
     setRunning(true);
     setTasks([]);
     setPhase('Planning');
@@ -160,7 +151,6 @@ export default function TaskRunner({ onSendMessage, onClose }) {
       <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
         <Zap size={13} style={{ color: 'var(--accent)' }} />
         <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary)' }}>Task Runner</span>
-        {activeModel && <span className="text-[9px] uppercase tracking-wider" style={{ color: 'var(--accent)' }}>{activeModel}</span>}
         {phase && <span className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>{phase}</span>}
         <button onClick={onClose} className="p-1 rounded hover:opacity-70"><X size={13} style={{ color: 'var(--text-tertiary)' }} /></button>
       </div>

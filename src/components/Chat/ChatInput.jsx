@@ -1,10 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Loader,
-  Globe, Code2, Zap, Wrench, BookMarked, Share2, Cpu, ChevronDown, Lock, AlertTriangle,
+  Globe, Code2, Zap, Wrench, BookMarked, Share2,
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
-import { useChatContext } from '../../contexts/ChatContext';
 
 const ACCEPT_TYPES = '.txt,.md,.csv,.json,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.hpp,.html,.css,.xml,.yaml,.yml,.log,.pdf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,.heic,.sh,.rs,.go,.rb,.php,.sql';
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'heic']);
@@ -119,24 +118,9 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
   const [attachments, setAttachments] = useState([]);
   const [parsing, setParsing] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
-  const [lockedPinOpen, setLockedPinOpen] = useState(false);
-  const [lockedPinInput, setLockedPinInput] = useState('');
-  const [lockedPinError, setLockedPinError] = useState('');
-  const { selectedModel, setSelectedModel, lockedModelUnlocked, setLockedModelUnlocked, LOCKED_MODEL_PIN } = useChatContext();
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const dragCounterRef = useRef(0);
-
-  const selectedModelLabel = selectedModel === 'locked'
-    ? 'Mira Locked'
-    : selectedModel === 'mira-pro'
-      ? 'Mira Pro'
-      : selectedModel === 'mira-lite'
-        ? 'Mira Lite'
-        : selectedModel === 'mira'
-          ? 'Mira'
-          : 'Auto';
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -272,13 +256,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
 
   return (
     <div className="hud-composer-dock mobile-composer-dock px-3 sm:px-6 lg:px-[180px] pb-3 sm:pb-5 pt-4 sm:pt-8 relative z-20">
-      {selectedModel === 'locked' && (
-        <div className="nsfw-banner max-w-2xl w-full mx-auto mb-2">
-          <AlertTriangle size={13} />
-          <span>Unrestricted mode active — Mira Locked model is engaged. Content may be explicit.</span>
-          <button type="button" onClick={() => setSelectedModel('auto')} className="nsfw-banner-dismiss">Disable</button>
-        </div>
-      )}      
       <div className="max-w-2xl w-full mx-auto composer-mobile-shell">
         <div className="chat-input-wrap relative">
           <div
@@ -386,58 +363,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
                 style={{ padding: '12px 4px' }}
               />
 
-              <div className="composer-model-wrap">
-                <button
-                  type="button"
-                  onClick={() => setModelPickerOpen((v) => !v)}
-                  className="composer-model-btn"
-                  data-active={selectedModel !== 'auto' || modelPickerOpen || undefined}
-                  title={`Model: ${selectedModelLabel}`}
-                >
-                  <Cpu size={14} />
-                  <span className="hidden sm:inline">{selectedModelLabel}</span>
-                  <ChevronDown size={14} className={`transition-transform ${modelPickerOpen ? 'rotate-180' : ''}`} />
-                </button>
-                {modelPickerOpen && (
-                  <div className="composer-model-popover" onMouseLeave={() => setModelPickerOpen(false)}>
-                    <button type="button" className="composer-model-option" data-active={selectedModel === 'auto' || undefined} onClick={() => { setSelectedModel('auto'); setModelPickerOpen(false); }}>
-                      <span>Auto</span>
-                      <small>fast by default · escalates when needed</small>
-                    </button>
-                    <button type="button" className="composer-model-option" data-active={selectedModel === 'mira-lite' || undefined} onClick={() => { setSelectedModel('mira-lite'); setModelPickerOpen(false); }}>
-                      <span>Mira Lite</span>
-                      <small>fastest · ultra-low latency</small>
-                    </button>
-                    <button type="button" className="composer-model-option" data-active={selectedModel === 'mira' || undefined} onClick={() => { setSelectedModel('mira'); setModelPickerOpen(false); }}>
-                      <span>Mira</span>
-                      <small>standard</small>
-                    </button>
-                    <button type="button" className="composer-model-option" data-active={selectedModel === 'mira-pro' || undefined} onClick={() => { setSelectedModel('mira-pro'); setModelPickerOpen(false); }}>
-                      <span>Mira Pro</span>
-                      <small>chat + vision</small>
-                    </button>
-                    <div style={{ borderTop: '1px solid var(--hud-cyan-dim)', margin: '4px 0' }} />
-                    <button
-                      type="button"
-                      className="composer-model-option"
-                      data-active={selectedModel === 'locked' || undefined}
-                      onClick={() => {
-                        setModelPickerOpen(false);
-                        setLockedPinInput('');
-                        setLockedPinError('');
-                        setLockedPinOpen(true);
-                      }}
-                    >
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <Lock size={12} style={{ color: 'var(--hud-cyan-soft)' }} />
-                        Mira Locked
-                      </span>
-                      <small>unrestricted · pin required</small>
-                    </button>
-                  </div>
-                )}
-              </div>
-
               <input ref={fileInputRef} type="file" multiple accept={ACCEPT_TYPES} onChange={handleFiles} className="hidden" />
 
               <button
@@ -475,66 +400,6 @@ export default function ChatInput({ onSend, onStop, isGenerating, isSearching, w
           </div>
         </div>
       </div>
-
-      {/* ── PIN gate for Mira Locked (with inline disclaimer) ── */}
-      {lockedPinOpen && (
-        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(6px)' }} onClick={() => setLockedPinOpen(false)}>
-          <div className="glass-strong rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.15)' }}>
-                <Lock size={18} style={{ color: '#f87171' }} />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Unlock Mira Locked</h3>
-                <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>Unrestricted model — PIN required</p>
-              </div>
-            </div>
-            <p className="text-xs leading-relaxed mb-4 px-1" style={{ color: 'var(--text-tertiary)' }}>
-              This model operates without content restrictions. By unlocking you confirm you are <strong>18+</strong> and
-              accept responsibility for all generated content.
-            </p>
-            <input
-              type="password"
-              inputMode="numeric"
-              value={lockedPinInput}
-              onChange={(e) => { setLockedPinInput(e.target.value.replace(/\D/g, '')); setLockedPinError(''); }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  if (lockedPinInput === LOCKED_MODEL_PIN) {
-                    setLockedModelUnlocked(true);
-                    setLockedPinOpen(false);
-                    setSelectedModel('locked');
-                  } else {
-                    setLockedPinError('Incorrect PIN');
-                  }
-                }
-              }}
-              placeholder="Enter PIN..."
-              autoFocus
-              maxLength={8}
-              className="w-full glass-input rounded-xl px-4 py-3 text-sm text-center tracking-[0.5em] outline-none focus:ring-1 focus:ring-[var(--border)] mb-2"
-              style={{ color: 'var(--text-primary)' }}
-            />
-            {lockedPinError && <p className="text-xs text-red-400 text-center mb-2">{lockedPinError}</p>}
-            <div className="flex gap-2 mt-3">
-              <button onClick={() => setLockedPinOpen(false)} className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-all" style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}>Cancel</button>
-              <button
-                onClick={() => {
-                  if (lockedPinInput === LOCKED_MODEL_PIN) {
-                    setLockedModelUnlocked(true);
-                    setLockedPinOpen(false);
-                    setSelectedModel('locked');
-                  } else {
-                    setLockedPinError('Incorrect PIN');
-                  }
-                }}
-                className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-all hover:opacity-90"
-                style={{ background: 'rgba(239,68,68,0.2)', color: '#f87171', border: '1px solid rgba(239,68,68,0.35)' }}
-              >Unlock &amp; Enable</button>
-            </div>
-          </div>
-        </div>
-      )}
 
     </div>
   );

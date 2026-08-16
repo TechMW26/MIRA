@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────────────────────
 // Response Cache — sessionStorage-backed LRU for chat responses
 // ──────────────────────────────────────────────────────────────
-// Caches assistant responses keyed by (model + messages + systemPrompt)
+// Caches assistant responses keyed by messages and system prompt
 // so repeated identical queries (refresh, replay, etc.) skip the API call.
 // Capped at MAX_ENTRIES with simple LRU eviction.
 
@@ -43,7 +43,7 @@ function hash(str) {
   return h.toString(36);
 }
 
-export function makeCacheKey({ messages = [], model = '', systemPrompt = '', images = [] }) {
+export function makeCacheKey({ messages = [], systemPrompt = '', images = [] }) {
   const containsLiveSearchData = messages.some((message) => (
     String(message?.content || '').includes('REAL-TIME WEB SEARCH DATA')
   ));
@@ -53,7 +53,7 @@ export function makeCacheKey({ messages = [], model = '', systemPrompt = '', ima
   const hasImages = Array.isArray(images) && images.length > 0;
   // Skip caching when images are attached (binary content not hashable cheaply)
   if (hasImages || containsLiveSearchData) return null;
-  return hash(`${model}::${systemPrompt.slice(0, 300)}::${msgPart}`);
+  return hash(`${systemPrompt.slice(0, 300)}::${msgPart}`);
 }
 
 export function getCachedResponse(key) {

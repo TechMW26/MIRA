@@ -1,7 +1,7 @@
 /**
  * MIRA Prompt Enhancer
  *
- * Runs a small/fast model BEFORE the main reply to either:
+ * Runs a focused preflight using the configured model before the main reply to either:
  *   1. clarify — ask one short question when a creation request is missing critical info
  *   2. enhance — rewrite a basic prompt into a richer, end-to-end prompt
  *   3. pass    — do nothing (greetings, lookups, follow-ups, etc.)
@@ -10,11 +10,6 @@
  */
 
 import { runChatCompletion } from './api';
-
-// Pre-flight is intentionally on Mira Lite for sub-second turnaround;
-// only the rare high-complexity creation request bumps up to Mira Pro.
-const ENHANCER_MODEL = 'mira-lite';
-const ENHANCER_MODEL_PRO = 'mira-pro';
 
 const CREATE_VERB_RE = /\b(build|create|make|design|write|implement|generate|develop|produce|craft|compose|draft|code|construct|architect|prototype|set\s*up|spin\s*up)\b/i;
 const SHORT_LOOKUP_RE = /^\s*(what|who|when|where|why|how|is|are|do|does|did|can|could|should|would|will|tell\s+me|show\s+me|give\s+me)\b/i;
@@ -35,7 +30,7 @@ export function shouldRunEnhancer({
   const text = String(content || '').trim();
   if (!text) return false;
 
-  // Lookups, follow-ups, and casual chat: never run the pre-flight model —
+  // Lookups, follow-ups, and casual chat: never run the preflight —
   // it would add a full extra round-trip before any tokens stream back.
   if (SHORT_LOOKUP_RE.test(text) && !CREATE_VERB_RE.test(text)) return false;
 
@@ -78,16 +73,12 @@ function extractJsonObject(text) {
 
 export async function assessAndRefinePrompt({ content, interpretation }) {
   const routeHint = interpretation?.route || 'chat';
-  const enhancerModel = interpretation?.classification?.complexity === 'high'
-    ? ENHANCER_MODEL_PRO
-    : ENHANCER_MODEL;
   const userMessage = `User request:\n"""\n${String(content || '').trim()}\n"""`;
 
   let raw = '';
   try {
     const result = await runChatCompletion({
       messages: [{ role: 'user', content: userMessage }],
-      model: enhancerModel,
       systemPrompt: buildSystemPrompt(routeHint),
       tools: [],
       think: false,
@@ -113,7 +104,7 @@ export async function assessAndRefinePrompt({ content, interpretation }) {
   if (action === 'clarify') {
     const question = String(parsed?.question || '').trim().replace(/\s+/g, ' ');
     if (!question || question.length < 6) return { action: 'pass' };
-    return { action: 'clarify', question: question.slice(0, 260), model: enhancerModel };
+    return { action: 'clarify', question: question.slice(0, 260) };
   }
 
   if (action === 'enhance') {
@@ -123,7 +114,7 @@ export async function assessAndRefinePrompt({ content, interpretation }) {
     if (prompt.length < Math.max(40, Math.floor(String(content).length * 0.6))) {
       return { action: 'pass' };
     }
-    return { action: 'enhance', prompt, model: enhancerModel };
+    return { action: 'enhance', prompt };
   }
 
   return { action: 'pass' };

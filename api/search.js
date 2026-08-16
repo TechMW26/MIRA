@@ -12,145 +12,6 @@ const BRAVE_KEY = process.env.BRAVE_SEARCH_API_KEY;
 const GOOGLE_KEY = process.env.GOOGLE_SEARCH_API_KEY;
 const GOOGLE_CX = process.env.GOOGLE_SEARCH_CX;
 
-// ── Gemini Google Search Grounding ──────────────────────────────
-const GEMINI_API_BASE = (process.env.GEMINI_API_URL_BASE || 'https://generativelanguage.googleapis.com/v1beta/models').trim();
-const GEMINI_API_KEYS = (() => {
-  const csv = String(process.env.GEMINI_API_KEYS || '').trim();
-  const fromCsv = csv ? csv.split(',').map((v) => v.trim()).filter(Boolean) : [];
-  const fromSingles = [
-    process.env.GEMINI_API_KEY,
-    process.env.GEMINI_API_KEY_1,
-    process.env.GEMINI_API_KEY_2,
-    process.env.GEMINI_API_KEY_3,
-    process.env.GEMINI_API_KEY_4,
-    process.env.GEMINI_API_KEY_5,
-    process.env.GEMINI_API_KEY_6,
-    process.env.GEMINI_API_KEY_7,
-  ].map((v) => String(v || '').trim()).filter(Boolean);
-  return Array.from(new Set([...fromCsv, ...fromSingles]));
-})();
-const GEMINI_SEARCH_MODEL = 'gemini-2.5-flash';
-
-async function searchGemini(query, fresh = false) {
-  if (!GEMINI_API_KEYS.length) return null;
-  const apiKey = GEMINI_API_KEYS[0];
-  const modelName = GEMINI_SEARCH_MODEL;
-  const url = `${GEMINI_API_BASE}/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-
-  const searchPrompt = fresh
-    ? `Search the web for the LATEST information about: ${query}. Focus on the most recent results. Return the search results with titles, descriptions, and URLs for each result.`
-    : `Search the web for information about: ${query}. Return the search results with titles, descriptions, and URLs for each result.`;
-
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: searchPrompt }] }],
-        tools: [{ googleSearch: {} }],
-        safetySettings: [
-          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
-          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
-          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
-          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
-        ],
-        generationConfig: { maxOutputTokens: 600 },
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    const candidate = data?.candidates?.[0];
-    if (!candidate) return null;
-
-    const groundingMeta = candidate?.groundingMetadata || {};
-    const chunks = groundingMeta?.groundingChunks || [];
-    const generatedText = candidate?.content?.parts?.map((p) => p.text).join(' ') || '';
-
-    // Extract search results from grounding chunks (titles + URLs)
-    const results = chunks.map((chunk) => {
-      const web = chunk?.web || {};
-      return {
-        title: web.title || '',
-        snippet: web.title || '',
-        url: web.uri || '',
-      };
-    }).filter((r) => r.title && r.url);
-
-    // Enrich snippets from grounding supports (maps response text to sources)
-    const supports = groundingMeta?.groundingSupports || [];
-    if (supports.length && results.length) {
-      // Group support texts by chunk index
-      const snippetByIndex = {};
-      for (const support of supports) {
-        const segment = support?.segment?.text || '';
-        const indices = support?.groundingChunkIndices || [];
-        if (!segment) continue;
-        for (const idx of indices) {
-          if (!snippetByIndex[idx]) snippetByIndex[idx] = [];
-          snippetByIndex[idx].push(segment);
-        }
-      }
-      for (const [idx, segments] of Object.entries(snippetByIndex)) {
-        const i = Number(idx);
-        if (results[i]) {
-          // Use the longest segment as the snippet
-          const best = segments.sort((a, b) => b.length - a.length)[0];
-          if (best && best.length > results[i].title.length) {
-            results[i].snippet = best;
-          }
-        }
-      }
-    }
-
-    // Parse generated text for additional structured results with descriptions
-    // Look for numbered list patterns like "1. Title - Description"
-    const textResults = [];
-    if (generatedText) {
-      const lines = generatedText.split('\n');
-      let currentTitle = '';
-      let currentSnippet = '';
-      let currentUrl = '';
-      for (const line of lines) {
-        const trimmed = line.replace(/\*\*/g, '').trim();
-        // Match numbered list items: "1. Title" or "1. Title - Description"
-        const numberedMatch = trimmed.match(/^\d+[\.\)]\s+(.+?)(?:\s*[-–—]\s*(.+))?$/);
-        if (numberedMatch) {
-          // Save previous item if exists
-          if (currentTitle && !results.some((r) => r.title === currentTitle)) {
-            textResults.push({ title: currentTitle, snippet: currentSnippet || currentTitle, url: currentUrl });
-          }
-          currentTitle = numberedMatch[1].trim();
-          currentSnippet = (numberedMatch[2] || '').trim();
-          currentUrl = '';
-        } else if (trimmed.startsWith('http') && currentTitle) {
-          currentUrl = trimmed;
-        } else if (currentTitle && trimmed && !currentSnippet) {
-          currentSnippet = trimmed;
-        }
-      }
-      if (currentTitle && !results.some((r) => r.title === currentTitle)) {
-        textResults.push({ title: currentTitle, snippet: currentSnippet || currentTitle, url: currentUrl });
-      }
-    }
-
-    // Merge: grounding chunks first, then text-parsed results, deduplicated
-    const seen = new Set();
-    const merged = [];
-    for (const r of [...results, ...textResults]) {
-      const key = r.url || r.title.toLowerCase().slice(0, 40);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push(r);
-    }
-
-    return merged.length ? merged.slice(0, 8) : null;
-  } catch {
-    return null;
-  }
-}
-
 function parseRSS(xml) {
   const items = [];
   const blocks = xml.split('<item>').slice(1);
@@ -741,22 +602,15 @@ export async function POST(req) {
     const fresh = detectFreshnessIntent(searchQuery, freshness);
     const window = freshnessWindow(searchQuery);
 
-    // ── Gemini Google Search Grounding (primary) ────────────
-    const geminiResults = await searchGemini(searchQuery, fresh);
-
-    // ── Fallback sources (only if Gemini failed) ────────────
-    let brave, google, bingWeb, bing, gnews, ddg, ddgHtml;
-    if (!geminiResults) {
-      [brave, google, bingWeb, bing, gnews, ddg, ddgHtml] = await Promise.all([
-        searchBrave(searchQuery, fresh, window),
-        searchGoogle(searchQuery, fresh, window),
-        searchBingWeb(searchQuery),
-        searchBingNews(searchQuery),
-        searchGoogleNews(searchQuery),
-        searchDDG(searchQuery),
-        searchDDGHtml(searchQuery),
-      ]);
-    }
+    const [brave, google, bingWeb, bing, gnews, ddg, ddgHtml] = await Promise.all([
+      searchBrave(searchQuery, fresh, window),
+      searchGoogle(searchQuery, fresh, window),
+      searchBingWeb(searchQuery),
+      searchBingNews(searchQuery),
+      searchGoogleNews(searchQuery),
+      searchDDG(searchQuery),
+      searchDDGHtml(searchQuery),
+    ]);
 
     // Media sources always run (YouTube, images, Instagram)
     const [videos, bingImages, instagram] = await Promise.all([
@@ -768,10 +622,7 @@ export async function POST(req) {
     // Decide the primary `results` list.
     let results;
     let source;
-    if (geminiResults?.length) {
-      results = geminiResults.slice(0, 6);
-      source = 'gemini-google';
-    } else if (fresh) {
+    if (fresh) {
       results = rankFreshResults([...(brave || []), ...(google || []), ...(bing || []), ...(gnews || []), ...(bingWeb || [])], window);
       source = results.length ? 'fresh-mixed' : 'none';
     } else if (brave?.length) { results = brave.slice(0, 6); source = 'brave'; }

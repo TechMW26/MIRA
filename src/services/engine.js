@@ -3,9 +3,8 @@
  *
  * Responsibilities:
  *  1. Classify the user's intent & complexity.
- *  2. Pick the best model automatically.
- *  3. Enhance the system prompt with task-specific directives.
- *  4. Inject chain-of-thought scaffolding for complex queries.
+ *  2. Enhance the system prompt with task-specific directives.
+ *  3. Inject reasoning scaffolding for complex queries.
  */
 
 // ── Intent / complexity classification ─────────────────────────
@@ -196,7 +195,7 @@ function detectSearchNeed(text, hasImages = false) {
   const words = value.split(/\s+/).filter(Boolean).length;
 
   // 3) Bare topic shorthand — a short prompt that is just a topic, optionally
-  //    ending in "?". e.g. "Algaetree?", "TensorFlow", "OpenAI?", "mira-v4".
+  //    ending in "?". e.g. "Algaetree?", "TensorFlow", or "OpenAI?".
   //    Treat as implicit "tell me about X" and search when the topic is
   //    specific enough that an LLM may not know it.
   if (!researchIntent && !infoIntent && words <= 3 && specificity.score >= 2) {
@@ -355,39 +354,15 @@ function isTrivialSmallTalk(text = '', { hasImages = false } = {}) {
   return SMALL_TALK_RE.test(value);
 }
 
-// ── Model routing ──────────────────────────────────────────────
-function pickModel(classification, hasImages, selectedMode = 'auto') {
-  if (selectedMode === 'locked') return 'locked';
-  if (selectedMode === 'mira-pro') return 'mira-pro';
-  if (selectedMode === 'mira-lite') return 'mira-lite';
-  if (selectedMode === 'mira') return 'mira';
-  if (hasImages) return 'mira-pro';
-  if (classification.complexity === 'high') return 'mira-pro';
-  if (classification.complexity === 'medium') return 'mira';
-  if (['code', 'math'].includes(classification.intent)) return 'mira';
-  return 'mira-lite';
-}
-
-export function resolveModelForTask(prompt = '', selectedMode = 'auto', { forceComplex = false } = {}) {
-  if (selectedMode && selectedMode !== 'auto') return selectedMode;
-  const taskPrompt = forceComplex
-    ? `Analyze and execute this multi-step task in depth, step-by-step: ${prompt}`
-    : prompt;
-  return processQuery(taskPrompt, false, { selectedMode: 'auto' }).model;
-}
-
 // ── Public API ─────────────────────────────────────────────────
-export function processQuery(userText, hasImages = false, options = {}) {
-  const { selectedMode = 'auto' } = options;
+export function processQuery(userText, hasImages = false) {
   const interpretation = interpretUserPrompt(userText, hasImages);
   const classification = interpretation.classification;
-  const model = pickModel(classification, hasImages, selectedMode, userText);
   const searchNeeded = detectSearchNeed(userText, hasImages);
 
   return {
     classification,
     interpretation,
-    model,
     needsSearch: searchNeeded,
   };
 }

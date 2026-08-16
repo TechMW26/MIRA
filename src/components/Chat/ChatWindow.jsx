@@ -99,7 +99,6 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
 
 export default function ChatWindow() {
   const { currentConversationId, isGenerating, isSearching } = useChatContext();
-  const { selectedModel } = useChatContext();
   const { messages, streamingContent, thinkingContent, sendMessage, stopGenerating, retryMessage, editMessage } = useChat();
   const userProfile = useUserProfile();
 
@@ -167,7 +166,6 @@ export default function ChatWindow() {
       <div className="fixed inset-0 pointer-events-none z-0">
         <ParticleGlobe 
           iconAttractor={iconAttractor}
-          locked={selectedModel === 'locked'}
           hasMessages={messages.length > 0}
         />
       </div>

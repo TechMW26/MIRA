@@ -10,6 +10,7 @@
 
 const STORAGE_KEY = 'mira_knowledge_bank';
 const LEARNED_FACTS_KEY = 'mira_learned_facts';
+const RESPONSE_PREFERENCES_KEY = 'mira_response_preferences_v1';
 
 // ── Storage helpers ──
 function loadStore(key) {
@@ -43,6 +44,66 @@ export function addLearnedFact(key, value) {
 
 export function clearLearnedFacts() {
   saveStore(LEARNED_FACTS_KEY, {});
+}
+
+function responsePreferencesStorageKey(scope = '') {
+  const safeScope = String(scope || 'local').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80) || 'local';
+  return `${RESPONSE_PREFERENCES_KEY}:${safeScope}`;
+}
+
+export function getLearnedResponsePreferences(scope = '') {
+  return loadStore(responsePreferencesStorageKey(scope));
+}
+
+export function clearLearnedResponsePreferences(scope = '') {
+  saveStore(responsePreferencesStorageKey(scope), {});
+}
+
+const TRANSIENT_STYLE_RE = /\b(?:for|in)\s+(?:this|the current)\s+(?:answer|message|response|reply)|\bjust\s+this\s+(?:once|time)\b/i;
+
+export function learnResponsePreferences(message = '', { scope = '' } = {}) {
+  const text = String(message || '').replace(/\s+/g, ' ').trim();
+  if (!text || TRANSIENT_STYLE_RE.test(text)) return {};
+
+  const updates = {};
+  if (/\b(?:be|write|answer|respond|keep (?:it|your answers?))\s+(?:more\s+)?(?:concise|brief|short(?:er)?)\b|\b(?:too verbose|less verbose|no fluff)\b/i.test(text)) updates.length = 'concise';
+  if (/\b(?:be|write|answer|respond|make (?:it|your answers?))\s+(?:more\s+)?(?:detailed|thorough|in[- ]depth)\b|\bmore detail\b/i.test(text)) updates.length = 'detailed';
+  if (/\b(?:use|prefer)\s+(?:bullet(?:ed)?\s+(?:points?|lists?)|bullets)\b/i.test(text)) updates.format = 'bullets';
+  if (/\b(?:do not|don't|stop|avoid)\s+(?:using\s+)?(?:bullet(?:ed)?\s+(?:points?|lists?)|bullets)\b/i.test(text)) updates.format = 'paragraphs';
+  if (/\b(?:use|prefer)\s+(?:simple|plain)\s+(?:language|words)\b|\b(?:less|avoid)\s+jargon\b|\bexplain (?:it|things?) simply\b/i.test(text)) updates.language = 'plain';
+  if (/\b(?:be|sound|write)\s+(?:more\s+)?casual\b|\bconversational tone\b/i.test(text)) updates.tone = 'casual';
+  if (/\b(?:be|sound|write)\s+(?:more\s+)?formal\b|\bprofessional tone\b/i.test(text)) updates.tone = 'formal';
+  if (/\b(?:include|use|add)\s+(?:more\s+)?(?:code\s+)?examples?\b/i.test(text)) updates.examples = 'include';
+  if (/\b(?:do not|don't|avoid|skip)\s+(?:including\s+|using\s+)?(?:code\s+)?examples?\b/i.test(text)) updates.examples = 'avoid';
+
+  if (!Object.keys(updates).length) return {};
+  const stored = getLearnedResponsePreferences(scope);
+  const at = Date.now();
+  const next = { ...stored };
+  for (const [key, value] of Object.entries(updates)) {
+    next[key] = { value, at, source: 'explicit-feedback' };
+  }
+  saveStore(responsePreferencesStorageKey(scope), next);
+  return updates;
+}
+
+export function buildResponsePreferencesBlock(profilePreferences = {}, { scope = '' } = {}) {
+  const learned = getLearnedResponsePreferences(scope);
+  const values = Object.fromEntries(
+    Object.entries(learned).map(([key, entry]) => [key, entry?.value]).filter(([, value]) => value)
+  );
+  if (!Object.keys(values).length && !profilePreferences?.responseStyle) return '';
+
+  const length = values.length || profilePreferences.responseStyle;
+  const lines = [
+    length ? `- answer length: ${length}` : '',
+    values.format ? `- preferred structure: ${values.format}` : '',
+    values.language ? `- language: ${values.language}` : '',
+    values.tone ? `- tone: ${values.tone}` : '',
+    values.examples ? `- examples: ${values.examples}` : '',
+  ].filter(Boolean);
+  if (!lines.length) return '';
+  return `ADAPTIVE RESPONSE PREFERENCES (private, do not mention):\n${lines.join('\n')}\nApply these defaults when compatible. The user's current request always overrides them.`;
 }
 
 // ── Cache the latest known profile so the model can reference it ──
