@@ -7,7 +7,6 @@ const OLLAMA_TEMPERATURE = Number(process.env.OLLAMA_TEMPERATURE || 0.2);
 const OLLAMA_TOP_P = Number(process.env.OLLAMA_TOP_P || 0.85);
 const OLLAMA_REPEAT_PENALTY = Number(process.env.OLLAMA_REPEAT_PENALTY || 1.2);
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
-const MAX_IMAGES = 6;
 const MAX_TOKENS_CAP = 12000;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
 const ALLOWED_TOOL_NAMES = new Set([
@@ -97,9 +96,8 @@ function normalizeMessages(messages = [], systemPrompt = '') {
     .map((message) => ({
       role: ALLOWED_ROLES.has(message?.role) ? message.role : 'user',
       content: typeof message?.content === 'string' ? message.content : String(message?.content || ''),
-      ...(Array.isArray(message?.images) && message.images.length ? { images: message.images.slice(0, MAX_IMAGES) } : {}),
     }))
-    .filter((message) => message.content.trim() || message.images?.length);
+    .filter((message) => message.content.trim());
 
   const withoutSystem = normalized.filter((message) => message.role !== 'system');
   return [
@@ -107,28 +105,6 @@ function normalizeMessages(messages = [], systemPrompt = '') {
     ...IDENTITY_PRIMER,
     ...withoutSystem,
   ];
-}
-
-function imageToBase64(image) {
-  const raw = String(image?.base64 || image?.data || image || '');
-  return raw.includes(',') ? raw.slice(raw.indexOf(',') + 1) : raw;
-}
-
-function attachImages(messages = [], images = []) {
-  const cleanImages = (Array.isArray(images) ? images : [])
-    .slice(0, MAX_IMAGES)
-    .map(imageToBase64)
-    .filter(Boolean);
-  if (!cleanImages.length) return messages;
-
-  const next = messages.map((message) => ({ ...message }));
-  for (let index = next.length - 1; index >= 0; index -= 1) {
-    if (next[index].role === 'user') {
-      next[index] = { ...next[index], images: cleanImages };
-      break;
-    }
-  }
-  return next;
 }
 
 export function sanitizeTools(tools = []) {
@@ -154,14 +130,13 @@ export function sanitizeTools(tools = []) {
 export function buildUpstreamPayload({
   registryModel,
   messages = [],
-  images = [],
   systemPrompt = '',
   think = true,
   maxTokens = OLLAMA_MAX_TOKENS,
   tools = [],
 } = {}) {
   const safeMax = Math.max(1, Math.min(Number(maxTokens) || OLLAMA_MAX_TOKENS, MAX_TOKENS_CAP));
-  const normalized = attachImages(normalizeMessages(messages, systemPrompt), images);
+  const normalized = normalizeMessages(messages, systemPrompt);
   const options = {
     num_predict: safeMax,
     temperature: OLLAMA_TEMPERATURE,
@@ -210,6 +185,11 @@ export async function POST(req) {
     if (!Array.isArray(body?.messages) || body.messages.length === 0) {
       return jsonResponse({ error: 'Messages are required.' }, 400);
     }
+    const containsImages = (Array.isArray(body?.images) && body.images.length > 0)
+      || body.messages.some((message) => Array.isArray(message?.images) && message.images.length > 0);
+    if (containsImages) {
+      return jsonResponse({ error: 'Raw images are accepted only by /api/analyze.' }, 400);
+    }
     if (JSON.stringify(body).length > MAX_BODY_BYTES) {
       return jsonResponse({ error: 'Request body is too large.' }, 413);
     }
@@ -224,7 +204,6 @@ export async function POST(req) {
     const upstreamPayload = buildUpstreamPayload({
       registryModel,
       messages: body.messages,
-      images: body.images,
       systemPrompt: body.systemPrompt,
       think: body.think,
       maxTokens: body.max_tokens,

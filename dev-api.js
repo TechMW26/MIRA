@@ -4,20 +4,23 @@ import path from 'path';
 
 function loadDotEnv() {
   try {
-    const envPath = path.resolve(process.cwd(), '.env');
-    if (!fs.existsSync(envPath)) return;
-    const text = fs.readFileSync(envPath, 'utf8');
-    for (const rawLine of text.split(/\r?\n/)) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith('#')) continue;
-      const separator = line.indexOf('=');
-      if (separator <= 0) continue;
-      const key = line.slice(0, separator).trim();
-      let value = line.slice(separator + 1).trim();
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
+    const externallyDefined = new Set(Object.keys(process.env));
+    for (const filename of ['.env', '.env.local']) {
+      const envPath = path.resolve(process.cwd(), filename);
+      if (!fs.existsSync(envPath)) continue;
+      const text = fs.readFileSync(envPath, 'utf8');
+      for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) continue;
+        const separator = line.indexOf('=');
+        if (separator <= 0) continue;
+        const key = line.slice(0, separator).trim();
+        let value = line.slice(separator + 1).trim();
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.slice(1, -1);
+        }
+        if (!externallyDefined.has(key)) process.env[key] = value;
       }
-      if (!(key in process.env)) process.env[key] = value;
     }
   } catch (error) {
     console.warn('dev-api: failed to load .env:', error.message);

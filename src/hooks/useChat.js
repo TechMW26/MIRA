@@ -4,7 +4,11 @@ import {
   sendChatMessage,
   stopChatGeneration,
 } from '../services/api';
-import { analyzeImage } from '../services/imageAnalysis.js';
+import {
+  analyzeImage,
+  buildVisionAnalysisPrompt,
+  extractVisionSearchAnchor,
+} from '../services/imageAnalysis.js';
 import { needsFreshInformation, processQuery } from '../services/engine';
 import { assessAndRefinePrompt, shouldRunEnhancer } from '../services/promptEnhancer';
 import {
@@ -1420,6 +1424,34 @@ export default function useChat() {
             });
           }
           let visualSearchAnchor = '';
+          let visionAnalysisBlock = '';
+          if (hasImages) {
+            const normalizedVisionImages = await Promise.all(
+              imageAttachments.map((image) => normalizeImageForUpload(image)),
+            );
+            const analyses = await Promise.allSettled(normalizedVisionImages.map((image, index) => analyzeImage(
+              buildVisionAnalysisPrompt(content, index, normalizedVisionImages.length),
+              image,
+              image.mimeType,
+            )));
+            const successfulAnalyses = analyses.flatMap((analysis, index) => (
+              analysis.status === 'fulfilled' && analysis.value?.result
+                ? [{ index, text: String(analysis.value.result).trim() }]
+                : []
+            ));
+            if (!successfulAnalyses.length) {
+              const failure = analyses.find((analysis) => analysis.status === 'rejected');
+              throw new Error(failure?.reason?.message || 'Image analysis failed.');
+            }
+            if (shouldUseVisualAnchor) {
+              visualSearchAnchor = cleanVisualSearchAnchor(
+                extractVisionSearchAnchor(successfulAnalyses[0].text),
+              );
+            }
+            visionAnalysisBlock = `\n\n=== VERIFIED IMAGE ANALYSIS ===\n${successfulAnalyses
+              .map(({ index, text }) => `Image ${index + 1}:\n${text}`)
+              .join('\n\n')}\n=== END IMAGE ANALYSIS ===\n\nUse this dedicated vision analysis as the source of truth for the attached image. Answer the user's request directly. Do not claim you inspected image pixels yourself, and do not expose internal provider or model details.`;
+          }
 
           // Build a context-aware search query. Short follow-up questions like
           // "tell me more about this device" lose meaning without prior context,
@@ -1523,18 +1555,6 @@ export default function useChat() {
           if (effectiveWebSearch && content.trim() && !requestedDocumentFormat) {
             setIsSearching(true);
             try {
-              if (shouldUseVisualAnchor && imageAttachments[0]) {
-                try {
-                  const visual = await analyzeImage(
-                    'Identify the most searchable entity in this image. Read visible text/OCR exactly. Return one concise web search query, max 12 words, with exact visible product/brand/device names first, then 1-3 descriptive keywords. If a label/sign contains a name, include that exact name. Do not answer the user, do not explain, and do not guess a person identity unless visible text or a highly recognizable public figure supports it.',
-                    imageAttachments[0],
-                    imageAttachments[0].mimeType || imageAttachments[0].type || 'image/jpeg',
-                  );
-                  visualSearchAnchor = cleanVisualSearchAnchor(visual?.result || '');
-                } catch (visualErr) {
-                  console.warn('Visual search anchor failed:', visualErr.message);
-                }
-              }
               // Keep the primary web query natural. The entity scope is useful
               // for validating media, but quoting the entire interpreted entity
               // can over-constrain web results (for example
@@ -1699,6 +1719,10 @@ export default function useChat() {
             }
           }
 
+          if (visionAnalysisBlock) {
+            userContent = `${userContent}${visionAnalysisBlock}`;
+          }
+
           if (textAttachments.length > 0) {
             const fileContents = buildAttachmentPrompt(textAttachments, CURRENT_ATTACHMENT_CHAR_LIMIT);
             userContent = userContent
@@ -1742,7 +1766,7 @@ export default function useChat() {
           }
 
           if (hasImages && !wantsImageGeneration && !wantsVideoGeneration) {
-            userContent = `${userContent}\n\nIMAGE ATTACHMENT NOTE: This current user message includes ${imageAttachments.length} actual image attachment${imageAttachments.length === 1 ? '' : 's'}. You can inspect the image input directly. Do NOT say the image is not visible, not accessible, only text-based, or that you cannot analyze it. Answer from the visible image and use any provided web-search data as supporting evidence.`;
+            userContent = `${userContent}\n\nIMAGE ATTACHMENT NOTE: This current message includes ${imageAttachments.length} image attachment${imageAttachments.length === 1 ? '' : 's'}. Answer from the verified image-analysis block and use any provided web-search data only as supporting evidence.`;
           }
 
           if (deterministicMediaReply) {
@@ -1766,7 +1790,9 @@ export default function useChat() {
 
           history.push({ role: 'user', content: userContent });
 
-          const images = await Promise.all(imageAttachments.map((img) => normalizeImageForUpload(img)));
+          // Raw image bytes stay on the dedicated vision route. The chat model
+          // receives only the verified textual analysis above.
+          const images = [];
           if (!isCurrentRun()) return;
 
           let fullText = '';

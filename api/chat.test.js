@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildUpstreamPayload, sanitizeTools, selectRegistryModel } from './chat.js';
+import { buildUpstreamPayload, POST, sanitizeTools, selectRegistryModel } from './chat.js';
 
 test('selects the first completion-capable model returned by the registry', () => {
   const selected = selectRegistryModel([
@@ -33,14 +33,27 @@ test('builds one streaming Ollama payload from the registry selection', () => {
   assert.ok(payload.messages.some((message) => message.role === 'user' && message.content === 'Hello'));
 });
 
-test('attaches images to the latest user turn without switching models', () => {
+test('keeps raw images out of the general chat payload', () => {
   const payload = buildUpstreamPayload({
     registryModel: { name: 'runtime-model', capabilities: ['completion', 'vision'] },
     messages: [{ role: 'user', content: 'Describe this' }],
     images: [{ base64: 'data:image/png;base64,abc123' }],
   });
   assert.equal(payload.model, 'runtime-model');
-  assert.deepEqual(payload.messages.at(-1).images, ['abc123']);
+  assert.equal(payload.messages.some((message) => message.images?.length), false);
+});
+
+test('rejects raw images on the general chat endpoint', async () => {
+  const response = await POST(new Request('http://localhost/api/chat', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      messages: [{ role: 'user', content: 'Describe this' }],
+      images: [{ base64: 'YWJj', mimeType: 'image/png' }],
+    }),
+  }));
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /only by \/api\/analyze/i);
 });
 
 test('forwards only supported native tools to capable registry models', () => {

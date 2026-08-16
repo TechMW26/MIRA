@@ -8,7 +8,7 @@ A conversational, research, vision, and media assistant backed by one dynamicall
 - **Automatic internet research** — Deterministic routing plus model-requested live search with citations
 - **Chat Interface** — Streaming responses, markdown rendering, syntax-highlighted code
 - **Permission-gated Chrome MCP inspection** — Agents can request structured website documentation only after user approval
-- **Image Analysis** — Analyze uploaded images with prompt-based reasoning
+- **Image Analysis** — Dedicated Gemini vision analysis with ordered API-key fallback; raw images never enter normal chat
 - **Image Generation** — Keeps the current image/video generation pipeline unchanged
 - **Project Management** — Organize conversations into projects
 - **Authentication** — Email/password registration and login via Firebase
@@ -47,6 +47,15 @@ OLLAMA_TEMPERATURE=0.2
 OLLAMA_TOP_P=0.85
 OLLAMA_REPEAT_PENALTY=1.2
 
+# Gemini vision only. GEMINI_API_KEYS accepts comma-separated fallback keys.
+GEMINI_API_KEYS=
+GEMINI_VISION_MODEL=gemini-2.5-flash
+
+# Optional web search providers
+BRAVE_SEARCH_API_KEY=
+GOOGLE_SEARCH_API_KEY=
+GOOGLE_SEARCH_CX=
+
 # Image/video generation
 POLLINATIONS_API_KEY=
 POLLINATIONS_VIDEO_MODEL=wan-pro
@@ -65,7 +74,7 @@ POLLINATIONS_VIDEO_MODEL=wan-pro
 - **Backend:** Vercel Serverless Functions (Edge Runtime)
 - **Database:** Firebase Realtime Database
 - **Auth:** Custom auth via Firebase RTB (SHA-256 hashed passwords)
-- **AI:** One Ollama-compatible model discovered dynamically from the configured server
+- **AI:** One dynamically discovered Ollama-compatible chat model; Gemini is isolated to image analysis
 
 ## Internet Search Orchestration
 
