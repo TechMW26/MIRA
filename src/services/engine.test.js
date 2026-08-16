@@ -27,3 +27,10 @@ test('does not expose model-routing metadata', () => {
   assert.equal('model' in processQuery('Hello there'), false);
   assert.equal('model' in processQuery('Build a React component'), false);
 });
+
+test('keeps greetings and ordinary conversation out of media generation', () => {
+  assert.equal(processQuery('Hey').classification.intent, 'general');
+  assert.equal(processQuery('Hello there').interpretation.imageIntent, false);
+  assert.equal(processQuery('How are you?').interpretation.videoIntent, false);
+  assert.equal(processQuery('Please generate an image of an elephant').interpretation.imageIntent, true);
+});

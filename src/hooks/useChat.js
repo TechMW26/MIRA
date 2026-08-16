@@ -71,6 +71,12 @@ import {
   imagePromptSeed,
   normalizeImageGenerationOutput,
 } from '../services/imagePrompt.js';
+import {
+  buildGreetingResponse,
+  getMostRecentAssistantMessage,
+  isSimpleGreeting,
+} from '../services/contextPolicy.js';
+import { selectModelTools } from '../services/modelTools.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 
@@ -91,7 +97,6 @@ const CONTEXT_REFERENCE_PATTERN = /\b(it|its|this|that|these|those|they|them|the
 const CONTEXTUAL_WEB_RESEARCH_PATTERN = /\b(company|companies|manufacturer|manufactures?|producer|produces?|producing|maker|made\s+by|built\s+by|created\s+by|developed\s+by|owner|owned\s+by|founder|team|organization|brand|official|website|source|origin|specs?|features?|pricing|price|cost|availability|launch|release|details?|in[-\s]?depth|deep\s+dive|full\s+information|complete\s+information|let\s+me\s+know|tell\s+me\s+more|more\s+about|background|research|explain)\b/i;
 const SHORT_CONTEXT_FOLLOWUP_PATTERN = /\b(are\s+you\s+sure|sure\s+about\s+that|really|seriously|wait|why\??|how\s+so|what\s+do\s+you\s+mean|continue|go\s+on|tell\s+me\s+more|more|elaborate|explain\s+that)\b/i;
 const SEARCH_WORTHY_CONTEXT_PATTERN = /\b(company|manufacturer|maker|producer|brand|official\s+website|specs?|pricing|price|cost|availability|launch|release|latest|current|current\s+status|who\s+makes|who\s+owns|what\s+company|where\s+to\s+buy|how\s+much|how\s+many)\b/i;
-const SIMPLE_GREETING_PATTERN = /^\s*(?:hi|hello|hey|hey there|hello there|yo|sup|good\s+(?:morning|afternoon|evening))(?:[!.?\s]+)?$/i;
 const CONTEXT_ENTITY_STOP = new Set(['I', 'The', 'A', 'An', 'It', 'This', 'That', 'These', 'Those', 'You', 'He', 'She', 'We', 'They', 'My', 'Your', 'MIRA', 'AI', 'PDF', 'DOCX', 'PPTX']);
 const TEXT_ENTITY_RESEARCH_PATTERN = /\b(tell\s+me\s+about|tell\s+me\s+more\s+about|details?\s+about|information\s+about|info\s+about|background\s+on|research|explain|what\s+is|what\s+are|what\s+an|what\s+a|what's|overview\s+of|in\s+detail|deep\s+dive|let\s+me\s+know\s+what)\b/i;
 const MEDIA_RELEVANCE_STOPWORDS = new Set([
@@ -655,31 +660,19 @@ function describeGeneratedImageContent(content = '') {
 }
 
 function getLatestGeneratedImagePrompt(historySource = []) {
-  const source = Array.isArray(historySource) ? historySource : [];
-  for (let index = source.length - 1; index >= 0; index -= 1) {
-    const message = source[index];
-    if (message?.role !== 'assistant') continue;
-    const text = normalizeMessageContent(message?.promptContent || message?.content || '');
-    const markerPrompt = String(text || '').match(IMAGE_GEN_PATTERN)?.[1]?.trim();
-    if (!markerPrompt) continue;
-    const cleaned = cleanImagePrompt(markerPrompt);
-    if (cleaned) return cleaned.slice(0, 900);
-  }
-  return '';
+  const message = getMostRecentAssistantMessage(Array.isArray(historySource) ? historySource : []);
+  const text = normalizeMessageContent(message?.promptContent || message?.content || '');
+  const markerPrompt = String(text || '').match(IMAGE_GEN_PATTERN)?.[1]?.trim();
+  const cleaned = cleanImagePrompt(markerPrompt || '');
+  return cleaned ? cleaned.slice(0, 900) : '';
 }
 
 function getLatestGeneratedVideoPrompt(historySource = []) {
-  const source = Array.isArray(historySource) ? historySource : [];
-  for (let index = source.length - 1; index >= 0; index -= 1) {
-    const message = source[index];
-    if (message?.role !== 'assistant') continue;
-    const text = normalizeMessageContent(message?.promptContent || message?.content || '');
-    const markerPrompt = String(text || '').match(VIDEO_GEN_PATTERN)?.[1]?.trim();
-    if (!markerPrompt) continue;
-    const cleaned = cleanVideoPrompt(markerPrompt);
-    if (cleaned) return cleaned.slice(0, 900);
-  }
-  return '';
+  const message = getMostRecentAssistantMessage(Array.isArray(historySource) ? historySource : []);
+  const text = normalizeMessageContent(message?.promptContent || message?.content || '');
+  const markerPrompt = String(text || '').match(VIDEO_GEN_PATTERN)?.[1]?.trim();
+  const cleaned = cleanVideoPrompt(markerPrompt || '');
+  return cleaned ? cleaned.slice(0, 900) : '';
 }
 
 function isImageRefinementFollowup(text = '') {
@@ -765,13 +758,6 @@ function needsRecentConversationContext(text = '', historySource = []) {
   if (SHORT_CONTEXT_FOLLOWUP_PATTERN.test(value)) return true;
   const wordCount = value.split(/\s+/).filter(Boolean).length;
   return wordCount <= 5 && /[?!]$/.test(value) && !/^\s*(hi|hello|hey|thanks|thank\s+you)\b/i.test(value);
-}
-
-function isSimpleGreeting(text = '') {
-  const value = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!value) return false;
-  const wordCount = value.split(/\s+/).filter(Boolean).length;
-  return wordCount <= 6 && SIMPLE_GREETING_PATTERN.test(value);
 }
 
 function buildModelHistory(historySource = [], promptInterpretation = {}, { isGreeting = false } = {}) {
@@ -1237,6 +1223,11 @@ export default function useChat() {
         if (wantsVideoRefinementFollowup) {
           wantsVideoGeneration = true;
         }
+        const allowedModelTools = selectModelTools({
+          disableTools: simpleGreeting,
+          allowImageGeneration: wantsImageGeneration,
+          allowVideoGeneration: wantsVideoGeneration,
+        });
 
         const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: simpleGreeting });
 
@@ -1264,7 +1255,12 @@ export default function useChat() {
         // Always prepend the Mira identity preamble. Without this the model
         // has no anchor and will treat a bare-noun prompt ("Algaetree?") as
         // an identity assignment.
-        const userSystemPrompt = [MIRA_IDENTITY_PROMPT, responsePreferencesBlock, adaptiveContext]
+        const modalityBoundary = wantsImageGeneration
+          ? 'CURRENT TURN MODE: The user explicitly requested image generation or refinement. Image generation is allowed for this turn.'
+          : wantsVideoGeneration
+            ? 'CURRENT TURN MODE: The user explicitly requested video generation or refinement. Video generation is allowed for this turn.'
+            : 'CURRENT TURN MODE: Respond in text. Do not generate or refine images or videos, do not call media-generation tools, and do not carry a prior media task into this turn.';
+        const userSystemPrompt = [MIRA_IDENTITY_PROMPT, modalityBoundary, responsePreferencesBlock, adaptiveContext]
           .filter(Boolean)
           .join('\n\n');
 
@@ -1303,6 +1299,15 @@ export default function useChat() {
           messageId: assistantMsgId,
           content: '',
         };
+
+        if (simpleGreeting) {
+          const greetingResponse = buildGreetingResponse(content);
+          await updateMessage(convId, assistantMsgId, { content: greetingResponse });
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId ? { ...message, content: greetingResponse } : message
+          )));
+          return;
+        }
 
         // ── Prompt enhancer / clarification gate ──
         // Before dispatching the main request, ask the same model to
@@ -1834,6 +1839,7 @@ export default function useChat() {
               images,
               {
                 think: shouldThink,
+                tools: allowedModelTools,
                 ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                 onThinking: (accumulated) => {
                   if (!isCurrentRun()) return;
@@ -1918,7 +1924,52 @@ export default function useChat() {
             return;
           }
 
-          const finalToolCall = requestedToolCall || extractToolCall(fullText);
+          const proposedToolCall = requestedToolCall || extractToolCall(fullText);
+          const disallowedMediaTool = (
+            proposedToolCall?.name === TOOL_NAMES.IMAGE && !wantsImageGeneration
+          ) || (
+            proposedToolCall?.name === TOOL_NAMES.VIDEO && !wantsVideoGeneration
+          );
+          if (disallowedMediaTool) {
+            diagnosticWarn('tool', 'ignored media tool without current-turn media intent', {
+              runId,
+              tool: proposedToolCall.name,
+            });
+            const visibleAnswer = stripAllControlText(fullText);
+            if (visibleAnswer.trim()) {
+              fullText = visibleAnswer;
+            } else if (!requestFailed && isCurrentRun()) {
+              const textOnlyHistory = history.map((message, index) => (
+                index === history.length - 1 && message.role === 'user'
+                  ? {
+                    ...message,
+                    content: `${message.content}\n\nTEXT-ONLY CORRECTION: Answer this current request directly in text. Do not call image or video generation and do not continue a prior media task.`,
+                  }
+                  : message
+              ));
+              let recoveredText = '';
+              try {
+                await sendChatMessage(
+                  textOnlyHistory,
+                  (accumulated) => {
+                    if (!isCurrentRun()) return;
+                    recoveredText = stripAllControlText(accumulated);
+                    flushStreamingContent(recoveredText);
+                  },
+                  images,
+                  {
+                    think: shouldThink,
+                    tools: allowedModelTools,
+                    ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
+                  },
+                );
+                if (recoveredText.trim()) fullText = recoveredText.trim();
+              } catch (recoveryError) {
+                console.warn('Text-only media correction failed:', recoveryError?.message);
+              }
+            }
+          }
+          const finalToolCall = disallowedMediaTool ? null : proposedToolCall;
           const browserInspection = requestedBrowserInspection
             || toLegacyBrowserRequest(finalToolCall)
             || extractBrowserRequest(fullText);
@@ -1945,6 +1996,7 @@ export default function useChat() {
                 images,
                 {
                   think: shouldThink,
+                  tools: allowedModelTools,
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
@@ -1982,7 +2034,7 @@ export default function useChat() {
                     [{ role: 'user', content: `Complete this task carefully and return the tangible finished output:\n\n${goal}` }],
                     (accumulated) => { result = accumulated; },
                     [],
-                    { think: true },
+                    { think: true, tools: allowedModelTools },
                   );
                   return result;
                 },
@@ -2002,6 +2054,7 @@ export default function useChat() {
                 images,
                 {
                   think: shouldThink,
+                  tools: allowedModelTools,
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
@@ -2134,6 +2187,7 @@ export default function useChat() {
                     images,
                     {
                       think: shouldThink,
+                      tools: allowedModelTools,
                       ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                       onThinking: (accumulated) => {
                         if (!isCurrentRun()) return;
@@ -2232,6 +2286,7 @@ export default function useChat() {
                 images,
                 {
                   think: true,
+                  tools: allowedModelTools,
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;

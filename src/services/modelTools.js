@@ -41,3 +41,17 @@ export const MODEL_TOOLS = [
     prompt: { type: 'string', description: 'A complete video generation prompt.' },
   }, ['prompt']),
 ];
+
+export function selectModelTools({
+  disableTools = false,
+  allowImageGeneration = false,
+  allowVideoGeneration = false,
+} = {}) {
+  if (disableTools) return [];
+  return MODEL_TOOLS.filter((tool) => {
+    const name = tool?.function?.name;
+    if (name === 'image.generate') return allowImageGeneration;
+    if (name === 'video.generate') return allowVideoGeneration;
+    return true;
+  });
+}
