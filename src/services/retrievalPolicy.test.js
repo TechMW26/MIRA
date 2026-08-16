@@ -18,6 +18,10 @@ test('fetches media only for explicit or image-grounded media needs', () => {
     search: true,
     includeMedia: true,
   });
+  assert.deepEqual(decideRetrievalPolicy({ engineNeedsSearch: true, contextualMedia: true }), {
+    search: true,
+    includeMedia: true,
+  });
 });
 
 test('website inspection and greetings bypass generic retrieval', () => {

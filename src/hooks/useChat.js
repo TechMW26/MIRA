@@ -1395,9 +1395,12 @@ export default function useChat() {
             mediaRequested: wantsMediaGallery,
             visualSearch: shouldUseVisualAnchor,
             contextualSearch: shouldUseContextualSearch,
-            contextualMedia: shouldAttachContextualMedia,
+            contextualMedia: shouldAttachContextualMedia || Boolean(textResearchMediaScope),
           });
           const effectiveWebSearch = retrievalPolicy.search;
+          const responseModelTools = effectiveWebSearch
+            ? allowedModelTools.filter((tool) => tool?.function?.name !== TOOL_NAMES.WEB_SEARCH)
+            : allowedModelTools;
           if (websiteInspectionRequest) {
             diagnosticLog('browser', 'website inspection intent takes precedence over web search', {
               runId,
@@ -1568,7 +1571,12 @@ export default function useChat() {
               const includeMedia = retrievalPolicy.includeMedia;
               const visualScope = visualSearchAnchor ? buildVisualSearchScope(visualSearchAnchor, content) : null;
               const freshnessRequested = needsFreshInformation(content) || needsFreshInformation(searchQuery);
-              const searchPayload = { query: searchQuery, includeMedia, freshness: freshnessRequested };
+              const searchPayload = {
+                query: searchQuery,
+                includeMedia,
+                freshness: freshnessRequested,
+                requireTextResults: !wantsOnlyMediaGallery,
+              };
               diagnosticLog('search', 'router search query prepared', {
                 runId,
                 query: String(searchQuery).slice(0, 180),
@@ -1698,7 +1706,7 @@ export default function useChat() {
               if (realVideos.length || realImages.length || realArticles.length) {
                 if (shouldAttachRelatedMedia) {
                   mediaForMessage = {
-                    videos: wantsMediaGallery ? realVideos : [],
+                    videos: realVideos,
                     images: realImages,
                     articles: realArticles,
                     query: mediaQueryForMessage,
@@ -1876,7 +1884,7 @@ export default function useChat() {
               images,
               {
                 think: shouldThink,
-                tools: allowedModelTools,
+                tools: responseModelTools,
                 ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                 onThinking: (accumulated) => {
                   if (!isCurrentRun()) return;
@@ -1928,16 +1936,54 @@ export default function useChat() {
               fullText = `[WEB_SEARCH: ${requestedWebSearchQuery}]`;
             } else if (groundingSearchData?.results?.length) {
               requestFailed = false;
-              fullText = buildEvidenceFallbackAnswer(
-                groundingSearchData,
-                groundingSearchQuery || content,
-              );
-              diagnosticWarn('search', 'model failed after retrieval; using evidence fallback', {
+              diagnosticWarn('search', 'model failed after retrieval; retrying grounded synthesis', {
                 runId,
                 query: String(groundingSearchQuery || content).slice(0, 180),
                 resultCount: groundingSearchData.results.length,
                 error: err?.message || 'Unknown generation error',
               });
+              cancelPendingStreamFlushes();
+              setStreamingContent('');
+              setThinkingContent('');
+              try {
+                const retryHistory = history.map((message, index) => (
+                  index === history.length - 1 && message.role === 'user'
+                    ? {
+                      ...message,
+                      content: `${message.content}\n\nSYNTHESIS RETRY: Study the supplied search evidence, then answer the original question in your own words. Start with a simple direct summary, synthesize facts instead of copying snippets, and do not expose raw search payloads, HTML, internal controls, or tool arguments.`,
+                    }
+                    : message
+                ));
+                let groundedRetry = '';
+                await sendChatMessage(
+                  retryHistory,
+                  (accumulated) => {
+                    if (!isCurrentRun()) return;
+                    groundedRetry = stripAllControlText(accumulated);
+                    flushStreamingContent(groundedRetry);
+                  },
+                  images,
+                  {
+                    think: false,
+                    tools: [],
+                    ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
+                  },
+                );
+                fullText = groundedRetry.trim() || buildEvidenceFallbackAnswer(
+                  groundingSearchData,
+                  groundingSearchQuery || content,
+                );
+              } catch (retryError) {
+                fullText = buildEvidenceFallbackAnswer(
+                  groundingSearchData,
+                  groundingSearchQuery || content,
+                );
+                diagnosticWarn('search', 'grounded synthesis retry failed; using concise fallback', {
+                  runId,
+                  query: String(groundingSearchQuery || content).slice(0, 180),
+                  error: retryError?.message || 'Unknown generation error',
+                });
+              }
             } else {
               requestFailed = true;
               fullText = fullText || `Sorry, something went wrong: ${err.message}`;
@@ -1996,7 +2042,7 @@ export default function useChat() {
                   images,
                   {
                     think: shouldThink,
-                    tools: allowedModelTools,
+                    tools: responseModelTools,
                     ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   },
                 );
@@ -2033,7 +2079,7 @@ export default function useChat() {
                 images,
                 {
                   think: shouldThink,
-                  tools: allowedModelTools,
+                  tools: responseModelTools,
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
@@ -2121,7 +2167,7 @@ export default function useChat() {
                   think: shouldThink,
                   tools: isTaskResult
                     ? []
-                    : allowedModelTools.filter((tool) => tool?.function?.name !== finalToolCall.name),
+                    : responseModelTools.filter((tool) => tool?.function?.name !== finalToolCall.name),
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
@@ -2262,8 +2308,8 @@ export default function useChat() {
                     },
                     images,
                     {
-                      think: shouldThink,
-                      tools: allowedModelTools,
+                      think: false,
+                      tools: [],
                       ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                       onThinking: (accumulated) => {
                         if (!isCurrentRun()) return;
@@ -2362,7 +2408,7 @@ export default function useChat() {
                 images,
                 {
                   think: true,
-                  tools: allowedModelTools,
+                  tools: responseModelTools,
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;

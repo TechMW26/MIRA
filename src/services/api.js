@@ -82,7 +82,19 @@ function parseToolArguments(value) {
     const parsed = JSON.parse(value);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch {
-    return {};
+    // Some local tool-capable models wrap string values in repeated quotes
+    // (for example {"query":"""algae tree"""}). Repair only that narrow
+    // shape so malformed tool arguments remain hidden and executable.
+    const repaired = value.replace(
+      /:\s*"{2,}\s*([^"\r\n]*?)\s*"{2,}\s*(?=[,}])/g,
+      (_, content) => `:${JSON.stringify(content.trim())}`,
+    );
+    try {
+      const parsed = JSON.parse(repaired);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
   }
 }
 
@@ -100,6 +112,12 @@ export function toolCallsToControl(toolCalls = []) {
 export function extractChatText(payload) {
   if (!payload || typeof payload !== 'object') return '';
 
+  // A native tool call takes precedence over any companion content. Several
+  // providers echo raw function arguments into `content`; rendering that text
+  // leaks internal controls and prevents the host from executing the call.
+  const nativeToolCalls = extractToolCalls(payload);
+  if (nativeToolCalls.length) return toolCallsToControl(nativeToolCalls);
+
   const candidates = [
     payload.text,
     payload.result,
@@ -110,7 +128,6 @@ export function extractChatText(payload) {
     payload.choices?.[0]?.delta?.content,
     payload.choices?.[0]?.message?.content,
     payload.choices?.[0]?.text,
-    toolCallsToControl(extractToolCalls(payload)),
   ];
 
   for (const candidate of candidates) {

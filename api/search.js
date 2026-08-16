@@ -7,18 +7,32 @@ import {
   normalizePublishedAt,
   rankFreshResults,
 } from './_searchFreshness.js';
-import { fuseSearchProviders } from '../src/services/searchRelevance.js';
+import { expandCompoundWords, fuseSearchProviders } from '../src/services/searchRelevance.js';
 
 const BRAVE_KEY = process.env.BRAVE_SEARCH_API_KEY;
 const GOOGLE_KEY = process.env.GOOGLE_SEARCH_API_KEY;
 const GOOGLE_CX = process.env.GOOGLE_SEARCH_CX;
 
+function cleanRssText(value = '') {
+  return String(value || '')
+    .replace(/<!\[CDATA\[|\]\]>/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&quot;|&#34;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function parseRSS(xml) {
   const items = [];
   const blocks = xml.split('<item>').slice(1);
   for (const block of blocks) {
-    const title = block.match(/<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/s)?.[1]?.trim() || '';
-    const desc = block.match(/<description[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/description>/s)?.[1]?.replace(/<[^>]+>/g, '').trim() || '';
+    const title = cleanRssText(block.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '');
+    const desc = cleanRssText(block.match(/<description[^>]*>([\s\S]*?)<\/description>/i)?.[1] || '');
     const rawLink = block.match(/<link>([^<]+)<\/link>/)?.[1]?.trim()
       || block.match(/<guid[^>]*>([^<]+)<\/guid>/)?.[1]?.trim() || '';
     const publishedAt = normalizePublishedAt(
@@ -112,8 +126,8 @@ function extractAnchorPhrase(value = '') {
   return text.split(/[,;|:()]/)[0].trim().split(/\s+/).slice(0, 4).join(' ');
 }
 
-function buildAnchorScope(anchor = '') {
-  const phrase = extractAnchorPhrase(anchor);
+export function buildAnchorScope(anchor = '') {
+  const phrase = expandCompoundWords(extractAnchorPhrase(anchor));
   const terms = Array.from(new Set(searchTokens(phrase || anchor))).slice(0, 6);
   return { phrase, phraseNorm: normalizeSearchText(phrase), terms };
 }

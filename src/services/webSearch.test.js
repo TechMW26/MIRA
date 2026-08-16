@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildEvidenceFallbackAnswer,
   buildSearchRetryQueries,
+  cleanSearchEvidenceText,
   isSearchResultRelevant,
   searchWeb,
 } from './webSearch.js';
@@ -45,15 +46,25 @@ test('extracts the subject from a Hinglish research question', () => {
 test('builds a readable evidence answer when model regeneration fails', () => {
   const answer = buildEvidenceFallbackAnswer({
     results: [{
-      title: 'Bhopal installs an algae tree',
-      snippet: 'The installation uses microalgae to absorb carbon dioxide.',
+      title: '<b>Bhopal installs an algae tree</b>',
+      snippet: '<a href="https://example.com">The installation</a> uses microalgae to absorb carbon dioxide.',
       publishedAt: '2026-05-11',
       url: 'https://example.com/algae-tree',
     }],
   }, 'algae tree');
-  assert.match(answer, /live search found/i);
+  assert.match(answer, /## Summary/);
+  assert.match(answer, /uses microalgae to absorb carbon dioxide/);
+  assert.match(answer, /## Sources/);
   assert.match(answer, /Bhopal installs an algae tree/);
   assert.match(answer, /\[Bhopal installs an algae tree\]\(https:\/\/example\.com\/algae-tree\)/);
+  assert.doesNotMatch(answer, /<a|href=/i);
+});
+
+test('cleans provider markup and raw URLs before grounding the model', () => {
+  assert.equal(
+    cleanSearchEvidenceText('<a href="https://example.com">AlgaeTree</a> captures CO&#8322;. https://example.com/raw'),
+    'AlgaeTree captures CO₂.',
+  );
 });
 
 test('retries transient failures before succeeding', async () => {
@@ -104,6 +115,34 @@ test('retries an empty response with a simplified query', async () => {
     }, { attemptsPerQuery: 1 });
     assert.ok(queries.includes('India most expensive yacht'));
     assert.equal(result.results[0].title, "India's most expensive yacht");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('does not stop at media-only results when a researched answer requires text evidence', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({
+      results: calls === 1 ? [] : [{
+        title: 'Algae Tree captures urban carbon',
+        snippet: 'The installation circulates microalgae to absorb carbon dioxide.',
+        url: 'https://example.com/algae-tree',
+      }],
+      media: { videos: [{ title: 'AlgaeTree demonstration', url: 'https://youtube.com/watch?v=test' }], images: [] },
+    }), { status: 200 });
+  };
+
+  try {
+    const result = await searchWeb({
+      query: 'AlgaeTree',
+      includeMedia: true,
+      requireTextResults: true,
+    }, { attemptsPerQuery: 1 });
+    assert.equal(calls, 2);
+    assert.equal(result.results[0].title, 'Algae Tree captures urban carbon');
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -23,3 +23,21 @@ test('never renders native tool-selection labels or unsupported tools', () => {
     message: { tool_calls: [{ function: { name: 'web.search', arguments: '{"query":"Mira"}' } }] },
   }).includes('Using tools'), false);
 });
+
+test('native tool calls override leaked malformed argument content', () => {
+  const control = extractChatText({
+    message: {
+      content: '{"query":"""algae tree"""}',
+      tool_calls: [{
+        function: { name: 'web.search', arguments: '{"query":"""algae tree"""}' },
+      }],
+    },
+  });
+
+  assert.deepEqual(extractToolCall(control), {
+    name: 'web.search',
+    arguments: { query: 'algae tree' },
+    raw: control,
+  });
+  assert.equal(stripToolControl(control), '');
+});
