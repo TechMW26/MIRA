@@ -9,8 +9,8 @@ const UPSTREAM_RETRY_ATTEMPTS = 3;
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
 const SAFE_MODEL_CHAIN = ['flux', 'flux-schnell', 'flux-realism', 'flux-pro', 'seedream-pro'];
 const NSFW_PROMPT_PATTERN = /\b(nude|nudity|naked|explicit|erotic|porn|pornographic|xxx|18\+|lewd|nsfw|genitals?|penis|vagina|sex|sexual|breasts?|nipples?)\b/i;
+const INVALID_PROMPT_PATTERN = /(?:^|\[)(?:using tools?|mira_tool)|^(?:\.{2,}|…+|image|picture|photo|generated image)$/i;
 const SAFE_NEGATIVE_PROMPT = 'nsfw, nude, naked, explicit, erotic, porn, sexual content, genitalia, breasts, nipples';
-const SAFE_SUFFIX = 'family-friendly, non-sexual, no nudity, fully clothed, safe for work';
 const POLLINATIONS_HOSTS = ['https://gen.pollinations.ai', 'https://image.pollinations.ai'];
 
 function sleep(ms) {
@@ -79,7 +79,7 @@ function buildPollinationsUrl({ prompt, model, seed, width, height, host = 'http
     width: String(width),
     height: String(height),
     nologo: 'true',
-    enhance: 'true',
+    enhance: 'false',
     model,
     seed: String(seed || 1),
   });
@@ -97,13 +97,7 @@ function getModelAttemptOrder() {
 }
 
 function buildSafePrompt(prompt = '') {
-  const value = compactPrompt(prompt);
-  if (!value) return value;
-  const lower = value.toLowerCase();
-  if (lower.includes('safe for work') || lower.includes('no nudity') || lower.includes('family-friendly')) {
-    return value;
-  }
-  return `${value}, ${SAFE_SUFFIX}`;
+  return compactPrompt(prompt);
 }
 
 export async function GET(req) {
@@ -114,6 +108,13 @@ export async function GET(req) {
     return new Response(JSON.stringify({ error: 'Missing prompt' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (rawPrompt.length < 3 || INVALID_PROMPT_PATTERN.test(rawPrompt)) {
+    return new Response(JSON.stringify({ error: 'The image prompt is incomplete.' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
   }
 

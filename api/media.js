@@ -4,6 +4,7 @@ const RETENTION_DAYS = 30;
 const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const MAX_PROMPT_CHARS = 900;
 const NSFW_PROMPT_PATTERN = /\b(nude|nudity|naked|explicit|erotic|porn|pornographic|xxx|18\+|lewd|nsfw|genitals?|penis|vagina|sex|sexual|breasts?|nipples?)\b/i;
+const INVALID_PROMPT_PATTERN = /(?:^|\[)(?:using tools?|mira_tool)|^(?:\.{2,}|…+|image|picture|photo|generated image)$/i;
 
 function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -18,6 +19,15 @@ function cleanPrompt(value = '') {
 
 function safeId(value = '') {
   return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
+}
+
+function promptSeed(value = '') {
+  let hash = 2166136261;
+  for (const char of String(value || '')) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 999999) + 1;
 }
 
 function buildImagePath({ userId, conversationId, messageId }) {
@@ -59,12 +69,16 @@ async function handlePersistImage(req, body) {
   const messageId = safeId(body?.messageId || '');
 
   if (!prompt) return json({ error: 'Missing prompt' }, 400);
+  if (prompt.length < 3 || INVALID_PROMPT_PATTERN.test(prompt)) {
+    return json({ error: 'The generated image prompt is incomplete.' }, 400);
+  }
   if (!userId || !conversationId || !messageId) {
     return json({ error: 'userId, conversationId and messageId are required' }, 400);
   }
 
   const model = String(body?.model || 'flux').trim().toLowerCase();
-  const seed = Number(body?.seed || 1) || 1;
+  const suppliedSeed = Number(body?.seed);
+  const seed = Number.isFinite(suppliedSeed) && suppliedSeed > 0 ? suppliedSeed : promptSeed(prompt);
   const width = Number(body?.width || 1280) || 1280;
   const height = Number(body?.height || 1280) || 1280;
   const unsafe = body?.unsafe === true || body?.unsafe === '1';

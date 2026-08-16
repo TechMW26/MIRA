@@ -66,6 +66,11 @@ import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '
 import { MIRA_IDENTITY_PROMPT } from '../config/systemPrompt';
 import { diagnosticLog, diagnosticWarn } from '../services/diagnostics.js';
 import { decideRetrievalPolicy } from '../services/retrievalPolicy.js';
+import {
+  cleanImagePrompt,
+  imagePromptSeed,
+  normalizeImageGenerationOutput,
+} from '../services/imagePrompt.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 
@@ -491,18 +496,6 @@ function indicatesLowConfidence(text = '') {
   return indicatesKnowledgeGap(value) || LOW_CONFIDENCE_PATTERN.test(value);
 }
 
-function cleanImagePrompt(text = '') {
-  return String(text || '')
-    .replace(/\[IMAGE_GEN(?:\:\s*|\]\s*)/gi, '')
-    .replace(/\]$/g, '')
-    .replace(/^generated\s+an\s+image\s+from\s+(?:this\s+)?(?:refined\s+)?prompt[:\s-]*/i, '')
-    .replace(/^create\s+a\s+concise\s+but\s+highly\s+detailed\s+visual\s+prompt[:\s-]*/i, '')
-    .replace(/^image\s+generation\s+request[:\s-]*/i, '')
-    .replace(/^(sure|okay|absolutely|here'?s|here is|i can|i will)[\s,:-]+/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 function cleanVideoPrompt(text = '') {
   return String(text || '')
     .replace(/\[VIDEO_GEN(?:\:\s*|\]\s*)/gi, '')
@@ -513,24 +506,6 @@ function cleanVideoPrompt(text = '') {
     .replace(/^(sure|okay|absolutely|here'?s|here is|i can|i will)[\s,:-]+/i, '')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function normalizeImageGenerationOutput(modelText, userText, previousPrompt = '') {
-  const markerPrompt = modelText?.match(IMAGE_GEN_PATTERN)?.[1]?.trim();
-  const currentPrompt = cleanImagePrompt(markerPrompt || modelText || userText);
-  const priorPrompt = cleanImagePrompt(previousPrompt);
-  const correctionText = cleanImagePrompt(userText);
-
-  let prompt = currentPrompt || priorPrompt || correctionText;
-  if (priorPrompt && correctionText) {
-    const sameAsPrevious = currentPrompt && cleanImagePrompt(currentPrompt) === priorPrompt;
-    if (!sameAsPrevious) {
-      prompt = `${priorPrompt}, ${correctionText}`.replace(/\s+/g, ' ').trim();
-    }
-  }
-
-  const fallback = 'A high-quality, detailed image based on the user request';
-  return `[IMAGE_GEN: ${prompt || fallback}]`;
 }
 
 function normalizeVideoGenerationOutput(modelText, userText, previousPrompt = '') {
@@ -574,7 +549,7 @@ async function persistGeneratedImageAsset({ prompt, userId, conversationId, mess
       messageId,
       width: 1280,
       height: 1280,
-      seed: 1,
+      seed: imagePromptSeed(cleanPrompt),
     }),
   });
 
