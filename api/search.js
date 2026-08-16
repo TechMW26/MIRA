@@ -7,6 +7,7 @@ import {
   normalizePublishedAt,
   rankFreshResults,
 } from './_searchFreshness.js';
+import { fuseSearchProviders } from '../src/services/searchRelevance.js';
 
 const BRAVE_KEY = process.env.BRAVE_SEARCH_API_KEY;
 const GOOGLE_KEY = process.env.GOOGLE_SEARCH_API_KEY;
@@ -41,15 +42,24 @@ function parseRSS(xml) {
 async function searchBrave(query, fresh = false, window = freshnessWindow(query)) {
   if (!BRAVE_KEY) return null;
   try {
+    const params = new URLSearchParams({
+      q: query,
+      count: '10',
+      search_lang: 'en',
+      safesearch: 'moderate',
+      spellcheck: 'true',
+      extra_snippets: 'true',
+      ...(fresh ? { freshness: window.brave } : {}),
+    });
     const res = await fetch(
-      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=10&search_lang=en${fresh ? `&freshness=${window.brave}` : ''}`,
+      `https://api.search.brave.com/res/v1/web/search?${params}`,
       { headers: { 'Accept': 'application/json', 'X-Subscription-Token': BRAVE_KEY }, signal: AbortSignal.timeout(8000) }
     );
     if (!res.ok) return null;
     const data = await res.json();
     const results = (data?.web?.results || []).map(r => ({
       title: r.title,
-      snippet: r.description || r.title,
+      snippet: [r.description, ...(Array.isArray(r.extra_snippets) ? r.extra_snippets.slice(0, 2) : [])].filter(Boolean).join(' '),
       url: r.url,
       ...(normalizePublishedAt(r.page_age || r.age || r.published || '') ? { publishedAt: normalizePublishedAt(r.page_age || r.age || r.published || '') } : {}),
     })).filter(r => r.snippet);
@@ -61,7 +71,7 @@ async function searchGoogle(query, fresh = false, window = freshnessWindow(query
   if (!GOOGLE_KEY || !GOOGLE_CX) return null;
   try {
     const res = await fetch(
-      `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(query)}&num=10${fresh ? `&dateRestrict=${window.google}&sort=date` : ''}`,
+      `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(query)}&num=10&safe=active&hl=en${fresh ? `&dateRestrict=${window.google}&sort=date` : ''}`,
       { signal: AbortSignal.timeout(8000) }
     );
     if (!res.ok) return null;
@@ -593,7 +603,7 @@ async function searchBingImages(query, anchorScope = null, strictAnchor = false)
 
 export async function POST(req) {
   try {
-    const { query, includeMedia = true, mediaQuery, anchor, strictAnchor = false, freshness = false } = await req.json();
+    const { query, relevanceQuery, includeMedia = true, mediaQuery, anchor, strictAnchor = false, freshness = false } = await req.json();
     if (!query?.trim()) return new Response(JSON.stringify({ error: 'Query required', results: [] }), { status: 400 });
     const searchQuery = query.trim();
     const mediaSearchQuery = String(mediaQuery || searchQuery).trim();
@@ -602,7 +612,7 @@ export async function POST(req) {
     const fresh = detectFreshnessIntent(searchQuery, freshness);
     const window = freshnessWindow(searchQuery);
 
-    const [brave, google, bingWeb, bing, gnews, ddg, ddgHtml] = await Promise.all([
+    const [brave, google, bingWeb, bing, gnews, ddg, ddgHtml, videos, bingImages, instagram] = await Promise.all([
       searchBrave(searchQuery, fresh, window),
       searchGoogle(searchQuery, fresh, window),
       searchBingWeb(searchQuery),
@@ -610,41 +620,37 @@ export async function POST(req) {
       searchGoogleNews(searchQuery),
       searchDDG(searchQuery),
       searchDDGHtml(searchQuery),
-    ]);
-
-    // Media sources always run (YouTube, images, Instagram)
-    const [videos, bingImages, instagram] = await Promise.all([
       shouldFetchMedia ? searchYouTube(mediaSearchQuery, anchorScope, strictAnchor) : Promise.resolve(null),
       shouldFetchMedia ? searchBingImages(mediaSearchQuery, anchorScope, strictAnchor) : Promise.resolve(null),
       shouldFetchMedia ? searchInstagram(mediaSearchQuery) : Promise.resolve(null),
     ]);
 
-    // Decide the primary `results` list.
-    let results;
-    let source;
-    if (fresh) {
-      results = rankFreshResults([...(brave || []), ...(google || []), ...(bing || []), ...(gnews || []), ...(bingWeb || [])], window);
-      source = results.length ? 'fresh-mixed' : 'none';
-    } else if (brave?.length) { results = brave.slice(0, 6); source = 'brave'; }
-    else if (google?.length) { results = google.slice(0, 6); source = 'google'; }
-    else {
-      const merged = [...(ddgHtml || []), ...(ddg || []), ...(bingWeb || []), ...(bing || []), ...(gnews || [])];
-      const seen = new Set();
-      results = merged.filter(r => {
-        const key = r.title.toLowerCase().slice(0, 40);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      }).slice(0, 6);
-      source = results.length ? (ddgHtml?.length ? 'duckduckgo-html+rss' : 'news-rss') : 'none';
-    }
+    const providerGroups = [
+      { provider: 'brave', results: brave, weight: 3 },
+      { provider: 'google', results: google, weight: 3 },
+      { provider: 'duckduckgo-html', results: ddgHtml, weight: 2 },
+      { provider: 'duckduckgo', results: ddg, weight: 2 },
+      { provider: 'bing-web', results: bingWeb, weight: 1.5 },
+      { provider: 'bing-news', results: bing, weight: fresh ? 2.5 : 1 },
+      { provider: 'google-news', results: gnews, weight: fresh ? 2.5 : 1 },
+    ];
+    const rankingQuery = String(relevanceQuery || anchor || searchQuery).trim();
+    let results = fuseSearchProviders(providerGroups, rankingQuery, 10);
+    if (fresh) results = rankFreshResults(results, window);
+    else results = results.slice(0, 8);
+    const activeProviders = providerGroups.filter((group) => group.results?.length).map((group) => group.provider);
+    const source = results.length ? `fused:${activeProviders.join('+')}` : 'none';
 
     if (strictAnchor) {
       results = filterByAnchor(results, anchorScope, (r) => `${r.title || ''} ${r.snippet || ''} ${r.url || ''}`, true);
     }
 
-    // Drop dead/404 article URLs before sending them to the model or UI.
-    results = await validateUrls(results);
+    // Validate article URLs and enrich media concurrently to keep latency bounded.
+    const [validatedResults, og] = await Promise.all([
+      validateUrls(results),
+      shouldFetchMedia ? enrichFromArticles(results) : Promise.resolve({ images: [], videos: [] }),
+    ]);
+    results = validatedResults;
 
     let resolvedBingImages = bingImages || [];
     if (shouldFetchMedia && strictAnchor) {
@@ -657,7 +663,6 @@ export async function POST(req) {
       }
     }
 
-    const og = await enrichFromArticles(results);
     const articleMedia = highConfidenceMedia(
       results,
       anchorScope,

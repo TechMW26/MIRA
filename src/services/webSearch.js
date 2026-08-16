@@ -1,16 +1,11 @@
 import { diagnosticError, diagnosticLog, diagnosticWarn } from './diagnostics.js';
+import {
+  buildSearchQueryVariants,
+  extractSearchSubject,
+  rankSearchResults,
+} from './searchRelevance.js';
 
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
-const SEARCH_INTENT_PREFIX = /^(?:what|who|where|when|why|how|which|search|find|look\s+up|check|tell\s+me\s+about|give\s+me\s+(?:information|details)\s+(?:about|on))\s+/i;
-const RELEVANCE_STOPWORDS = new Set([
-  'the', 'a', 'an', 'of', 'to', 'for', 'in', 'on', 'with', 'and', 'or', 'is', 'are',
-  'was', 'were', 'what', 'who', 'where', 'when', 'why', 'how', 'which', 'most',
-  'latest', 'current', 'currently', 'recent', 'newest', 'today', 'please', 'about',
-  'expensive', 'cheap', 'cheapest', 'best', 'largest', 'smallest', 'biggest',
-  'highest', 'lowest', 'top', 'popular', 'famous',
-  'mujhe', 'mere', 'mera', 'meri', 'ke', 'ki', 'ka', 'baare', 'mein', 'me',
-  'batao', 'bata', 'details', 'jaankari', 'jankari', 'kuch',
-]);
 
 const QUERY_NORMALIZATIONS = [
   [/\byatch\b/gi, 'yacht'],
@@ -32,21 +27,13 @@ export function buildSearchRetryQueries(query = '', freshness = false) {
   ).replace(/\s+/g, ' ').trim();
   const original = normalized || raw;
   if (!original) return [];
-
-  const cleaned = original
-    .replace(/[?!.]+$/g, '')
-    .replace(SEARCH_INTENT_PREFIX, '')
+  const cleaned = extractSearchSubject(original)
     .replace(/^(?:mujhe|mere\s+ko)\s+/i, '')
     .replace(/\s+ke\s+baare\s+(?:me|mein)\b[\s\S]*$/i, '')
     .replace(/\s+(?:ke\s+)?(?:current\s+)?(?:verified\s+)?details?\s+batao\b[\s\S]*$/i, '')
     .replace(/\s+(?:kuch\s+)?batao\b[\s\S]*$/i, '')
-    .replace(/^(?:is|are|was|were)\s+/i, '')
-    .replace(/^(?:the|a|an)\s+/i, '')
     .trim();
-  const withoutFillers = cleaned
-    .replace(/\b(?:please|kindly|information|details|about)\b/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const withoutFillers = cleaned.replace(/\b(?:please|kindly|information|details|about)\b/gi, ' ').replace(/\s+/g, ' ').trim();
   const locationMatch = withoutFillers.match(/^(.{3,100}?)\s+in\s+([A-Za-z][A-Za-z .'-]{1,50})$/i);
   const locationFirst = locationMatch
     ? `${locationMatch[2].trim()} ${locationMatch[1].trim()}`
@@ -54,20 +41,16 @@ export function buildSearchRetryQueries(query = '', freshness = false) {
   const quotedLocation = locationMatch
     ? `"${locationMatch[1].trim()}" ${locationMatch[2].trim()}`
     : '';
-  const currentYear = new Date().getUTCFullYear();
   return Array.from(new Set([
-    raw,
-    original,
-    cleaned,
-    withoutFillers,
+    ...buildSearchQueryVariants(withoutFillers || original, freshness),
     quotedLocation,
     locationFirst,
-    freshness && !new RegExp(`\\b${currentYear}\\b`).test(withoutFillers) ? `${withoutFillers} ${currentYear}` : '',
-  ].filter((value) => value && value.length >= 3))).slice(0, freshness ? 5 : 4);
+    raw,
+  ].filter((value) => value && value.length >= 2))).slice(0, freshness ? 7 : 6);
 }
 
 export function buildEvidenceFallbackAnswer(payload = {}, query = '') {
-  const results = (Array.isArray(payload?.results) ? payload.results : [])
+  const results = rankSearchResults(payload?.results, query, 4)
     .filter((result) => result?.title && result?.snippet)
     .slice(0, 4);
   if (!results.length) {
@@ -76,7 +59,8 @@ export function buildEvidenceFallbackAnswer(payload = {}, query = '') {
 
   const details = results.map((result) => {
     const date = result.publishedAt ? ` (${result.publishedAt})` : '';
-    return `- **${result.title}**${date}: ${String(result.snippet).replace(/\s+/g, ' ').trim()}`;
+    const title = result.url ? `[${result.title}](${result.url})` : result.title;
+    return `- **${title}**${date}: ${String(result.snippet).replace(/\s+/g, ' ').trim()}`;
   });
   return `Here’s what the live search found about **${String(query || '').trim()}**:\n\n${details.join('\n')}`;
 }
@@ -92,33 +76,14 @@ async function readSearchResponse(response) {
   return payload || { results: [], media: { videos: [], images: [], articles: [] } };
 }
 
-function relevanceTokens(value = '') {
-  return Array.from(new Set(
-    String(value || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter((word) => word.length >= 3 && !RELEVANCE_STOPWORDS.has(word))
-  ));
-}
-
 export function isSearchResultRelevant(payload, query = '') {
-  const results = Array.isArray(payload?.results) ? payload.results : [];
-  if (!results.length) return false;
-  const tokens = relevanceTokens(query);
-  if (!tokens.length) return true;
-  const required = tokens.length >= 2 ? 2 : 1;
-  return results.some((result) => {
-    const text = `${result?.title || ''} ${result?.snippet || ''} ${result?.url || ''}`.toLowerCase();
-    const score = tokens.reduce((count, token) => count + (text.includes(token) ? 1 : 0), 0);
-    return score >= required;
-  });
+  return rankSearchResults(payload?.results, query, 1).length > 0;
 }
 
-function hasUsefulSearchData(payload, query) {
-  const hasMedia = (Array.isArray(payload?.media?.videos) && payload.media.videos.length)
+function hasUsefulSearchData(payload, query, includeMedia = false) {
+  const hasMedia = includeMedia && ((Array.isArray(payload?.media?.videos) && payload.media.videos.length)
     || (Array.isArray(payload?.media?.images) && payload.media.images.length)
-    || (Array.isArray(payload?.media?.articles) && payload.media.articles.length);
+    || (Array.isArray(payload?.media?.articles) && payload.media.articles.length));
   return Boolean(hasMedia || isSearchResultRelevant(payload, query));
 }
 
@@ -136,6 +101,7 @@ export async function searchWeb(payload = {}, options = {}) {
   let lastPayload = null;
   let lastError = null;
   let requestCount = 0;
+  const relevanceQuery = extractSearchSubject(payload?.anchor || payload?.query || '');
   diagnosticLog('search', 'search started', {
     query: String(payload?.query || '').slice(0, 180),
     freshness,
@@ -156,23 +122,27 @@ export async function searchWeb(payload = {}, options = {}) {
         const response = await fetch('/api/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, query }),
+          body: JSON.stringify({ ...payload, query, relevanceQuery }),
           signal,
         });
         const data = await readSearchResponse(response);
-        lastPayload = data;
-        if (hasUsefulSearchData(data, query)) {
+        const rankedData = {
+          ...data,
+          results: rankSearchResults(data?.results, relevanceQuery || payload.query, 8),
+        };
+        lastPayload = rankedData;
+        if (hasUsefulSearchData(rankedData, relevanceQuery || payload.query, Boolean(payload?.includeMedia))) {
           diagnosticLog('search', 'search completed', {
             queryUsed: String(query).slice(0, 180),
             attempts: requestCount,
-            source: data?.source || 'unknown',
-            resultCount: Array.isArray(data?.results) ? data.results.length : 0,
-            videoCount: Array.isArray(data?.media?.videos) ? data.media.videos.length : 0,
-            imageCount: Array.isArray(data?.media?.images) ? data.media.images.length : 0,
+            source: rankedData?.source || 'unknown',
+            resultCount: rankedData.results.length,
+            videoCount: Array.isArray(rankedData?.media?.videos) ? rankedData.media.videos.length : 0,
+            imageCount: Array.isArray(rankedData?.media?.images) ? rankedData.media.images.length : 0,
             elapsedMs: Date.now() - startedAt,
           });
           return {
-            ...data,
+            ...rankedData,
             searchMeta: {
               ...(data.searchMeta || {}),
               originalQuery: payload.query,
