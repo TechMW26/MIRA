@@ -68,6 +68,10 @@ import { diagnosticLog, diagnosticWarn } from '../services/diagnostics.js';
 import { decideRetrievalPolicy } from '../services/retrievalPolicy.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
+
+function stripAllControlText(text = '') {
+  return stripToolControl(stripBrowserControl(stripWebSearchControl(text)));
+}
 const HISTORY_ATTACHMENT_CHAR_LIMIT = 16000;
 const MAX_HISTORY_MESSAGES_FOR_MODEL = 24;
 const MAX_HISTORY_CHARS_FOR_MODEL = 18000;
@@ -1783,7 +1787,7 @@ export default function useChat() {
                   requestedWebSearchQuery = controlRequest.query;
                   setIsSearching(true);
                 }
-                const visibleText = stripToolControl(stripBrowserControl(stripWebSearchControl(accumulated)));
+                const visibleText = stripAllControlText(accumulated);
                 const controlPending = isPotentialToolControl(accumulated) || isPotentialWebSearchControl(accumulated) || isPotentialBrowserControl(accumulated);
                 if (!firstChunkSeen && visibleText && !controlRequest && !browserRequest && !toolCall) { firstChunkSeen = true; setIsSearching(false); }
                 fullText = accumulated;
@@ -1825,7 +1829,7 @@ export default function useChat() {
                     requestedWebSearchQuery = thinkingControlRequest.query;
                     setIsSearching(true);
                   }
-                  finalThinkingText = stripToolControl(stripBrowserControl(stripWebSearchControl(accumulated)));
+                  finalThinkingText = stripAllControlText(accumulated);
                   const visibleThinking = finalThinkingText;
                   if (!firstChunkSeen && visibleThinking) { firstChunkSeen = true; setIsSearching(false); }
                   flushThinkingContent(visibleThinking);
@@ -1897,7 +1901,7 @@ export default function useChat() {
                 history,
                 (accumulated) => {
                   if (!isCurrentRun()) return;
-                  inspectedAnswer = stripToolControl(stripBrowserControl(stripWebSearchControl(accumulated)));
+                  inspectedAnswer = stripAllControlText(accumulated);
                   flushStreamingContent(inspectedAnswer);
                 },
                 images,
@@ -1906,7 +1910,7 @@ export default function useChat() {
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
-                    finalThinkingText = stripToolControl(stripBrowserControl(stripWebSearchControl(accumulated)));
+                    finalThinkingText = stripAllControlText(accumulated);
                     flushThinkingContent(finalThinkingText);
                   },
                 },
@@ -1954,7 +1958,7 @@ export default function useChat() {
                 history,
                 (accumulated) => {
                   if (!isCurrentRun()) return;
-                  continuedAnswer = stripToolControl(accumulated);
+                  continuedAnswer = stripAllControlText(accumulated);
                   flushStreamingContent(continuedAnswer);
                 },
                 images,
@@ -1963,7 +1967,7 @@ export default function useChat() {
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
-                    finalThinkingText = stripToolControl(accumulated);
+                    finalThinkingText = stripAllControlText(accumulated);
                     flushThinkingContent(finalThinkingText);
                   },
                 },
@@ -2087,7 +2091,7 @@ export default function useChat() {
                       if (!isCurrentRun()) return;
                       if (!retryFirstChunkSeen && accumulated) { retryFirstChunkSeen = true; setIsSearching(false); }
                       retryText = accumulated;
-                      flushStreamingContent(accumulated);
+                      flushStreamingContent(stripAllControlText(accumulated));
                     },
                     images,
                     {
@@ -2095,7 +2099,7 @@ export default function useChat() {
                       ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                       onThinking: (accumulated) => {
                         if (!isCurrentRun()) return;
-                        finalThinkingText = stripWebSearchControl(accumulated);
+                        finalThinkingText = stripAllControlText(accumulated);
                         if (!retryFirstChunkSeen && accumulated) { retryFirstChunkSeen = true; setIsSearching(false); }
                         flushThinkingContent(finalThinkingText);
                       },
@@ -2112,7 +2116,7 @@ export default function useChat() {
                 }
 
                 if (retryText && retryText.trim() && isCurrentRun()) {
-                  fullText = stripWebSearchControl(retryText);
+                  fullText = stripAllControlText(retryText);
                 }
               } else if (requestedWebSearchQuery) {
                 fullText = `I searched the web for "${fallbackQuery}", but the available sources did not provide enough reliable information to answer confidently.`;
@@ -2127,7 +2131,7 @@ export default function useChat() {
             }
           }
 
-          fullText = stripToolControl(stripBrowserControl(stripWebSearchControl(fullText)));
+          fullText = stripAllControlText(fullText);
 
           // ── Grounded answer quality gate ──
           // Search can succeed while a weaker model still emits a disclaimer,
@@ -2184,7 +2188,7 @@ export default function useChat() {
                 correctedHistory,
                 (accumulated) => {
                   if (!isCurrentRun()) return;
-                  correctedText = stripWebSearchControl(accumulated);
+                  correctedText = stripAllControlText(accumulated);
                   flushStreamingContent(correctedText);
                 },
                 images,
@@ -2193,7 +2197,7 @@ export default function useChat() {
                   ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
-                    finalThinkingText = stripWebSearchControl(accumulated);
+                    finalThinkingText = stripAllControlText(accumulated);
                     flushThinkingContent(finalThinkingText);
                   },
                 },

@@ -1,4 +1,5 @@
-import { MODEL_TOOLS } from './modelTools';
+import { MODEL_TOOLS } from './modelTools.js';
+import { TOOL_NAMES } from './toolControl.js';
 import {
   CHAT_REQUEST_TIMEOUTS,
   getChatTimeoutMessage,
@@ -74,13 +75,26 @@ function extractToolCalls(payload) {
   return [];
 }
 
-function toolCallsToText(toolCalls = []) {
+function parseToolArguments(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function toolCallsToControl(toolCalls = []) {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
-  const names = toolCalls
-    .map((toolCall) => toolCall?.function?.name || toolCall?.name || toolCall?.type)
-    .filter(Boolean);
-  if (names.length === 0) return '';
-  return `[Using tools: ${names.join(', ')}]`;
+  for (const toolCall of toolCalls) {
+    const name = String(toolCall?.function?.name || toolCall?.name || '').trim().toLowerCase();
+    if (!Object.values(TOOL_NAMES).includes(name)) continue;
+    const args = parseToolArguments(toolCall?.function?.arguments ?? toolCall?.arguments);
+    return `[MIRA_TOOL: ${JSON.stringify({ name, arguments: args })}]`;
+  }
+  return '';
 }
 
 export function extractChatText(payload) {
@@ -96,7 +110,7 @@ export function extractChatText(payload) {
     payload.choices?.[0]?.delta?.content,
     payload.choices?.[0]?.message?.content,
     payload.choices?.[0]?.text,
-    toolCallsToText(extractToolCalls(payload)),
+    toolCallsToControl(extractToolCalls(payload)),
   ];
 
   for (const candidate of candidates) {
@@ -488,7 +502,7 @@ function splitThinkingFromRaw(raw = '') {
   };
 }
 
-export async function runChatCompletion({ messages, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think } = {}) {
+export async function runChatCompletion({ messages, images = [], systemPrompt, maxTokens, tools = [], think } = {}) {
   const result = await requestChat({ messages, images, systemPrompt, maxTokens, tools, think });
   const answer = result?.answer || '';
   if (!answer) throw new Error('No result in response');

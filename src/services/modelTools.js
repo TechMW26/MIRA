@@ -1,78 +1,43 @@
-// Native tool calls are disabled; the host handles supported control signals.
-// Search and other capabilities are handled directly by the frontend pipeline.
-export const MODEL_TOOLS = [];
+function functionTool(name, description, properties, required = []) {
+  return {
+    type: 'function',
+    function: {
+      name,
+      description,
+      parameters: { type: 'object', properties, required },
+    },
+  };
+}
 
-const _UNUSED_MODEL_TOOLS_DEFINITIONS = [
-  {
-    type: 'function',
-    function: {
-      name: 'web_search',
-      description: 'Search the live web for current information such as news, products, documentation, people, or companies.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'The search query to run.' },
-        },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'calculate_expression',
-      description: 'Evaluate a math or arithmetic expression.',
-      parameters: {
-        type: 'object',
-        properties: {
-          expression: { type: 'string', description: 'The arithmetic expression to evaluate.' },
-        },
-        required: ['expression'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'run_javascript',
-      description: 'Execute a short JavaScript snippet in the sandboxed code runner.',
-      parameters: {
-        type: 'object',
-        properties: {
-          code: { type: 'string', description: 'The JavaScript code to run.' },
-        },
-        required: ['code'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_weather',
-      description: 'Fetch weather information for a city.',
-      parameters: {
-        type: 'object',
-        properties: {
-          city: { type: 'string', description: 'City name to look up.' },
-        },
-        required: ['city'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'convert_currency',
-      description: 'Convert an amount from one currency into another.',
-      parameters: {
-        type: 'object',
-        properties: {
-          amount: { type: 'number', description: 'Numeric amount to convert.' },
-          from: { type: 'string', description: 'Source currency code, for example USD.' },
-          to: { type: 'string', description: 'Target currency code, for example EUR.' },
-        },
-        required: ['amount', 'from', 'to'],
-      },
-    },
-  },
-]; // _UNUSED_MODEL_TOOLS_DEFINITIONS
+export const MODEL_TOOLS = [
+  functionTool('web.search', 'Search the live web for current or verifiable information.', {
+    query: { type: 'string', description: 'A concise search-engine-ready query.' },
+  }, ['query']),
+  functionTool('browser.inspect', 'Inspect a specific website after the user approves browser access.', {
+    url: { type: 'string', description: 'The complete HTTP or HTTPS URL.' },
+    task: { type: 'string', description: 'The precise inspection goal.' },
+  }, ['url', 'task']),
+  functionTool('calculator.evaluate', 'Evaluate a numeric expression.', {
+    expression: { type: 'string', description: 'The arithmetic expression.' },
+  }, ['expression']),
+  functionTool('weather.lookup', 'Fetch current weather for a city.', {
+    city: { type: 'string', description: 'City and optional country or region.' },
+  }, ['city']),
+  functionTool('currency.convert', 'Convert an amount between currencies.', {
+    amount: { type: 'number' },
+    from: { type: 'string', description: 'Source currency code.' },
+    to: { type: 'string', description: 'Target currency code.' },
+  }, ['amount', 'from', 'to']),
+  functionTool('code.run', 'Run a short JavaScript calculation in the browser sandbox.', {
+    code: { type: 'string', description: 'JavaScript code to execute.' },
+  }, ['code']),
+  functionTool('task.run', 'Complete a bounded multi-step task.', {
+    goal: { type: 'string', description: 'The concrete task goal.' },
+  }, ['goal']),
+  functionTool('image.generate', 'Generate or refine an image.', {
+    prompt: { type: 'string', description: 'A complete visual generation prompt.' },
+  }, ['prompt']),
+  functionTool('video.generate', 'Generate or refine a short video.', {
+    prompt: { type: 'string', description: 'A complete video generation prompt.' },
+  }, ['prompt']),
+];

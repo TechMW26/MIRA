@@ -10,6 +10,17 @@ const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_IMAGES = 6;
 const MAX_TOKENS_CAP = 12000;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
+const ALLOWED_TOOL_NAMES = new Set([
+  'web.search',
+  'browser.inspect',
+  'calculator.evaluate',
+  'weather.lookup',
+  'currency.convert',
+  'code.run',
+  'task.run',
+  'image.generate',
+  'video.generate',
+]);
 const ACTIVE_CHAT_REQUESTS = new Map();
 const MODEL_REGISTRY_CACHE = { expiresAt: 0, selected: null };
 
@@ -120,6 +131,26 @@ function attachImages(messages = [], images = []) {
   return next;
 }
 
+export function sanitizeTools(tools = []) {
+  if (!Array.isArray(tools)) return [];
+  return tools.slice(0, ALLOWED_TOOL_NAMES.size).flatMap((tool) => {
+    const definition = tool?.function;
+    const name = String(definition?.name || '').trim().toLowerCase();
+    if (tool?.type !== 'function' || !ALLOWED_TOOL_NAMES.has(name)) return [];
+    const parameters = definition?.parameters && typeof definition.parameters === 'object'
+      ? definition.parameters
+      : { type: 'object', properties: {} };
+    return [{
+      type: 'function',
+      function: {
+        name,
+        description: String(definition?.description || '').slice(0, 300),
+        parameters,
+      },
+    }];
+  });
+}
+
 export function buildUpstreamPayload({
   registryModel,
   messages = [],
@@ -127,6 +158,7 @@ export function buildUpstreamPayload({
   systemPrompt = '',
   think = true,
   maxTokens = OLLAMA_MAX_TOKENS,
+  tools = [],
 } = {}) {
   const safeMax = Math.max(1, Math.min(Number(maxTokens) || OLLAMA_MAX_TOKENS, MAX_TOKENS_CAP));
   const normalized = attachImages(normalizeMessages(messages, systemPrompt), images);
@@ -144,6 +176,8 @@ export function buildUpstreamPayload({
     stream: true,
     options,
   };
+  const safeTools = sanitizeTools(tools);
+  if (registryModel?.capabilities?.includes('tools') && safeTools.length) payload.tools = safeTools;
   if (registryModel?.capabilities?.includes('thinking')) payload.think = think !== false;
   return payload;
 }
@@ -194,6 +228,7 @@ export async function POST(req) {
       systemPrompt: body.systemPrompt,
       think: body.think,
       maxTokens: body.max_tokens,
+      tools: body.tools,
     });
     const upstream = await fetchUpstream(upstreamPayload, controller.signal);
     if (!upstream.ok) {

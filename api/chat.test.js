@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildUpstreamPayload, selectRegistryModel } from './chat.js';
+import { buildUpstreamPayload, sanitizeTools, selectRegistryModel } from './chat.js';
 
 test('selects the first completion-capable model returned by the registry', () => {
   const selected = selectRegistryModel([
@@ -41,4 +41,18 @@ test('attaches images to the latest user turn without switching models', () => {
   });
   assert.equal(payload.model, 'runtime-model');
   assert.deepEqual(payload.messages.at(-1).images, ['abc123']);
+});
+
+test('forwards only supported native tools to capable registry models', () => {
+  const tools = [
+    { type: 'function', function: { name: 'web.search', description: 'Search', parameters: { type: 'object', properties: { query: { type: 'string' } } } } },
+    { type: 'function', function: { name: 'container.exec', parameters: { type: 'object' } } },
+  ];
+  assert.equal(sanitizeTools(tools).length, 1);
+  const payload = buildUpstreamPayload({
+    registryModel: { name: 'runtime-model', capabilities: ['completion', 'tools'] },
+    messages: [{ role: 'user', content: 'Latest price?' }],
+    tools,
+  });
+  assert.deepEqual(payload.tools.map((tool) => tool.function.name), ['web.search']);
 });
