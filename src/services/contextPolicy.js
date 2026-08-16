@@ -1,10 +1,16 @@
-const SIMPLE_GREETING_PATTERN = /^\s*(?:hi+|hii+|hello+|hey+|hey\s+there|hello\s+there|yo|sup|howdy|hola|namaste|good\s+(?:morning|afternoon|evening))(?:[!.?\s]+)?$/i;
+const GREETING_WORDS_PATTERN = /^(?:(?:hi+|hii+|hello+|hey+|heya+|yo+|sup+|ssup+|wassup|wazzup|howdy|hola|namaste)\s*){1,3}$/i;
+const GREETING_CHECK_IN_PATTERN = /^(?:(?:hi+|hii+|hello+|hey+|heya+|yo+|sup+|ssup+|wassup|wazzup|howdy|hola|namaste)\s+)?(?:what'?s\s+up|whats\s+up|how\s+are\s+(?:you|u)|how'?s\s+it\s+going|good\s+(?:morning|afternoon|evening))$/i;
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
 
 export function isSimpleGreeting(text = '') {
-  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  const value = String(text || '')
+    .replace(/[’]/g, "'")
+    .replace(/[^\p{L}\p{N}']+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!value) return false;
-  return value.split(/\s+/).length <= 6 && SIMPLE_GREETING_PATTERN.test(value);
+  if (value.split(/\s+/).length > 6) return false;
+  return GREETING_WORDS_PATTERN.test(value) || GREETING_CHECK_IN_PATTERN.test(value);
 }
 
 export function buildGreetingResponse(text = '') {

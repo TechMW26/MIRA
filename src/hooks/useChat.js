@@ -9,7 +9,7 @@ import {
   buildVisionAnalysisPrompt,
   extractVisionSearchAnchor,
 } from '../services/imageAnalysis.js';
-import { needsFreshInformation, processQuery } from '../services/engine';
+import { needsFreshInformation, processQuery, shouldUseModelThinking } from '../services/engine';
 import { assessAndRefinePrompt, shouldRunEnhancer } from '../services/promptEnhancer';
 import {
   createConversation,
@@ -41,6 +41,7 @@ import {
   stripWebSearchControl,
 } from '../services/webSearchControl';
 import { buildEvidenceFallbackAnswer, searchWeb } from '../services/webSearch';
+import { expandCompoundWords } from '../services/searchRelevance.js';
 import { formSearchQuery } from '../services/searchQuery';
 import {
   extractBrowserRequest,
@@ -121,8 +122,9 @@ function normalizeSearchComparison(value = '') {
 }
 
 function filterRelevantMedia(items = [], query = '') {
+  const expandedQuery = expandCompoundWords(String(query || ''));
   const tokens = Array.from(new Set(
-    String(query || '')
+    expandedQuery
       .toLowerCase()
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
@@ -131,7 +133,9 @@ function filterRelevantMedia(items = [], query = '') {
   if (!tokens.length) return Array.isArray(items) ? items : [];
   const required = tokens.length >= 2 ? 2 : 1;
   return (Array.isArray(items) ? items : []).filter((item) => {
-    const haystack = `${item?.title || ''} ${item?.source || ''} ${item?.url || ''}`.toLowerCase();
+    const haystack = normalizeSearchComparison(expandCompoundWords(
+      `${item?.title || ''} ${item?.source || ''} ${item?.url || ''}`,
+    ));
     return tokens.reduce((score, token) => score + (haystack.includes(token) ? 1 : 0), 0) >= required;
   });
 }
@@ -266,7 +270,7 @@ function buildVisualSearchScope(anchor = '', current = '') {
   return { entity, query, mediaQuery };
 }
 
-const TEXT_ENTITY_STOP = new Set(['tell', 'me', 'about', 'more', 'details', 'detail', 'information', 'info', 'background', 'research', 'explain', 'what', 'is', 'whats', 'overview', 'deep', 'dive', 'in', 'detail', 'the', 'a', 'an', 'this', 'that', 'it', 'please', 'can', 'you', 'know', 'latest', 'current', 'complete', 'full', 'video', 'videos', 'image', 'images', 'media']);
+const TEXT_ENTITY_STOP = new Set(['tell', 'me', 'about', 'more', 'details', 'detail', 'information', 'info', 'background', 'research', 'explain', 'what', 'is', 'whats', 'overview', 'deep', 'dive', 'in', 'detail', 'the', 'a', 'an', 'this', 'that', 'it', 'please', 'can', 'you', 'know', 'latest', 'current', 'complete', 'full', 'video', 'videos', 'image', 'images', 'media', 'fetch', 'find', 'get', 'show', 'give', 'pull', 'few', 'some', 'related', 'relevant']);
 
 function titleCaseEntity(value = '') {
   return String(value || '')
@@ -292,6 +296,11 @@ function extractTextResearchEntity(text = '') {
 
   const quoted = value.match(/["“]([^"”]{2,80})["”]/)?.[1]?.trim();
   if (quoted) return canonicalizeTextEntity(quoted);
+
+  const explicitMediaSubject = value.match(/\b(?:images?|photos?|pictures?|videos?|clips?|media|reels?)\s+(?:of|about|for)\s+(?:the\s+)?([^?!.,;:]{2,80})/i)?.[1]?.trim();
+  if (explicitMediaSubject && !/^(?:this|that|it|them|these|those)$/i.test(explicitMediaSubject)) {
+    return canonicalizeTextEntity(explicitMediaSubject);
+  }
 
   const withoutIntent = value
     .replace(/\b(tell\s+me\s+(?:more\s+)?about|details?\s+about|information\s+about|info\s+about|background\s+on|overview\s+of|deep\s+dive\s+(?:on|into)|research|explain|what\s+is|what\s+are|what\s+an|what\s+a|what's|let\s+me\s+know\s+what)\b/ig, ' ')
@@ -1152,13 +1161,15 @@ export default function useChat() {
       });
       let wantsImageGeneration = promptInterpretation.imageIntent === true;
       let wantsVideoGeneration = promptInterpretation.videoIntent === true;
-      const simpleGreeting = !hasImages && attachments.length === 0 && !replaceMessageId && isSimpleGreeting(content);
+      const simpleGreeting = !hasImages && attachments.length === 0 && isSimpleGreeting(content);
       const requestedDocumentFormat = (wantsImageGeneration || wantsVideoGeneration)
         ? null
         : detectDocumentRequest(content, textAttachments.length > 0);
-      // Keep structured thinking enabled for every chat request. The UI only
-      // renders reasoning actually returned by the provider.
-      const shouldThink = true;
+      const shouldThink = shouldUseModelThinking({
+        complexity: engineResult.classification?.complexity,
+        hasAttachments: attachments.length > 0,
+        document: Boolean(requestedDocumentFormat),
+      });
       let documentVisualImages = [];
 
       try {
@@ -1560,13 +1571,9 @@ export default function useChat() {
                 || buildContextualSearchQuery(content)
                 || textResearchMediaScope?.query
                 || content;
-              // Only attach a related-media gallery when the user has actually
-              // signalled they want media (explicit "videos/images/...", an
-              // image attachment, or a "this device" follow-up). Plain
-              // text-research questions like "what is X" / "tell me about X"
-              // must NOT trigger an auto media gallery — search engines return
-              // off-topic YouTube/image results for bare nouns and pollute the
-              // reply with irrelevant embeds.
+              // Every real web search returns a complete related-media package.
+              // Entity-aware filtering below prevents unrelated embeds from
+              // being attached to broad or ambiguous queries.
               const shouldAttachRelatedMedia = retrievalPolicy.includeMedia;
               const includeMedia = retrievalPolicy.includeMedia;
               const visualScope = visualSearchAnchor ? buildVisualSearchScope(visualSearchAnchor, content) : null;
@@ -1621,7 +1628,18 @@ export default function useChat() {
               const mediaQueryForMessage = visualScope?.mediaQuery || textResearchMediaScope?.mediaQuery || searchQuery;
               const realVideos = filterRelevantMedia(searchData.media?.videos, mediaQueryForMessage);
               const realImages = filterRelevantMedia(searchData.media?.images, mediaQueryForMessage);
-              const realArticles = filterHighConfidenceArticles(searchData.media?.articles, mediaQueryForMessage);
+              const articleCandidates = [
+                ...(Array.isArray(searchData.media?.articles) ? searchData.media.articles : []),
+                ...(Array.isArray(searchData.results) ? searchData.results.map((result) => ({
+                  ...result,
+                  type: result.type || 'article',
+                  confidence: Number(result.confidence || 1),
+                })) : []),
+              ];
+              const realArticles = filterHighConfidenceArticles(articleCandidates, mediaQueryForMessage)
+                .filter((article, index, articles) => (
+                  articles.findIndex((candidate) => candidate.url === article.url) === index
+                ));
               const mediaBlock = (() => {
                 if (!shouldAttachRelatedMedia || (!realVideos.length && !realImages.length && !realArticles.length)) return '';
                 const lines = [];
@@ -1655,7 +1673,7 @@ export default function useChat() {
                 if (realVideos.length || realImages.length || realArticles.length) {
                   mediaForMessage = { videos: realVideos, images: realImages, articles: realArticles, query: mediaQueryForMessage };
                   if (wantsOnlyMediaGallery) {
-                    deterministicMediaReply = 'Here are the most relevant clips and photos I found — open any item in the gallery below to play or preview it here.';
+                    deterministicMediaReply = 'Here are the most relevant images, videos, and articles I found. Open any item in the gallery below to view it.';
                   }
                 } else if (wantsOnlyMediaGallery) {
                   deterministicMediaReply = "I couldn't find relevant embeddable media for this search this time.";

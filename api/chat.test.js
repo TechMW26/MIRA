@@ -29,8 +29,20 @@ test('builds one streaming Ollama payload from the registry selection', () => {
   assert.equal(payload.model, 'runtime-model');
   assert.equal(payload.stream, true);
   assert.equal(payload.think, true);
+  assert.equal(payload.keep_alive, '30m');
   assert.equal(payload.options.num_predict, 500);
   assert.ok(payload.messages.some((message) => message.role === 'user' && message.content === 'Hello'));
+});
+
+test('forwards disabled thinking even when tags omit model capabilities', () => {
+  const payload = buildUpstreamPayload({
+    registryModel: { name: 'runtime-model', capabilities: [] },
+    messages: [{ role: 'user', content: 'Hello' }],
+    systemPrompt: 'You are Mira.',
+    think: false,
+  });
+  assert.equal(payload.think, false);
+  assert.equal(payload.messages.some((message) => message.content.startsWith('Quick check before we start')), false);
 });
 
 test('keeps raw images out of the general chat payload', () => {

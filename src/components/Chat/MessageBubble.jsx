@@ -108,10 +108,10 @@ function normalizeMarkdownForDisplay(content = '') {
   // Avoid touching fenced code blocks.
   if (raw.includes('```')) return raw;
 
-  const hasListMarkers = /(?:^|\s)(?:\d+\.\s+|[-*]\s+)/m.test(raw);
-  if (!hasListMarkers) return raw;
-
   let normalized = raw.replace(/\r\n?/g, '\n');
+  // Repair legacy replies whose Markdown line breaks were flattened before storage.
+  normalized = normalized.replace(/^#{1,6}[ \t]+Summary\b[ \t]*:?[ \t]*(?:\n+[ \t]*|(?=\S))/i, '');
+  normalized = normalized.replace(/(^|\n)#{1,6}[ \t]+(Sources|References)[ \t]*[-:][ \t]*/gi, '$1### $2\n\n- ');
   // Promote inline heading separators into block markdown.
   normalized = normalized.replace(/\s+---\s+(?=#{1,6}\s)/g, '\n\n---\n\n');
   normalized = normalized.replace(/([^\n])\s+(#{1,6}\s+)/g, '$1\n\n$2');
@@ -828,6 +828,18 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
   );
 
   const markdownComponents = useMemo(() => ({
+    h1({ children }) {
+      return <h1 className="mb-3 mt-5 text-2xl font-bold leading-tight first:mt-0">{children}</h1>;
+    },
+    h2({ children }) {
+      return <h2 className="mb-2 mt-5 text-xl font-bold leading-snug first:mt-0">{children}</h2>;
+    },
+    h3({ children }) {
+      return <h3 className="mb-2 mt-4 text-lg font-semibold leading-snug first:mt-0">{children}</h3>;
+    },
+    p({ children }) {
+      return <p className="my-2 leading-relaxed first:mt-0 last:mb-0">{children}</p>;
+    },
     img({ src, alt }) {
       const s = typeof src === 'string' ? src.trim() : '';
 

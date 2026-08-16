@@ -5,6 +5,7 @@ import {
   clearLearnedResponsePreferences,
   getLearnedResponsePreferences,
   learnResponsePreferences,
+  processRememberMarkers,
 } from './knowledgeBank.js';
 
 const storage = new Map();
@@ -42,4 +43,11 @@ test('isolates learned preferences between signed-in users', () => {
   learnResponsePreferences('Please be concise.', { scope: 'user-a' });
   assert.equal(getLearnedResponsePreferences('user-a').length.value, 'concise');
   assert.deepEqual(getLearnedResponsePreferences('user-b'), {});
+});
+
+test('removes memory markers without collapsing markdown blocks', () => {
+  const result = processRememberMarkers(
+    'First paragraph.\n\n## Sources\n\n- [Article](https://example.com)\n\n[REMEMBER: tone = concise]',
+  );
+  assert.equal(result, 'First paragraph.\n\n## Sources\n\n- [Article](https://example.com)');
 });

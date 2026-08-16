@@ -109,6 +109,8 @@ export function polishAssistantAnswer(answer = '', { grounded = false } = {}) {
 
   if (grounded) {
     text = text
+      .replace(/^\s*(?:#{1,6}[ \t]*)?summary\b[ \t]*:?[ \t]*(?:\n+[ \t]*|(?=\S))/i, '')
+      .replace(/(^|\n)[ \t]*#{1,6}[ \t]+(Sources|References)[ \t]*[-:][ \t]*/gi, '$1### $2\n\n- ')
       .replace(/\s*\[(?:\d+(?:\s*,\s*\d+)*)\]/g, '')
       .replace(/\s+([,.;:!?])/g, '$1')
       .replace(/\bHere (?:are|is) (?:some |a few )?(?:key |important )?(?:facts|details|points)(?::)?[ \t]*/gi, '')

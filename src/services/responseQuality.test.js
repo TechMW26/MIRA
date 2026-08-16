@@ -84,3 +84,11 @@ test('removes canned acknowledgments and generic closing offers', () => {
   assert.equal(result, 'OAuth uses delegated authorization.');
   assert.equal(polishAssistantAnswer('Surety bonds protect the project owner.'), 'Surety bonds protect the project owner.');
 });
+
+test('removes a redundant grounded summary label and repairs a run-on sources heading', () => {
+  const result = polishAssistantAnswer(
+    '## Summary AlgaeTree captures carbon.\n\n## Sources - [Article](https://example.com)',
+    { grounded: true },
+  );
+  assert.equal(result, 'AlgaeTree captures carbon.\n\n### Sources\n\n- [Article](https://example.com)');
+});

@@ -52,10 +52,12 @@ test('builds a readable evidence answer when model regeneration fails', () => {
       url: 'https://example.com/algae-tree',
     }],
   }, 'algae tree');
-  assert.match(answer, /## Summary/);
+  assert.doesNotMatch(answer, /^#{1,6}\s+Summary/i);
+  assert.match(answer, /^The installation uses microalgae/);
   assert.match(answer, /uses microalgae to absorb carbon dioxide/);
-  assert.match(answer, /## Sources/);
+  assert.match(answer, /### Sources/);
   assert.match(answer, /Bhopal installs an algae tree/);
+  assert.match(answer, /\(May 11, 2026\)/);
   assert.match(answer, /\[Bhopal installs an algae tree\]\(https:\/\/example\.com\/algae-tree\)/);
   assert.doesNotMatch(answer, /<a|href=/i);
 });

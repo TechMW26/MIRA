@@ -6,6 +6,7 @@ const OLLAMA_CONTEXT_TOKENS = Number(process.env.OLLAMA_CONTEXT_TOKENS || 0);
 const OLLAMA_TEMPERATURE = Number(process.env.OLLAMA_TEMPERATURE || 0.2);
 const OLLAMA_TOP_P = Number(process.env.OLLAMA_TOP_P || 0.85);
 const OLLAMA_REPEAT_PENALTY = Number(process.env.OLLAMA_REPEAT_PENALTY || 1.2);
+const OLLAMA_KEEP_ALIVE = String(process.env.OLLAMA_KEEP_ALIVE || '30m').trim();
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_TOKENS_CAP = 12000;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
@@ -22,6 +23,7 @@ const ALLOWED_TOOL_NAMES = new Set([
 ]);
 const ACTIVE_CHAT_REQUESTS = new Map();
 const MODEL_REGISTRY_CACHE = { expiresAt: 0, selected: null };
+const MODEL_REGISTRY_CACHE_TTL_MS = 10 * 60 * 1000;
 
 const IDENTITY_PRIMER = [
   { role: 'user', content: 'Quick check before we start: who are you?' },
@@ -78,7 +80,7 @@ async function fetchRegistryModel(signal) {
     const selected = selectRegistryModel(payload?.models);
     if (!selected) throw new Error('The model registry returned no completion model.');
     MODEL_REGISTRY_CACHE.selected = selected;
-    MODEL_REGISTRY_CACHE.expiresAt = now + 30_000;
+    MODEL_REGISTRY_CACHE.expiresAt = now + MODEL_REGISTRY_CACHE_TTL_MS;
     return selected;
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -102,7 +104,7 @@ function normalizeMessages(messages = [], systemPrompt = '') {
   const withoutSystem = normalized.filter((message) => message.role !== 'system');
   return [
     ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
-    ...IDENTITY_PRIMER,
+    ...(!systemPrompt ? IDENTITY_PRIMER : []),
     ...withoutSystem,
   ];
 }
@@ -149,11 +151,15 @@ export function buildUpstreamPayload({
     model: registryModel?.name || '',
     messages: normalized,
     stream: true,
+    keep_alive: OLLAMA_KEEP_ALIVE,
     options,
   };
   const safeTools = sanitizeTools(tools);
   if (registryModel?.capabilities?.includes('tools') && safeTools.length) payload.tools = safeTools;
-  if (registryModel?.capabilities?.includes('thinking')) payload.think = think !== false;
+  // /api/tags may omit capabilities even when the selected model supports
+  // reasoning. Preserve an explicit caller preference so simple requests do
+  // not spend latency on unnecessary reasoning tokens.
+  if (typeof think === 'boolean') payload.think = think;
   return payload;
 }
 

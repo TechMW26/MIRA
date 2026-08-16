@@ -19,7 +19,9 @@ export function decideRetrievalPolicy({
     || visualSearch
     || contextualSearch
   );
-  const includeMedia = search && Boolean(mediaRequested || visualSearch || contextualMedia);
+  // Every real web-search turn returns a complete evidence package so the UI
+  // can render related articles, images, and videos without another request.
+  const includeMedia = search;
 
   return { search, includeMedia };
 }

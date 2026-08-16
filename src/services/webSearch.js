@@ -101,7 +101,15 @@ export function buildEvidenceFallbackAnswer(payload = {}, query = '') {
   }
 
   const details = results.map((result) => {
-    const date = result.publishedAt ? ` (${result.publishedAt})` : '';
+    const published = result.publishedAt ? new Date(result.publishedAt) : null;
+    const date = published && !Number.isNaN(published.getTime())
+      ? ` (${published.toLocaleDateString('en-US', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'UTC',
+      })})`
+      : '';
     const safeUrl = /^https?:\/\//i.test(result.url || '') && String(result.url).length <= 320
       ? result.url
       : '';
@@ -111,7 +119,7 @@ export function buildEvidenceFallbackAnswer(payload = {}, query = '') {
   });
   const summary = facts.map((fact) => fact.text).join(' ')
     || 'The retrieved sources did not contain enough clean detail for a reliable summary.';
-  return `## Summary\n\n${summary}\n\n## Sources\n\n${details.join('\n')}`;
+  return `${summary}\n\n### Sources\n\n${details.join('\n')}`;
 }
 
 async function readSearchResponse(response) {

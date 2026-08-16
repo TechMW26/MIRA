@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { needsFreshInformation, processQuery } from './engine.js';
+import { needsFreshInformation, processQuery, shouldUseModelThinking } from './engine.js';
 
 test('keeps evergreen explanations offline', () => {
   assert.equal(processQuery('Explain how gravity works').needsSearch, false);
@@ -33,4 +33,11 @@ test('keeps greetings and ordinary conversation out of media generation', () => 
   assert.equal(processQuery('Hello there').interpretation.imageIntent, false);
   assert.equal(processQuery('How are you?').interpretation.videoIntent, false);
   assert.equal(processQuery('Please generate an image of an elephant').interpretation.imageIntent, true);
+});
+
+test('uses reasoning only when request complexity justifies its latency', () => {
+  assert.equal(shouldUseModelThinking({ complexity: 'low' }), false);
+  assert.equal(shouldUseModelThinking({ complexity: 'medium' }), true);
+  assert.equal(shouldUseModelThinking({ complexity: 'low', hasAttachments: true }), true);
+  assert.equal(shouldUseModelThinking({ complexity: 'low', document: true }), true);
 });

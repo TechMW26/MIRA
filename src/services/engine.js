@@ -81,6 +81,10 @@ export function needsFreshInformation(text = '') {
   return FRESH_INFORMATION_SIGNAL.test(String(text || ''));
 }
 
+export function shouldUseModelThinking({ complexity = 'low', hasAttachments = false, document = false } = {}) {
+  return Boolean(hasAttachments || document || complexity === 'medium' || complexity === 'high');
+}
+
 // Investigative research intent — user explicitly wants the assistant to
 // go look something up rather than answer from memory.
 const RESEARCH_INTENT_SIGNALS = [

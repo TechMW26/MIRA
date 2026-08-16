@@ -12,7 +12,11 @@ import { selectModelTools } from './modelTools.js';
 test('simple greetings form a hard text-only context boundary', () => {
   assert.equal(isSimpleGreeting('Hey'), true);
   assert.equal(isSimpleGreeting('Good morning!'), true);
+  assert.equal(isSimpleGreeting('Hello, ssup ?'), true);
+  assert.equal(isSimpleGreeting("Hey, what's up?"), true);
+  assert.equal(isSimpleGreeting('Yo sup'), true);
   assert.equal(isSimpleGreeting('Hey, generate an image'), false);
+  assert.equal(isSimpleGreeting('Hello, search the latest news'), false);
   assert.doesNotMatch(buildGreetingResponse('Hey'), /IMAGE_GEN|MIRA_TOOL/i);
   assert.deepEqual(selectModelTools({ disableTools: true }), []);
 });

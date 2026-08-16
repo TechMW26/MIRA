@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decideRetrievalPolicy } from './retrievalPolicy.js';
 
-test('searches current facts without paying for unrelated media', () => {
+test('searches current facts with related media', () => {
   assert.deepEqual(decideRetrievalPolicy({ engineNeedsSearch: true }), {
     search: true,
-    includeMedia: false,
+    includeMedia: true,
   });
 });
 
@@ -32,5 +32,16 @@ test('website inspection and greetings bypass generic retrieval', () => {
   assert.deepEqual(decideRetrievalPolicy({ simpleGreeting: true, engineNeedsSearch: true }), {
     search: false,
     includeMedia: false,
+  });
+  assert.deepEqual(decideRetrievalPolicy({ simpleGreeting: true, manualSearch: true }), {
+    search: false,
+    includeMedia: false,
+  });
+});
+
+test('manual web search always requests articles, images, and videos', () => {
+  assert.deepEqual(decideRetrievalPolicy({ manualSearch: true }), {
+    search: true,
+    includeMedia: true,
   });
 });
