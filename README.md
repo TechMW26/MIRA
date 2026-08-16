@@ -58,7 +58,6 @@ GOOGLE_SEARCH_CX=
 
 # Pollinations image/video generation (server-side key)
 POLLINATIONS_API_KEY=
-POLLINATIONS_IMAGE_MODEL=
 POLLINATIONS_VIDEO_MODEL=wan-pro
 ```
 

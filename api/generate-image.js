@@ -11,7 +11,7 @@ const NSFW_PROMPT_PATTERN = /\b(nude|nudity|naked|explicit|erotic|porn|pornograp
 const INVALID_PROMPT_PATTERN = /(?:^|\[)(?:using tools?|mira_tool)|^(?:\.{2,}|…+|image|picture|photo|generated image)$/i;
 const SAFE_NEGATIVE_PROMPT = 'nsfw, nude, naked, explicit, erotic, porn, sexual content, genitalia, breasts, nipples';
 const POLLINATIONS_ORIGIN = 'https://gen.pollinations.ai';
-const MODEL_CACHE = { expiresAt: 0, models: [] };
+const POLLINATIONS_IMAGE_MODEL = 'flux';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -73,13 +73,13 @@ function boundedSize(value) {
   return Math.max(512, Math.min(1280, Math.round(size)));
 }
 
-export function buildPollinationsUrl({ prompt, model, seed, width, height }) {
+export function buildPollinationsUrl({ prompt, seed, width, height }) {
   const params = new URLSearchParams({
     width: String(width),
     height: String(height),
     nologo: 'true',
     enhance: 'false',
-    model,
+    model: POLLINATIONS_IMAGE_MODEL,
     seed: String(seed || 1),
   });
   if (!NSFW_PROMPT_PATTERN.test(String(prompt || ''))) {
@@ -87,46 +87,6 @@ export function buildPollinationsUrl({ prompt, model, seed, width, height }) {
     params.set('safe', 'true');
   }
   return `${POLLINATIONS_ORIGIN}/image/${encodeURIComponent(prompt)}?${params.toString()}`;
-}
-
-export function parsePollinationsImageModels(payload = []) {
-  const items = Array.isArray(payload) ? payload : (payload?.data || payload?.models || []);
-  return Array.from(new Set(items.flatMap((item) => {
-    const id = String(item?.id || item?.name || item?.model || '').trim();
-    const modalities = item?.outputModalities || item?.output_modalities || [];
-    const imageCapable = !Array.isArray(modalities)
-      || modalities.length === 0
-      || modalities.some((value) => String(value).toLowerCase() === 'image');
-    return id && imageCapable ? [id] : [];
-  })));
-}
-
-export function clearPollinationsModelCache() {
-  MODEL_CACHE.expiresAt = 0;
-  MODEL_CACHE.models = [];
-}
-
-async function getModelAttemptOrder(key) {
-  const configured = String(process.env.POLLINATIONS_IMAGE_MODEL || '').trim();
-  if (MODEL_CACHE.models.length && MODEL_CACHE.expiresAt > Date.now()) {
-    return Array.from(new Set([configured, ...MODEL_CACHE.models].filter(Boolean))).slice(0, 3);
-  }
-
-  try {
-    const response = await fetch(`${POLLINATIONS_ORIGIN}/image/models`, {
-      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!response.ok) throw new Error(`Model registry failed (${response.status}).`);
-    const models = parsePollinationsImageModels(await response.json());
-    if (!models.length) throw new Error('No Pollinations image model is available.');
-    MODEL_CACHE.models = models;
-    MODEL_CACHE.expiresAt = Date.now() + 5 * 60 * 1000;
-    return Array.from(new Set([configured, ...models].filter(Boolean))).slice(0, 3);
-  } catch (error) {
-    if (configured) return [configured];
-    throw error;
-  }
 }
 
 function buildSafePrompt(prompt = '') {
@@ -170,51 +130,41 @@ export async function GET(req) {
   const seed = Number(url.searchParams.get('seed') || 1) || 1;
 
   try {
-    const modelAttempts = await getModelAttemptOrder(pollinationsKey);
-    let lastStatus = null;
-    let lastContentType = '';
+    const target = buildPollinationsUrl({ prompt, seed, width, height });
+    const { upstream } = await fetchGeneratedImageWithRetries(target, pollinationsKey);
 
-    for (const attemptModel of modelAttempts) {
-      const target = buildPollinationsUrl({ prompt, model: attemptModel, seed, width, height });
-      const { upstream } = await fetchGeneratedImageWithRetries(target, pollinationsKey);
-
-      if (!upstream) continue;
-
-      if (!upstream.ok) {
-        lastStatus = upstream.status;
-        continue;
-      }
-
-      const contentType = upstream.headers.get('content-type') || '';
-      if (!ALLOWED_MIME.test(contentType.split(';')[0].trim())) {
-        lastContentType = contentType;
-        continue;
-      }
-
-      const buffer = await upstream.arrayBuffer();
-      if (buffer.byteLength === 0 || buffer.byteLength > MAX_IMAGE_BYTES) {
-        continue;
-      }
-
-      return new Response(buffer, {
-        status: 200,
-        headers: {
-          'Content-Type': contentType,
-          'Cache-Control': 'public, max-age=86400, immutable',
-          'Access-Control-Allow-Origin': '*',
-          'X-MIRA-Safety': 'safe',
-          'X-MIRA-Image-Provider': 'pollinations',
-        },
+    if (!upstream.ok) {
+      return new Response(JSON.stringify({ error: `Upstream ${upstream.status}` }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
       });
     }
 
-    const error = lastContentType
-      ? `Unsupported content-type: ${lastContentType}`
-      : `Upstream ${lastStatus || 502}`;
+    const contentType = upstream.headers.get('content-type') || '';
+    if (!ALLOWED_MIME.test(contentType.split(';')[0].trim())) {
+      return new Response(JSON.stringify({ error: `Unsupported content-type: ${contentType}` }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      });
+    }
 
-    return new Response(JSON.stringify({ error }), {
-      status: 502,
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    const buffer = await upstream.arrayBuffer();
+    if (buffer.byteLength === 0 || buffer.byteLength > MAX_IMAGE_BYTES) {
+      return new Response(JSON.stringify({ error: 'Generated image has an invalid size' }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      });
+    }
+
+    return new Response(buffer, {
+      status: 200,
+      headers: {
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=86400, immutable',
+        'Access-Control-Allow-Origin': '*',
+        'X-MIRA-Safety': 'safe',
+        'X-MIRA-Image-Provider': 'pollinations',
+      },
     });
   } catch (err) {
     const message = err?.name === 'AbortError' ? 'Image generation timed out' : 'Image generation failed';
