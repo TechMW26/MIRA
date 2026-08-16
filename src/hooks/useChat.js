@@ -656,7 +656,7 @@ function normalizeMessageContent(content) {
 function describeGeneratedImageContent(content = '') {
   const markerPrompt = String(content || '').match(IMAGE_GEN_PATTERN)?.[1]?.trim();
   if (!markerPrompt) return '';
-  const prompt = cleanImagePrompt(markerPrompt).slice(0, 700);
+  const prompt = cleanImagePrompt(markerPrompt).slice(0, 1200);
   return prompt
     ? `Generated an image from this prompt: "${prompt}".`
     : 'Generated an image in the previous assistant turn.';
@@ -667,7 +667,7 @@ function getLatestGeneratedImagePrompt(historySource = []) {
   const text = normalizeMessageContent(message?.promptContent || message?.content || '');
   const markerPrompt = String(text || '').match(IMAGE_GEN_PATTERN)?.[1]?.trim();
   const cleaned = cleanImagePrompt(markerPrompt || '');
-  return cleaned ? cleaned.slice(0, 900) : '';
+  return cleaned ? cleaned.slice(0, 4000) : '';
 }
 
 function getLatestGeneratedVideoPrompt(historySource = []) {
@@ -1754,7 +1754,7 @@ export default function useChat() {
             const previousPromptContext = wantsImageRefinementFollowup && previousImagePrompt
               ? `\n\nPREVIOUS GENERATED IMAGE PROMPT (use as base context): "${previousImagePrompt}".\nThe current user message is a refinement request for that image. Keep the core subject, then apply only the user's requested corrections.`
               : '';
-            userContent = `${userContent}${previousPromptContext}\n\nIMAGE GENERATION REQUEST: Return exactly one line in the form [IMAGE_GEN: ...]. Do not add any explanation, commentary, markdown, or extra text. The prompt inside the marker should be concise, detailed, and ready for image generation.`;
+            userContent = `${userContent}${previousPromptContext}\n\nIMAGE GENERATION REQUEST: Return exactly one line in the form [IMAGE_GEN: ...]. Do not add any explanation, commentary, markdown, or extra text. Preserve every user-provided subject, exact count, attribute, relationship, action, visible text and spelling, color, style, camera/composition detail, background, aspect ratio, exclusion, and negative constraint. Only add compatible visual detail; never replace, summarize away, reinterpret, or contradict a supplied detail. The prompt inside the marker should be detailed, structured, and ready for image generation.`;
           }
 
           if (wantsVideoGeneration) {

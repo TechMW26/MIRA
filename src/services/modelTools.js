@@ -34,8 +34,8 @@ export const MODEL_TOOLS = [
   functionTool('task.run', 'Complete a bounded multi-step task.', {
     goal: { type: 'string', description: 'The concrete task goal.' },
   }, ['goal']),
-  functionTool('image.generate', 'Generate or refine an image.', {
-    prompt: { type: 'string', description: 'A complete visual generation prompt.' },
+  functionTool('image.generate', 'Generate or refine an image while preserving every user-specified detail.', {
+    prompt: { type: 'string', description: 'A complete visual prompt that retains every requested subject, count, attribute, exact text, composition, style, and exclusion; added detail must be compatible.' },
   }, ['prompt']),
   functionTool('video.generate', 'Generate or refine a short video.', {
     prompt: { type: 'string', description: 'A complete video generation prompt.' },

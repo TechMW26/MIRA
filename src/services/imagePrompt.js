@@ -21,11 +21,27 @@ export function cleanImagePrompt(text = '') {
 }
 
 function promptTerms(text = '') {
-  return cleanImagePrompt(text)
+  return Array.from(new Set(cleanImagePrompt(text)
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, ' ')
     .split(/\s+/)
-    .filter((term) => term.length >= 3 && !PROMPT_STOPWORDS.has(term));
+    .filter((term) => (/^\d+$/.test(term) || term.length >= 3) && !PROMPT_STOPWORDS.has(term))));
+}
+
+function promptCoverage(candidate = '', anchor = '') {
+  const anchorTerms = promptTerms(anchor);
+  if (!anchorTerms.length) return 1;
+  const candidateTerms = new Set(promptTerms(candidate));
+  const matches = anchorTerms.filter((term) => candidateTerms.has(term)).length;
+  return matches / anchorTerms.length;
+}
+
+function containsWholePhrase(candidate = '', anchor = '') {
+  const phrase = cleanImagePrompt(anchor).toLowerCase();
+  if (!phrase) return false;
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, 'i')
+    .test(cleanImagePrompt(candidate));
 }
 
 export function isUsableImagePrompt(candidate = '', anchor = '') {
@@ -33,8 +49,23 @@ export function isUsableImagePrompt(candidate = '', anchor = '') {
   if (prompt.length < 3 || INVALID_PROMPT_PATTERN.test(prompt)) return false;
   const anchorTerms = promptTerms(anchor);
   if (!anchorTerms.length) return true;
-  const candidateText = prompt.toLowerCase();
-  return anchorTerms.some((term) => candidateText.includes(term));
+  const requiredCoverage = anchorTerms.length <= 3 ? 1 : 0.75;
+  return promptCoverage(prompt, anchor) >= requiredCoverage;
+}
+
+function isRelatedImagePrompt(candidate = '', anchor = '') {
+  const prompt = cleanImagePrompt(candidate);
+  if (prompt.length < 3 || INVALID_PROMPT_PATTERN.test(prompt)) return false;
+  const anchorTerms = promptTerms(anchor);
+  return !anchorTerms.length || promptCoverage(prompt, anchor) > 0;
+}
+
+function appendAdditiveRefinement(parts, candidate, anchors) {
+  if (!candidate || anchors.every((anchor) => !isRelatedImagePrompt(candidate, anchor))) return;
+  const duplicate = anchors.some((anchor) => cleanImagePrompt(anchor).toLowerCase() === candidate.toLowerCase());
+  if (!duplicate) {
+    parts.push(`ADDITIVE VISUAL REFINEMENT (must not override the requirements above): ${candidate}`);
+  }
 }
 
 export function normalizeImageGenerationOutput(modelText = '', userText = '', previousPrompt = '') {
@@ -43,15 +74,26 @@ export function normalizeImageGenerationOutput(modelText = '', userText = '', pr
   const prior = cleanImagePrompt(previousPrompt);
   const correction = cleanImagePrompt(userText);
 
-  let prompt;
+  let prompt = '';
   if (prior) {
-    const matchesPrior = isUsableImagePrompt(candidate, prior);
-    const matchesCorrection = !promptTerms(correction).length || isUsableImagePrompt(candidate, correction);
-    prompt = matchesPrior && matchesCorrection
-      ? candidate
-      : [prior, correction].filter(Boolean).join(', ');
+    const parts = [`BASE SCENE (preserve unless explicitly changed): ${prior}`];
+    if (correction) {
+      parts.push(`MANDATORY USER CHANGES (apply exactly; these override conflicting base details): ${correction}`);
+    }
+    appendAdditiveRefinement(parts, candidate, [prior, correction].filter(Boolean));
+    prompt = parts.join('\n\n');
   } else {
-    prompt = isUsableImagePrompt(candidate, correction) ? candidate : correction;
+    const completeRewrite = isUsableImagePrompt(candidate, correction)
+      && containsWholePhrase(candidate, correction);
+    if (completeRewrite) {
+      prompt = candidate;
+    } else if (correction) {
+      const parts = [`MANDATORY USER REQUIREMENTS (preserve every detail exactly): ${correction}`];
+      appendAdditiveRefinement(parts, candidate, [correction]);
+      prompt = parts.join('\n\n');
+    } else {
+      prompt = candidate;
+    }
   }
 
   return `[IMAGE_GEN: ${prompt || 'A high-quality, detailed image based on the user request'}]`;

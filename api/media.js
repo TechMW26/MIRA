@@ -2,7 +2,7 @@ import { put, del } from '@vercel/blob';
 
 const RETENTION_DAYS = 30;
 const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
-const MAX_PROMPT_CHARS = 900;
+const MAX_PROMPT_CHARS = 4000;
 const NSFW_PROMPT_PATTERN = /\b(nude|nudity|naked|explicit|erotic|porn|pornographic|xxx|18\+|lewd|nsfw|genitals?|penis|vagina|sex|sexual|breasts?|nipples?)\b/i;
 const INVALID_PROMPT_PATTERN = /(?:^|\[)(?:using tools?|mira_tool)|^(?:\.{2,}|…+|image|picture|photo|generated image)$/i;
 
@@ -14,7 +14,9 @@ function json(payload, status = 200) {
 }
 
 function cleanPrompt(value = '') {
-  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, MAX_PROMPT_CHARS);
+  const compact = String(value || '').replace(/\s+/g, ' ').trim();
+  if (compact.length <= MAX_PROMPT_CHARS) return compact;
+  return compact.slice(0, MAX_PROMPT_CHARS).replace(/\s+\S*$/, '').trim();
 }
 
 function safeId(value = '') {

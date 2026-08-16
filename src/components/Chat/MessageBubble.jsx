@@ -47,7 +47,7 @@ const MAX_FULL_RETRY_CYCLES = 1; // one extra full pass before hard failure
 const GENERATED_IMAGE_SIZE = '1280';
 const GENERATED_VIDEO_DURATION = '5';
 const GENERATED_VIDEO_RESOLUTION = '1080p';
-const MAX_GENERATED_PROMPT_CHARS = 900;
+const MAX_GENERATED_PROMPT_CHARS = 4000;
 
 function compactImagePrompt(prompt = '') {
   const compact = String(prompt || '').replace(/\s+/g, ' ').trim();
