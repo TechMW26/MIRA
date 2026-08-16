@@ -77,7 +77,9 @@ import {
 } from '../services/imagePrompt.js';
 import {
   buildGreetingResponse,
+  getPreviousGeneratedImageContext,
   getMostRecentAssistantMessage,
+  isPreviousImageEditRequest,
   isSimpleGreeting,
 } from '../services/contextPolicy.js';
 import { selectModelTools } from '../services/modelTools.js';
@@ -541,7 +543,14 @@ function extractImageGenerationPrompt(content = '') {
   return prompt || '';
 }
 
-async function persistGeneratedImageAsset({ prompt, userId, conversationId, messageId, allowNsfw = false }) {
+async function persistGeneratedImageAsset({
+  prompt,
+  userId,
+  conversationId,
+  messageId,
+  allowNsfw = false,
+  referenceImage = '',
+}) {
   const cleanPrompt = cleanImagePrompt(prompt);
   if (!cleanPrompt || !userId || !conversationId || !messageId) return null;
 
@@ -558,6 +567,7 @@ async function persistGeneratedImageAsset({ prompt, userId, conversationId, mess
       width: 1280,
       height: 1280,
       seed: imagePromptSeed(cleanPrompt),
+      ...(referenceImage ? { referenceImage } : {}),
     }),
   });
 
@@ -662,31 +672,12 @@ function describeGeneratedImageContent(content = '') {
     : 'Generated an image in the previous assistant turn.';
 }
 
-function getLatestGeneratedImagePrompt(historySource = []) {
-  const message = getMostRecentAssistantMessage(Array.isArray(historySource) ? historySource : []);
-  const text = normalizeMessageContent(message?.promptContent || message?.content || '');
-  const markerPrompt = String(text || '').match(IMAGE_GEN_PATTERN)?.[1]?.trim();
-  const cleaned = cleanImagePrompt(markerPrompt || '');
-  return cleaned ? cleaned.slice(0, 4000) : '';
-}
-
 function getLatestGeneratedVideoPrompt(historySource = []) {
   const message = getMostRecentAssistantMessage(Array.isArray(historySource) ? historySource : []);
   const text = normalizeMessageContent(message?.promptContent || message?.content || '');
   const markerPrompt = String(text || '').match(VIDEO_GEN_PATTERN)?.[1]?.trim();
   const cleaned = cleanVideoPrompt(markerPrompt || '');
   return cleaned ? cleaned.slice(0, 900) : '';
-}
-
-function isImageRefinementFollowup(text = '') {
-  const value = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!value) return false;
-
-  const dissatisfaction = /\b(not\s+as\s+expected|not\s+good|not\s+right|doesn'?t\s+look\s+right|wrong|bad|failed|issue|problem|fix|improve|adjust|refine|tweak|modify|redo|regenerate|retry|again|visible|show|closer|close[-\s]?up|angle|lighting|camera|detail)\b/i;
-  const reference = /\b(this|that|it|image|pic|picture|render|generation|one|result|output|previous|last)\b/i;
-  const shortFollowup = value.length <= 220;
-
-  return shortFollowup && dissatisfaction.test(value) && reference.test(value);
 }
 
 function isVideoRefinementFollowup(text = '') {
@@ -1205,14 +1196,16 @@ export default function useChat() {
         }
         if (!isCurrentRun()) return;
 
-        const previousImagePrompt = getLatestGeneratedImagePrompt(historySource);
+        const previousImageContext = getPreviousGeneratedImageContext(historySource);
+        const previousImagePrompt = cleanImagePrompt(previousImageContext?.prompt || '').slice(0, 4000);
+        const previousImageReference = String(previousImageContext?.referenceImage || '').trim();
         const previousVideoPrompt = getLatestGeneratedVideoPrompt(historySource);
         const wantsImageRefinementFollowup = (
-          !wantsImageGeneration
-          && !hasImages
+          !hasImages
           && !wantsVideoGeneration
           && Boolean(previousImagePrompt)
-          && isImageRefinementFollowup(content)
+          && Boolean(previousImageReference)
+          && isPreviousImageEditRequest(content)
         );
         const wantsVideoRefinementFollowup = (
           !wantsVideoGeneration
@@ -2106,6 +2099,11 @@ export default function useChat() {
             fullText = normalizeImageGenerationOutput(fullText, content, wantsImageRefinementFollowup ? previousImagePrompt : '');
             const imagePrompt = extractImageGenerationPrompt(fullText);
             if (imagePrompt && isCurrentRun()) {
+              const generation = {
+                mode: wantsImageRefinementFollowup ? 'edit' : 'generate',
+                ...(wantsImageRefinementFollowup ? { referenceImage: previousImageReference } : {}),
+              };
+              generatedMediaForMessage = { generation };
               try {
                 const persistedImage = await persistGeneratedImageAsset({
                   prompt: imagePrompt,
@@ -2113,9 +2111,13 @@ export default function useChat() {
                   conversationId: convId,
                   messageId: assistantMsgId,
                   allowNsfw: false,
+                  referenceImage: wantsImageRefinementFollowup ? previousImageReference : '',
                 });
                 if (persistedImage?.url) {
-                  generatedMediaForMessage = { images: [persistedImage] };
+                  generatedMediaForMessage = {
+                    images: [persistedImage],
+                    generation,
+                  };
                 }
               } catch (persistErr) {
                 console.warn('Generated image persistence failed:', persistErr?.message);

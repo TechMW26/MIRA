@@ -55,7 +55,7 @@ function compactImagePrompt(prompt = '') {
   return compact.slice(0, MAX_GENERATED_PROMPT_CHARS).replace(/\s+\S*$/, '').trim();
 }
 
-function buildGeneratedImageUrl(prompt, cacheKey = '0-0') {
+function buildGeneratedImageUrl(prompt, cacheKey = '0-0', referenceImage = '') {
   const enhanced = compactImagePrompt(enhanceImagePrompt(prompt));
   const seed = Math.abs(hashString(enhanced)) % 1000000;
   const params = new URLSearchParams({
@@ -65,6 +65,7 @@ function buildGeneratedImageUrl(prompt, cacheKey = '0-0') {
     seed: String(seed),
     r: cacheKey,
   });
+  if (referenceImage) params.set('referenceImage', referenceImage);
   return `/api/generate-image?${params.toString()}`;
 }
 
@@ -353,7 +354,7 @@ function SearchingPlaceholder() {
   );
 }
 
-function GeneratedImageCard({ prompt, image }) {
+function GeneratedImageCard({ prompt, image, generation }) {
   const [retryNonce, setRetryNonce] = useState(0);
   const [transientAttempt, setTransientAttempt] = useState(0);
   const [fullRetryCycle, setFullRetryCycle] = useState(0);
@@ -370,10 +371,13 @@ function GeneratedImageCard({ prompt, image }) {
   const hasPersistedImage = Boolean(persistedImageUrl);
   const [persistedLoadMode, setPersistedLoadMode] = useState('direct'); // 'direct' | 'proxy'
   const [persistedRetryNonce, setPersistedRetryNonce] = useState(0);
+  const referenceImage = generation?.mode === 'edit'
+    ? String(generation?.referenceImage || image?.referenceImage || '').trim()
+    : '';
 
   const generatedImageUrl = useMemo(
-    () => buildGeneratedImageUrl(prompt, `${retryNonce}-${transientAttempt}`),
-    [prompt, retryNonce, transientAttempt]
+    () => buildGeneratedImageUrl(prompt, `${retryNonce}-${transientAttempt}`, referenceImage),
+    [prompt, referenceImage, retryNonce, transientAttempt]
   );
 
   const persistedImageSource = useMemo(() => {
@@ -431,7 +435,6 @@ function GeneratedImageCard({ prompt, image }) {
       }, delay);
       return;
     }
-    // The server already rotates through Pollinations' live model registry.
     // Run one delayed full retry before failing the card.
     if (fullRetryCycle < MAX_FULL_RETRY_CYCLES) {
       const delay = 2000 + (fullRetryCycle * 2200);
@@ -980,7 +983,11 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
                 <img src={message.image} alt="Generated" className="rounded-xl mb-3 max-w-full shadow-lg" />
               )}
               {imagePrompt ? (
-                <GeneratedImageCard prompt={imagePrompt} image={message.generatedMedia?.images?.[0]} />
+                <GeneratedImageCard
+                  prompt={imagePrompt}
+                  image={message.generatedMedia?.images?.[0]}
+                  generation={message.generatedMedia?.generation}
+                />
               ) : videoPrompt ? (
                 <GeneratedVideoCard prompt={videoPrompt} />
               ) : message.isStreaming && message.content ? (

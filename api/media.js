@@ -40,7 +40,14 @@ function buildImagePath({ userId, conversationId, messageId }) {
   return `generated/${uid}/${cid}/${ts}-${mid}.jpg`;
 }
 
-async function fetchGeneratedImage(req, { prompt, seed = 1, width = 1280, height = 1280, unsafe = false }) {
+async function fetchGeneratedImage(req, {
+  prompt,
+  seed = 1,
+  width = 1280,
+  height = 1280,
+  unsafe = false,
+  referenceImage = '',
+}) {
   const origin = new URL(req.url).origin;
   const params = new URLSearchParams({
     prompt,
@@ -49,6 +56,7 @@ async function fetchGeneratedImage(req, { prompt, seed = 1, width = 1280, height
     height: String(height),
     unsafe: unsafe ? '1' : '0',
   });
+  if (referenceImage) params.set('referenceImage', referenceImage);
   const response = await fetch(`${origin}/api/generate-image?${params.toString()}`);
   if (!response.ok) {
     const text = await response.text().catch(() => '');
@@ -60,7 +68,10 @@ async function fetchGeneratedImage(req, { prompt, seed = 1, width = 1280, height
   if (!bytes || bytes.byteLength === 0) {
     throw new Error('Generated image is empty');
   }
-  return { bytes, contentType, safety };
+  const mode = String(response.headers.get('x-mira-image-mode') || '').toLowerCase() === 'edit'
+    ? 'edit'
+    : 'generate';
+  return { bytes, contentType, safety, mode };
 }
 
 async function handlePersistImage(req, body) {
@@ -82,13 +93,15 @@ async function handlePersistImage(req, body) {
   const width = Number(body?.width || 1280) || 1280;
   const height = Number(body?.height || 1280) || 1280;
   const unsafe = body?.unsafe === true || body?.unsafe === '1';
+  const referenceImage = String(body?.referenceImage || '').trim();
 
-  const { bytes, contentType, safety } = await fetchGeneratedImage(req, {
+  const { bytes, contentType, safety, mode } = await fetchGeneratedImage(req, {
     prompt,
     seed,
     width,
     height,
     unsafe,
+    referenceImage,
   });
 
   const promptMarkedNsfw = NSFW_PROMPT_PATTERN.test(prompt);
@@ -115,6 +128,8 @@ async function handlePersistImage(req, body) {
       nsfw,
       createdAt: Date.now(),
       expiresAt,
+      mode,
+      ...(referenceImage ? { referenceImage } : {}),
     },
   });
 }

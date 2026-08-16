@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildGreetingResponse,
+  getPreviousGeneratedImageContext,
   getMostRecentAssistantMessage,
+  isPreviousImageEditRequest,
   isSimpleGreeting,
 } from './contextPolicy.js';
 import { selectModelTools } from './modelTools.js';
@@ -13,6 +15,26 @@ test('simple greetings form a hard text-only context boundary', () => {
   assert.equal(isSimpleGreeting('Hey, generate an image'), false);
   assert.doesNotMatch(buildGreetingResponse('Hey'), /IMAGE_GEN|MIRA_TOOL/i);
   assert.deepEqual(selectModelTools({ disableTools: true }), []);
+});
+
+test('routes only explicit previous-image edits through image context', () => {
+  assert.equal(isPreviousImageEditRequest('Make an image of a blue elephant'), false);
+  assert.equal(isPreviousImageEditRequest('Change the previous image background to blue'), true);
+  assert.equal(isPreviousImageEditRequest('Refine this generated image and keep the face'), true);
+  assert.equal(isPreviousImageEditRequest('Make it brighter'), true);
+
+  assert.deepEqual(getPreviousGeneratedImageContext([
+    {
+      role: 'assistant',
+      content: '[IMAGE_GEN: a studio portrait]',
+      generatedMedia: { images: [{ url: 'https://blob.example/portrait.png' }] },
+    },
+    { role: 'user', content: 'That looks good.' },
+    { role: 'assistant', content: 'Glad you like it.' },
+  ]), {
+    prompt: 'a studio portrait',
+    referenceImage: 'https://blob.example/portrait.png',
+  });
 });
 
 test('media generation tools require current-turn media intent', () => {

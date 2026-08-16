@@ -13,6 +13,11 @@ export default defineConfig({
       ],
       manifest: false,
       workbox: {
+        cacheId: 'mira-v2',
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        skipWaiting: true,
+        importScripts: ['/pwa-cache-reset-v2.js'],
         navigateFallbackDenylist: [/^\/api\//],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
       },

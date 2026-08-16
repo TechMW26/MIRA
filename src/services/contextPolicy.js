@@ -1,4 +1,5 @@
 const SIMPLE_GREETING_PATTERN = /^\s*(?:hi+|hii+|hello+|hey+|hey\s+there|hello\s+there|yo|sup|howdy|hola|namaste|good\s+(?:morning|afternoon|evening))(?:[!.?\s]+)?$/i;
+const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
 
 export function isSimpleGreeting(text = '') {
   const value = String(text || '').replace(/\s+/g, ' ').trim();
@@ -19,4 +20,30 @@ export function getMostRecentAssistantMessage(history = []) {
     if (history[index]?.role === 'assistant') return history[index];
   }
   return null;
+}
+
+export function getPreviousGeneratedImageContext(history = []) {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index];
+    if (message?.role !== 'assistant') continue;
+    const content = String(message?.promptContent || message?.content || '');
+    const prompt = content.match(IMAGE_GEN_PATTERN)?.[1]?.trim() || '';
+    if (!prompt) continue;
+    const generatedImage = message?.generatedMedia?.images?.[0];
+    const referenceImage = typeof generatedImage?.url === 'string'
+      ? generatedImage.url.trim()
+      : typeof message?.image === 'string'
+        ? message.image.trim()
+        : '';
+    return { prompt, referenceImage };
+  }
+  return null;
+}
+
+export function isPreviousImageEditRequest(text = '') {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!value || value.length > 500) return false;
+  const action = /\b(edit|modify|refine|retouch|adjust|tweak|change|replace|remove|add|swap|restyle|rework|fix|improve|redo|regenerate|make|turn)\b/i;
+  const explicitReference = /\b(previous|last|same|this|that)\s+(?:generated\s+)?(?:image|photo|picture|render|result|output|one)\b|\b(?:edit|modify|refine|retouch|adjust|tweak|change|replace|remove|add|swap|restyle|rework|fix|improve|redo|regenerate|make|turn)\s+(?:it|this|that|the\s+(?:image|photo|picture|render))\b/i;
+  return action.test(value) && explicitReference.test(value);
 }
