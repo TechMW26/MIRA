@@ -31,6 +31,7 @@ test('builds one streaming Ollama payload from the registry selection', () => {
   assert.equal(payload.think, true);
   assert.equal(payload.keep_alive, '30m');
   assert.equal(payload.options.num_predict, 500);
+  assert.equal(payload.options.repeat_penalty, 1.05);
   assert.ok(payload.messages.some((message) => message.role === 'user' && message.content === 'Hello'));
 });
 
