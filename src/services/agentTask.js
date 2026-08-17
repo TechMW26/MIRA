@@ -158,9 +158,19 @@ export async function runAgentTask({
   try {
     const planText = await generate(buildAgentPlanPrompt({ goal, context, requiresResearch }));
     plan = parseAgentPlan(planText, { goal, requiresResearch });
-  } catch {
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
     plan = fallbackAgentPlan(goal, requiresResearch);
   }
+  onPhase?.({
+    phase: 'planned',
+    total: plan.length,
+    steps: plan.map((step, index) => ({
+      id: index,
+      title: step.title,
+      instruction: step.instruction,
+    })),
+  });
 
   const results = [];
   for (let index = 0; index < plan.length; index += 1) {
@@ -175,8 +185,24 @@ export async function runAgentTask({
         if (!String(result || '').trim()) throw new Error('Step returned no useful result.');
         results.push(compact(result, MAX_STEP_RESULT_CHARS));
       }
+      onPhase?.({
+        phase: 'step-completed',
+        step: index + 1,
+        total: plan.length,
+        title: step.title,
+        result: results[index],
+      });
     } catch (error) {
-      results.push(`Step could not be completed: ${error?.message || 'Unknown error'}`);
+      if (error?.name === 'AbortError') throw error;
+      const result = `Step could not be completed: ${error?.message || 'Unknown error'}`;
+      results.push(result);
+      onPhase?.({
+        phase: 'step-error',
+        step: index + 1,
+        total: plan.length,
+        title: step.title,
+        result,
+      });
     }
   }
 

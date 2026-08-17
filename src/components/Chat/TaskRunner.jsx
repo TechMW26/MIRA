@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { X, Play, CheckCircle2, Circle, Loader, ChevronDown, ChevronRight, Zap, BrainCircuit, Square } from 'lucide-react';
+import { X, Play, CheckCircle2, Circle, Loader, ChevronDown, ChevronRight, Zap, Square } from 'lucide-react';
 import { sendChatMessage, stopChatGeneration } from '../../services/api';
 
 const STATUS = { pending: 'pending', running: 'running', done: 'done', error: 'error', stopped: 'stopped' };
@@ -35,13 +35,28 @@ function extractJsonArray(text) {
   throw new Error('Could not parse task plan.');
 }
 
-export default function TaskRunner({ onSendMessage, onClose }) {
+const PHASE_LABELS = {
+  planning: 'Planning',
+  executing: 'Executing',
+  synthesizing: 'Synthesizing',
+  responding: 'Writing response',
+  completed: 'Completed',
+  stopped: 'Stopped',
+  error: 'Failed',
+};
+
+export default function TaskRunner({
+  workflow,
+  onStop,
+  onClearWorkflow,
+  onSendMessage,
+  onClose,
+}) {
   const [goal, setGoal] = useState('');
   const [tasks, setTasks] = useState([]);
   const [running, setRunning] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [phase, setPhase] = useState('');
-  const [liveReasoning, setLiveReasoning] = useState('');
   const cancelledRef = useRef(false);
 
   async function runReasonedPrompt(prompt, onProgress) {
@@ -55,7 +70,6 @@ export default function TaskRunner({ onSendMessage, onClose }) {
       [],
       {
         think: true,
-        onThinking: (thinking) => setLiveReasoning(thinking),
       },
     );
     return result;
@@ -77,7 +91,6 @@ export default function TaskRunner({ onSendMessage, onClose }) {
     setRunning(true);
     setTasks([]);
     setPhase('Planning');
-    setLiveReasoning('');
 
     const planPrompt = `You are MIRA's planning engine. Analyze the goal, identify dependencies, and create 3-6 concrete sequential tasks. Each task must be independently executable by an AI reasoning agent. Reply ONLY with valid JSON in this schema: [{"title":"Task name","prompt":"Complete execution instruction including expected output"}]. Goal: ${goal}`;
 
@@ -113,7 +126,6 @@ export default function TaskRunner({ onSendMessage, onClose }) {
     for (let i = 0; i < taskList.length; i++) {
       if (cancelledRef.current) return;
       setTasks(prev => prev.map((task, index) => index === i ? { ...task, status: STATUS.running } : task));
-      setLiveReasoning('');
 
       try {
         const context = results.length ? `\nPrevious completed results:\n${results.map((result, index) => `Step ${index + 1}:\n${result.slice(0, 2500)}`).join('\n\n')}\n\n` : '';
@@ -146,6 +158,111 @@ export default function TaskRunner({ onSendMessage, onClose }) {
     return <Circle size={14} style={{ color: 'var(--text-tertiary)' }} />;
   };
 
+  if (workflow) {
+    const finishedSteps = workflow.steps.filter((task) => (
+      task.status === STATUS.done || task.status === STATUS.error
+    )).length;
+    const totalSteps = workflow.steps.length;
+    const progress = workflow.status === 'completed'
+      ? 100
+      : totalSteps > 0
+        ? Math.round((finishedSteps / totalSteps) * 100)
+      : (workflow.phase === 'planning' ? 8 : 0);
+    const phaseLabel = PHASE_LABELS[workflow.phase] || 'Working';
+    const isRunning = workflow.status === 'running';
+
+    return (
+      <div className="flex flex-col h-full w-full">
+        <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
+          <Zap size={13} style={{ color: 'var(--accent)' }} />
+          <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary)' }}>Task Workflow</span>
+          <span className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>{phaseLabel}</span>
+          <button onClick={onClose} aria-label="Close task workflow" className="p-1 rounded hover:opacity-70"><X size={13} style={{ color: 'var(--text-tertiary)' }} /></button>
+        </div>
+
+        <div className="p-3 flex-shrink-0 space-y-3" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-tertiary)' }}>Goal</div>
+            <p className="text-xs leading-relaxed" style={{ color: 'var(--text-primary)' }}>{workflow.goal}</p>
+          </div>
+          <div>
+            <div className="flex items-center justify-between text-[10px] mb-1.5" style={{ color: 'var(--text-tertiary)' }}>
+              <span>{totalSteps ? `${finishedSteps} of ${totalSteps} steps finished` : phaseLabel}</span>
+              <span>{Math.min(100, progress)}%</span>
+            </div>
+            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--hover-bg)' }}>
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${Math.min(100, progress)}%`, background: 'var(--accent)' }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-3 space-y-2" aria-live="polite">
+          {workflow.phase === 'planning' && workflow.steps.length === 0 && (
+            <div className="rounded-xl p-3 flex items-center gap-2 text-xs" style={{ background: 'var(--hover-bg)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
+              <Loader size={14} className="animate-spin" style={{ color: 'var(--accent)' }} />
+              Building the execution plan…
+            </div>
+          )}
+          {workflow.steps.map((task, index) => (
+            <div key={task.id ?? index} className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+              <button
+                onClick={() => setExpanded(value => ({ ...value, [index]: !value[index] }))}
+                className="w-full flex items-center gap-2 px-3 py-2.5 text-left"
+                style={{ background: task.status === STATUS.running ? 'var(--hover-bg)' : 'var(--glass-bg)' }}
+                aria-expanded={Boolean(expanded[index])}
+              >
+                {statusIcon(task.status)}
+                <span className="text-xs font-medium flex-1" style={{ color: 'var(--text-primary)' }}>
+                  Step {index + 1}: {task.title}
+                </span>
+                {(task.result || task.instruction) && (expanded[index] ? <ChevronDown size={11} /> : <ChevronRight size={11} />)}
+              </button>
+              {expanded[index] && (task.result || task.instruction) && (
+                <div className="px-3 py-2 text-xs whitespace-pre-wrap" style={{ color: 'var(--text-secondary)', background: 'var(--bg-primary)', borderTop: '1px solid var(--border)' }}>
+                  {task.result || task.instruction}
+                </div>
+              )}
+            </div>
+          ))}
+          {workflow.phase === 'responding' && (
+            <div className="rounded-xl p-3 flex items-center gap-2 text-xs" style={{ background: 'var(--hover-bg)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
+              <Loader size={14} className="animate-spin" style={{ color: 'var(--accent)' }} />
+              Preparing the final response in chat…
+            </div>
+          )}
+          {workflow.error && (
+            <div className="rounded-xl p-3 text-xs" style={{ border: '1px solid #ef444466', color: '#ef4444' }}>
+              {workflow.error}
+            </div>
+          )}
+        </div>
+
+        <div className="p-3 flex-shrink-0" style={{ borderTop: '1px solid var(--border)' }}>
+          {isRunning ? (
+            <button
+              onClick={onStop}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition-all hover:opacity-90"
+              style={{ background: 'var(--hover-bg)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+            >
+              <Square size={12} /> Stop workflow
+            </button>
+          ) : (
+            <button
+              onClick={onClearWorkflow}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition-all hover:opacity-90"
+              style={{ background: 'var(--accent)', color: '#fff' }}
+            >
+              <Play size={12} /> Start another task
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full w-full">
       <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
@@ -176,15 +293,6 @@ export default function TaskRunner({ onSendMessage, onClose }) {
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
-        {running && liveReasoning && (
-          <div className="rounded-xl p-3 text-xs" style={{ background: 'var(--hover-bg)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
-            <div className="flex items-center gap-2 mb-2 uppercase tracking-wider text-[10px]" style={{ color: 'var(--accent)' }}>
-              <BrainCircuit size={12} />
-              Reasoning
-            </div>
-            {liveReasoning.slice(-1000)}
-          </div>
-        )}
         {tasks.length === 0 && (
           <p className="text-xs text-center py-8" style={{ color: 'var(--text-tertiary)' }}>
             Enter a goal above and MIRA will break it into steps and execute each one automatically.

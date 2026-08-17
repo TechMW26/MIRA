@@ -28,6 +28,7 @@ test('bounds and sanitizes model-generated plans', () => {
 
 test('executes planned research and reasoning sequentially before returning the final handoff', async () => {
   const generatedPrompts = [];
+  const phases = [];
   let generation = 0;
   const output = await runAgentTask({
     goal: 'Compare two products',
@@ -44,9 +45,30 @@ test('executes planned research and reasoning sequentially before returning the 
       return 'The evidence supports product A for speed and product B for price.';
     },
     search: async () => ({ results: [{ title: 'Benchmark', snippet: 'Measured results', url: 'https://example.com' }] }),
+    onPhase: (phase) => phases.push(phase),
   });
   assert.equal(generatedPrompts.length, 2);
   assert.match(output, /Benchmark/);
   assert.match(output, /product A for speed/);
   assert.match(output, /Final response requirement/);
+  assert.deepEqual(phases.map((phase) => phase.phase), [
+    'planning',
+    'planned',
+    'executing',
+    'step-completed',
+    'executing',
+    'step-completed',
+    'synthesizing',
+  ]);
+  assert.deepEqual(phases[1].steps.map((step) => step.title), ['Research', 'Compare']);
+  assert.match(phases[3].result, /Benchmark/);
+});
+
+test('stops the workflow immediately when generation is cancelled', async () => {
+  const cancelled = new Error('Cancelled');
+  cancelled.name = 'AbortError';
+  await assert.rejects(runAgentTask({
+    goal: 'Cancelled task',
+    generate: async () => { throw cancelled; },
+  }), { name: 'AbortError' });
 });

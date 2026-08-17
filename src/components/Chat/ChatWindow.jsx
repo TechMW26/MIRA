@@ -107,7 +107,17 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
 
 export default function ChatWindow() {
   const { currentConversationId, isGenerating, isSearching } = useChatContext();
-  const { messages, streamingContent, thinkingContent, sendMessage, stopGenerating, retryMessage, editMessage } = useChat();
+  const {
+    messages,
+    streamingContent,
+    thinkingContent,
+    taskWorkflow,
+    clearTaskWorkflow,
+    sendMessage,
+    stopGenerating,
+    retryMessage,
+    editMessage,
+  } = useChat();
   const userProfile = useUserProfile();
 
   const [webSearch, setWebSearch] = useState(false);
@@ -121,6 +131,7 @@ export default function ChatWindow() {
   const autoScrollRef = useRef(true);
   const queueDrainRef = useRef(false);
   const previousConversationRef = useRef(currentConversationId);
+  const autoOpenedWorkflowRef = useRef(null);
 
   const displayMessages = useMemo(() => {
     if (!isGenerating || messages.length === 0) return messages;
@@ -231,6 +242,13 @@ export default function ChatWindow() {
 
   const togglePanel = (name) => setPanel(p => p === name ? null : name);
 
+  useEffect(() => {
+    if (!taskWorkflow?.id || taskWorkflow.status !== 'running') return;
+    if (autoOpenedWorkflowRef.current === taskWorkflow.id) return;
+    autoOpenedWorkflowRef.current = taskWorkflow.id;
+    setPanel('tasks');
+  }, [taskWorkflow?.id, taskWorkflow?.status]);
+
   const showingWelcome = messages.length === 0;
 
   return (
@@ -304,6 +322,9 @@ export default function ChatWindow() {
       {panel === 'tasks' && (
         <RightPanel id="tasks" defaultWidth={360} minWidth={280} maxWidth={720}>
           <TaskRunner
+            workflow={taskWorkflow}
+            onStop={stopGenerating}
+            onClearWorkflow={clearTaskWorkflow}
             onSendMessage={(content, goal) => {
               setPanel(null);
               const prompt = `Present the completed Task Runner output below as the final answer. Preserve all useful results, remove process chatter, and do not rerun completed steps.\n\n${content}`;

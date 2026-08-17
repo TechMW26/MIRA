@@ -91,6 +91,53 @@ const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 function stripAllControlText(text = '') {
   return stripToolControl(stripBrowserControl(stripWebSearchControl(text)));
 }
+
+function applyTaskWorkflowPhase(workflow, update = {}) {
+  if (!workflow) return workflow;
+  const next = { ...workflow, updatedAt: Date.now() };
+  if (update.phase === 'planning') return { ...next, phase: 'planning', status: 'running' };
+  if (update.phase === 'planned') {
+    return {
+      ...next,
+      phase: 'executing',
+      steps: (update.steps || []).map((step, index) => ({
+        id: step.id ?? index,
+        title: String(step.title || `Step ${index + 1}`),
+        instruction: String(step.instruction || ''),
+        status: 'pending',
+        result: '',
+      })),
+    };
+  }
+  if (update.phase === 'executing') {
+    const activeIndex = Math.max(0, Number(update.step || 1) - 1);
+    return {
+      ...next,
+      phase: 'executing',
+      currentStep: activeIndex,
+      steps: next.steps.map((step, index) => (
+        index === activeIndex ? { ...step, status: 'running' } : step
+      )),
+    };
+  }
+  if (update.phase === 'step-completed' || update.phase === 'step-error') {
+    const completedIndex = Math.max(0, Number(update.step || 1) - 1);
+    return {
+      ...next,
+      steps: next.steps.map((step, index) => (
+        index === completedIndex
+          ? {
+            ...step,
+            status: update.phase === 'step-error' ? 'error' : 'done',
+            result: String(update.result || ''),
+          }
+          : step
+      )),
+    };
+  }
+  if (update.phase === 'synthesizing') return { ...next, phase: 'synthesizing' };
+  return next;
+}
 const HISTORY_ATTACHMENT_CHAR_LIMIT = 16000;
 const MAX_HISTORY_MESSAGES_FOR_MODEL = 24;
 const MAX_HISTORY_CHARS_FOR_MODEL = 18000;
@@ -808,6 +855,7 @@ export default function useChat() {
   const [messages, setMessages] = useState([]);
   const [streamingContent, setStreamingContent] = useState('');
   const [thinkingContent, setThinkingContent] = useState('');
+  const [taskWorkflow, setTaskWorkflow] = useState(null);
   const abortRef = useRef(false);
   const lastStableAssistantByIdRef = useRef(new Map());
   // rAF-coalesced streaming state setters: every model token would otherwise
@@ -1037,6 +1085,11 @@ export default function useChat() {
     setIsSearching(false);
     setStreamingContent('');
     setThinkingContent('');
+    setTaskWorkflow((current) => (
+      current?.status === 'running'
+        ? { ...current, phase: 'stopped', status: 'stopped', updatedAt: Date.now() }
+        : current
+    ));
     finalizeActiveResponse().catch((error) => {
       console.warn('Failed to finalize interrupted response:', error?.message);
     });
@@ -1842,6 +1895,16 @@ export default function useChat() {
           });
           const cached = cacheKey ? getCachedResponse(cacheKey) : null;
           if (autoTaskCall && isCurrentRun()) {
+            setTaskWorkflow({
+              id: `${convId || 'conversation'}:${runId}`,
+              runId,
+              goal: content.trim(),
+              phase: 'planning',
+              status: 'running',
+              steps: [],
+              startedAt: Date.now(),
+              updatedAt: Date.now(),
+            });
             diagnosticLog('tool', 'automatic task workflow started', {
               runId,
               complexity: engineResult.classification?.complexity || 'low',
@@ -2130,7 +2193,26 @@ export default function useChat() {
               const toolResult = await executeHostTool(finalToolCall, {
                 runTask: async (goal) => {
                   if (!goal) throw new Error('A task goal is required.');
+                  setTaskWorkflow((current) => (
+                    current?.runId === runId
+                      ? current
+                      : {
+                        id: `${convId || 'conversation'}:${runId}`,
+                        runId,
+                        goal: String(goal).trim(),
+                        phase: 'planning',
+                        status: 'running',
+                        steps: [],
+                        startedAt: Date.now(),
+                        updatedAt: Date.now(),
+                      }
+                  ));
                   const generate = async (prompt) => {
+                    if (!isCurrentRun()) {
+                      const cancelled = new Error('Task workflow was stopped.');
+                      cancelled.name = 'AbortError';
+                      throw cancelled;
+                    }
                     let result = '';
                     await sendChatMessage(
                       [{ role: 'user', content: prompt }],
@@ -2142,6 +2224,11 @@ export default function useChat() {
                         systemPrompt: 'You are an internal planning and execution worker. Complete only the requested private phase. Never call or mention tools, never emit control markers, and never address the end user.',
                       },
                     );
+                    if (!isCurrentRun()) {
+                      const cancelled = new Error('Task workflow was stopped.');
+                      cancelled.name = 'AbortError';
+                      throw cancelled;
+                    }
                     if (!result.trim()) throw new Error('The task step returned no result.');
                     return result.trim();
                   };
@@ -2151,21 +2238,41 @@ export default function useChat() {
                     requiresResearch: Boolean(effectiveWebSearch || groundingSearchData),
                     freshness: needsFreshInformation(content),
                     generate,
-                    search: async (query, { freshness }) => searchWeb({
-                      query,
-                      anchor: query,
-                      strictAnchor: false,
-                      freshness,
-                      includeMedia: false,
-                    }, {
-                      attemptsPerQuery: 1,
-                      retryEmpty: true,
-                    }),
-                    onPhase: (phase) => diagnosticLog('tool', 'task workflow progress', { runId, ...phase }),
+                    search: async (query, { freshness }) => {
+                      if (!isCurrentRun()) {
+                        const cancelled = new Error('Task workflow was stopped.');
+                        cancelled.name = 'AbortError';
+                        throw cancelled;
+                      }
+                      return searchWeb({
+                        query,
+                        anchor: query,
+                        strictAnchor: false,
+                        freshness,
+                        includeMedia: false,
+                      }, {
+                        attemptsPerQuery: 1,
+                        retryEmpty: true,
+                      });
+                    },
+                    onPhase: (phase) => {
+                      diagnosticLog('tool', 'task workflow progress', { runId, ...phase });
+                      if (!isCurrentRun()) return;
+                      setTaskWorkflow((current) => (
+                        current?.runId === runId ? applyTaskWorkflowPhase(current, phase) : current
+                      ));
+                    },
                   });
                 },
               });
               const isTaskResult = finalToolCall.name === TOOL_NAMES.TASK;
+              if (isTaskResult && isCurrentRun()) {
+                setTaskWorkflow((current) => (
+                  current?.runId === runId
+                    ? { ...current, phase: 'responding', status: 'running', updatedAt: Date.now() }
+                    : current
+                ));
+              }
               history[history.length - 1] = {
                 role: 'user',
                 content: isTaskResult
@@ -2195,7 +2302,27 @@ export default function useChat() {
                 },
               );
               fullText = continuedAnswer;
+              if (isTaskResult && isCurrentRun()) {
+                setTaskWorkflow((current) => (
+                  current?.runId === runId
+                    ? { ...current, phase: 'completed', status: 'completed', updatedAt: Date.now() }
+                    : current
+                ));
+              }
             } catch (toolError) {
+              if (finalToolCall.name === TOOL_NAMES.TASK && isCurrentRun()) {
+                setTaskWorkflow((current) => (
+                  current?.runId === runId
+                    ? {
+                      ...current,
+                      phase: 'error',
+                      status: 'error',
+                      error: toolError.message,
+                      updatedAt: Date.now(),
+                    }
+                    : current
+                ));
+              }
               fullText = `I couldn't complete that operation: ${toolError.message}`;
             }
           }
@@ -2573,6 +2700,8 @@ export default function useChat() {
     messages,
     streamingContent,
     thinkingContent,
+    taskWorkflow,
+    clearTaskWorkflow: () => setTaskWorkflow(null),
     sendMessage,
     stopGenerating,
     isGenerating,
