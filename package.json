@@ -5,8 +5,8 @@
   "description": "MIRA - Multi-Intelligent Responsive Assistant",
   "type": "module",
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail --names api,web \"node dev-api.js\" \"vite\"",
-    "dev:api": "node dev-api.js",
+    "dev": "concurrently --kill-others-on-fail --restart-tries -1 --restart-after exponential --names api,web \"node --watch dev-api.js\" \"vite\"",
+    "dev:api": "node --watch dev-api.js",
     "dev:vite": "vite",
     "test": "node --test src/services/*.test.js api/*.test.js",
     "build": "vite build",

@@ -1,7 +1,9 @@
+import { parseOllamaKeepAlive } from './ollamaConfig.js';
+
 export const config = { maxDuration: 60 };
 
 const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com/v1beta/models';
-const OLLAMA_KEEP_ALIVE = String(process.env.OLLAMA_VISION_KEEP_ALIVE || '0').trim();
+const OLLAMA_KEEP_ALIVE = parseOllamaKeepAlive(process.env.OLLAMA_VISION_KEEP_ALIVE, 0);
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_PROMPT_CHARS = 6000;

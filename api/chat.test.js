@@ -61,7 +61,7 @@ test('builds one streaming Ollama payload from the registry selection', () => {
   assert.equal(payload.model, 'runtime-model');
   assert.equal(payload.stream, true);
   assert.equal(payload.think, true);
-  assert.equal(payload.keep_alive, '-1');
+  assert.equal(payload.keep_alive, -1);
   assert.equal(payload.options.num_predict, 500);
   assert.equal(payload.options.num_ctx, 16384);
   assert.equal(payload.options.repeat_penalty, 1.05);

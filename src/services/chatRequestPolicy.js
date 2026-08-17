@@ -23,3 +23,17 @@ export function isChatTimeoutError(error) {
   return /(?:did not (?:start|begin) responding|model_start_timeout|response stalled|took too long|model is busy)/i
     .test(String(error?.message || ''));
 }
+
+const RETRYABLE_CHAT_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+export function shouldRetryChatRequest(error, attemptNumber = 1, maxAttempts = 2) {
+  if (attemptNumber >= maxAttempts || error?.name === 'AbortError') return false;
+  if (isChatTimeoutError(error)) return true;
+  if (RETRYABLE_CHAT_STATUS.has(Number(error?.status))) return true;
+  return /(?:failed to fetch|network|connection|socket|temporar|overload|empty response|model.*unavailable)/i
+    .test(String(error?.message || ''));
+}
+
+export function getChatRetryDelayMs(attemptNumber = 1) {
+  return Math.min(1500, 350 * Math.max(1, Number(attemptNumber) || 1));
+}

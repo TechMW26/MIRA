@@ -51,6 +51,11 @@ test('media generation tools require current-turn media intent', () => {
   assert.equal(imageTools.some((tool) => tool.function.name === 'video.generate'), false);
 });
 
+test('web search can be withheld for self-contained turns', () => {
+  const tools = selectModelTools({ allowWebSearch: false });
+  assert.equal(tools.some((tool) => tool.function.name === 'web.search'), false);
+});
+
 test('only the most recent assistant turn can anchor a refinement', () => {
   const latest = getMostRecentAssistantMessage([
     { role: 'assistant', content: '[IMAGE_GEN: an old scene]' },

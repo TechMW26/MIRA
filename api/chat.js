@@ -1,3 +1,5 @@
+import { parseOllamaKeepAlive } from './ollamaConfig.js';
+
 export const config = { maxDuration: 300 };
 
 const OLLAMA_CHAT_API_URL = String(process.env.OLLAMA_API_URL || '').trim();
@@ -5,7 +7,7 @@ const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 12000);
 const OLLAMA_TEMPERATURE = Number(process.env.OLLAMA_TEMPERATURE || 0.2);
 const OLLAMA_TOP_P = Number(process.env.OLLAMA_TOP_P || 0.85);
 const OLLAMA_REPEAT_PENALTY = Number(process.env.OLLAMA_REPEAT_PENALTY || 1.05);
-const OLLAMA_KEEP_ALIVE = String(process.env.OLLAMA_KEEP_ALIVE || '-1').trim();
+const OLLAMA_KEEP_ALIVE = parseOllamaKeepAlive(process.env.OLLAMA_KEEP_ALIVE, -1);
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_TOKENS_CAP = 12000;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);

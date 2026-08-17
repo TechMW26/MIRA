@@ -53,6 +53,7 @@ test('builds an Ollama vision request with validated image data', () => {
   });
   assert.equal(payload.model, 'vision-model');
   assert.equal(payload.think, false);
+  assert.equal(payload.keep_alive, 0);
   assert.deepEqual(payload.messages[0].images, ['YWJj']);
 });
 

@@ -44,12 +44,14 @@ export const MODEL_TOOLS = [
 
 export function selectModelTools({
   disableTools = false,
+  allowWebSearch = true,
   allowImageGeneration = false,
   allowVideoGeneration = false,
 } = {}) {
   if (disableTools) return [];
   return MODEL_TOOLS.filter((tool) => {
     const name = tool?.function?.name;
+    if (name === 'web.search') return allowWebSearch;
     if (name === 'image.generate') return allowImageGeneration;
     if (name === 'video.generate') return allowVideoGeneration;
     return true;

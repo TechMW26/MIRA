@@ -54,6 +54,7 @@ export default defineConfig({
           });
         },
       },
+      '/api/health': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search-query': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/browser-mcp': { target: 'http://localhost:3002', changeOrigin: true },

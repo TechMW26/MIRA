@@ -2,8 +2,10 @@ import { MODEL_TOOLS } from './modelTools.js';
 import { TOOL_NAMES } from './toolControl.js';
 import {
   CHAT_REQUEST_TIMEOUTS,
+  getChatRetryDelayMs,
   getChatTimeoutMessage,
   getResponseHeadersTimeout,
+  shouldRetryChatRequest,
 } from './chatRequestPolicy.js';
 import { diagnosticError, diagnosticLog, diagnosticWarn } from './diagnostics.js';
 
@@ -30,6 +32,14 @@ class ChatTimeoutError extends Error {
   }
 }
 
+class ChatHttpError extends Error {
+  constructor(status, message) {
+    super(message || `API error: ${status}`);
+    this.name = 'ChatHttpError';
+    this.status = Number(status) || 500;
+  }
+}
+
 function createAttemptSignal(parentSignal) {
   const controller = new AbortController();
   const abortFromParent = () => controller.abort(parentSignal?.reason);
@@ -50,6 +60,52 @@ function raceWithTimeout(promise, timeoutMs, kind, onTimeout) {
     }, timeoutMs);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function cancelChatAttempt(requestId) {
+  if (!requestId) return;
+  try {
+    await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'cancel', requestId }),
+      keepalive: true,
+    });
+  } catch {
+    // The attempt's local abort has already closed the client connection.
+  }
+}
+
+async function diagnoseChatFailure(originalError, attemptNumber) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch('/api/health', {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    const health = await response.json().catch(() => ({}));
+    diagnosticWarn('health', 'automatic troubleshooting completed', {
+      attempt: attemptNumber,
+      originalError: originalError?.message || 'Unknown chat failure',
+      ready: Boolean(health?.ready),
+      registryReachable: Boolean(health?.registryReachable),
+      loadedModelCount: Number(health?.loadedModelCount || 0),
+      latencyMs: Number(health?.latencyMs || 0),
+    });
+  } catch (error) {
+    diagnosticWarn('health', 'automatic troubleshooting could not reach health endpoint', {
+      attempt: attemptNumber,
+      error: error?.name === 'AbortError' ? 'Health check timed out.' : (error?.message || 'Health check failed.'),
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function contentToText(content) {
@@ -419,70 +475,96 @@ export function installGenerationExitCancellation() {
 async function requestChat({ messages, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think, onChunk }) {
   const controller = new AbortController();
   activeChatAbortController = controller;
-  const requestId = createRequestId();
-  activeChatRequestId = requestId;
-  const { controller: attemptController, cleanup: cleanupAttemptSignal } = createAttemptSignal(controller.signal);
-  const attemptStartedAt = Date.now();
 
   try {
-    diagnosticLog('model', 'request started', {
-      requestId,
-      streaming: true,
-      imageCount: images.length,
-    });
-    const response = await raceWithTimeout(
-      fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: attemptController.signal,
-        body: JSON.stringify({
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const requestId = createRequestId();
+      activeChatRequestId = requestId;
+      const { controller: attemptController, cleanup: cleanupAttemptSignal } = createAttemptSignal(controller.signal);
+      const attemptStartedAt = Date.now();
+      let receivedAnswer = false;
+
+      try {
+        diagnosticLog('model', 'request started', {
           requestId,
-          messages,
-          ...(systemPrompt ? { systemPrompt } : {}),
-          images,
-          stream: true,
-          ...(maxTokens ? { max_tokens: maxTokens } : {}),
-          ...(Array.isArray(tools) && tools.length > 0 ? { tools } : {}),
-          ...(typeof think === 'boolean' ? { think } : {}),
-        }),
-      }),
-      getResponseHeadersTimeout(),
-      'response-headers',
-      () => attemptController.abort(),
-    );
-    diagnosticLog('stream', 'response headers received', {
-      requestId,
-      status: response.status,
-      elapsedMs: Date.now() - attemptStartedAt,
-    });
-    if (!response.ok) {
-      const message = await extractApiError(response);
-      throw new Error(message || `API error: ${response.status}`);
+          attempt,
+          maxAttempts,
+          streaming: true,
+          imageCount: images.length,
+        });
+        const response = await raceWithTimeout(
+          fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: attemptController.signal,
+            body: JSON.stringify({
+              requestId,
+              messages,
+              ...(systemPrompt ? { systemPrompt } : {}),
+              images,
+              stream: true,
+              ...(maxTokens ? { max_tokens: maxTokens } : {}),
+              ...(Array.isArray(tools) && tools.length > 0 ? { tools } : {}),
+              ...(typeof think === 'boolean' ? { think } : {}),
+            }),
+          }),
+          getResponseHeadersTimeout(),
+          'response-headers',
+          () => attemptController.abort(),
+        );
+        diagnosticLog('stream', 'response headers received', {
+          requestId,
+          attempt,
+          status: response.status,
+          elapsedMs: Date.now() - attemptStartedAt,
+        });
+        if (!response.ok) {
+          const message = await extractApiError(response);
+          throw new ChatHttpError(response.status, message);
+        }
+        const streamed = await readChatResponse(response, (chunk) => {
+          if (String(chunk?.answerFull || '').trim()) receivedAnswer = true;
+          onChunk?.(chunk);
+        }, attemptController.signal);
+        const visible = splitThinkingFromRaw(streamed?.answer || '').answer;
+        if (!String(visible || '').trim()) throw new Error('The model returned an empty response.');
+        diagnosticLog('stream', 'response completed', {
+          requestId,
+          attempt,
+          answerChars: String(visible || '').length,
+          thinkingChars: String(streamed?.thinking || '').length,
+          elapsedMs: Date.now() - attemptStartedAt,
+        });
+        return streamed;
+      } catch (err) {
+        if (controller.signal.aborted) throw new DOMException('Generation stopped by user.', 'AbortError');
+        const normalizedError = isAbortError(err) && attemptController.signal.aborted
+          ? new ChatTimeoutError('response-headers')
+          : err;
+        const retry = !receivedAnswer && shouldRetryChatRequest(normalizedError, attempt, maxAttempts);
+        diagnosticError('stream', retry ? 'request failed; automatic recovery started' : 'request failed', {
+          requestId,
+          attempt,
+          retry,
+          error: normalizedError?.message || 'Unknown request error',
+          errorType: normalizedError?.name || 'Error',
+          elapsedMs: Date.now() - attemptStartedAt,
+        });
+        if (!retry) throw normalizedError;
+
+        attemptController.abort();
+        await cancelChatAttempt(requestId);
+        await Promise.all([
+          diagnoseChatFailure(normalizedError, attempt),
+          wait(getChatRetryDelayMs(attempt)),
+        ]);
+      } finally {
+        cleanupAttemptSignal();
+      }
     }
-    const streamed = await readChatResponse(response, onChunk, attemptController.signal);
-    const visible = splitThinkingFromRaw(streamed?.answer || '').answer;
-    if (!String(visible || '').trim()) throw new Error('The model returned an empty response.');
-    diagnosticLog('stream', 'response completed', {
-      requestId,
-      answerChars: String(visible || '').length,
-      thinkingChars: String(streamed?.thinking || '').length,
-      elapsedMs: Date.now() - attemptStartedAt,
-    });
-    return streamed;
-  } catch (err) {
-    if (controller.signal.aborted) throw new DOMException('Generation stopped by user.', 'AbortError');
-    const normalizedError = isAbortError(err) && attemptController.signal.aborted
-      ? new ChatTimeoutError('response-headers')
-      : err;
-    diagnosticError('stream', 'request failed', {
-      requestId,
-      error: normalizedError?.message || 'Unknown request error',
-      errorType: normalizedError?.name || 'Error',
-      elapsedMs: Date.now() - attemptStartedAt,
-    });
-    throw normalizedError;
+    throw new Error('Chat request failed after automatic recovery.');
   } finally {
-    cleanupAttemptSignal();
     if (activeChatAbortController === controller) {
       activeChatAbortController = null;
       activeChatRequestId = null;

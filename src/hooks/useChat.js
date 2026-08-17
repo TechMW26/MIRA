@@ -69,7 +69,7 @@ import {
 } from '../services/responseQuality';
 import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
 import { diagnosticLog, diagnosticWarn } from '../services/diagnostics.js';
-import { decideRetrievalPolicy } from '../services/retrievalPolicy.js';
+import { buildSearchToolGuidance, decideRetrievalPolicy } from '../services/retrievalPolicy.js';
 import {
   cleanImagePrompt,
   imagePromptSeed,
@@ -146,7 +146,9 @@ const MAX_GREETING_HISTORY_CHARS = 4000;
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
 const VIDEO_GEN_PATTERN = /\[VIDEO_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
 const MEDIA_REQUEST_PATTERN = /\b(video|videos|clip|clips|media|reel|reels|youtube|instagram|social\s+posts?)\b|\b(show|find|fetch|get|search|check|look\s+up|more)\b[^.!?]{0,40}\b(images|photos|pictures)\b|\b(images|photos|pictures)\b[^.!?]{0,40}\b(show|find|fetch|get|search|check|look\s+up|more)\b/i;
+const EXPLICIT_MEDIA_SEARCH_PATTERN = /\b(show|find|fetch|get|search|look\s+up|pull|give|include|add)\b[^.!?]{0,70}\b(videos?|clips?|media|images?|photos?|pictures?|reels?)\b|\b(videos?|clips?|media|images?|photos?|pictures?|reels?)\b[^.!?]{0,70}\b(show|find|fetch|get|search|look\s+up|pull|give|include|add)\b/i;
 const EXPLICIT_VISUAL_WEB_SEARCH_PATTERN = /\b(who\s+is\s+this|who\s+is\s+in\s+this\s+image|find\s+this\s+online|find\s+this\s+on\s+the\s+web|search\s+this\s+product|search\s+this\s+image|search\s+this\s+online|look\s+this\s+up|look\s+this\s+up\s+online|check\s+this\s+online|verify\s+this\s+online|find\s+out\s+what\s+product\s+this\s+is|search\s+the\s+web\s+for\s+this|identify\s+this\s+online)\b/i;
+const EXPLICIT_EXTERNAL_SEARCH_PATTERN = /\b(search|browse|look\s+up|find\s+online|web|internet|online|latest|current|today|recent|live|news|verify|fact[-\s]?check|cross[-\s]?check|up[-\s]?to[-\s]?date)\b/i;
 const CONTEXTUAL_DEVICE_MEDIA_PATTERN = /\b(this|that|the)\s+(device|product|tool|item|object|thing|model|prototype|machine|system)\b|\b(tell me more|more about|details about|background on|explain)\b[^.!?]{0,70}\b(this|that|it|device|product|object|thing|model|prototype|machine|system)\b/i;
 const CONTEXT_REFERENCE_PATTERN = /\b(it|its|this|that|these|those|they|them|the\s+(device|product|tool|item|object|thing|company|brand|manufacturer|maker|producer|person|model|app|software|platform|service|system|prototype|machine))\b/i;
 const CONTEXTUAL_WEB_RESEARCH_PATTERN = /\b(company|companies|manufacturer|manufactures?|producer|produces?|producing|maker|made\s+by|built\s+by|created\s+by|developed\s+by|owner|owned\s+by|founder|team|organization|brand|official|website|source|origin|specs?|features?|pricing|price|cost|availability|launch|release|details?|in[-\s]?depth|deep\s+dive|full\s+information|complete\s+information|let\s+me\s+know|tell\s+me\s+more|more\s+about|background|research|explain)\b/i;
@@ -547,21 +549,6 @@ function indicatesKnowledgeGap(text = '') {
   const value = String(text || '');
   if (value.length < 12) return false;
   return KNOWLEDGE_GAP_PATTERN.test(value);
-}
-
-const LOW_CONFIDENCE_PATTERN = new RegExp([
-  /there (?:isn'?t|is not|doesn'?t appear to be) (?:a |an )?(?:known|recognized|established|documented)/,
-  /(?:might|may|could) be (?:a )?(?:misunderstanding|misspelling|typo|fictional|made[- ]up|confusion)/,
-  /i(?:'?m| am) not (?:sure|certain|familiar|aware)/,
-  /i (?:couldn'?t|cannot|can'?t) (?:verify|confirm|find|identify)/,
-  /(?:perhaps|possibly|maybe) (?:you mean|you are referring to|it is|it'?s)/,
-  /not (?:a )?(?:widely )?(?:known|recognized|documented) (?:term|name|concept|entity|organism|product|project)/,
-].map((part) => part.source).join('|'), 'i');
-
-function indicatesLowConfidence(text = '') {
-  const value = String(text || '');
-  if (value.length < 12) return false;
-  return indicatesKnowledgeGap(value) || LOW_CONFIDENCE_PATTERN.test(value);
 }
 
 function cleanVideoPrompt(text = '') {
@@ -1284,8 +1271,34 @@ export default function useChat() {
         if (wantsVideoRefinementFollowup) {
           wantsVideoGeneration = true;
         }
+        const wantsMediaGallery = isMediaRequest(content);
+        const wantsOnlyMediaGallery = isMediaOnlyRequest(content);
+        const shouldUseVisualAnchor = needsVisualSearchAnchor(content, hasImages);
+        const shouldAttachContextualMedia = wantsContextualDeviceMedia(content);
+        const textResearchMediaScope = buildTextResearchMediaScope(content);
+        const shouldUseContextualSearch = needsContextualWebSearch(content, historySource);
+        const websiteInspectionRequest = detectWebsiteInspectionRequest(content);
+        const explicitlyRequestsExternalSearch = Boolean(
+          webSearch
+          || EXPLICIT_MEDIA_SEARCH_PATTERN.test(content)
+          || shouldUseVisualAnchor
+          || EXPLICIT_EXTERNAL_SEARCH_PATTERN.test(content)
+        );
+        const hasAuthoritativeContext = textAttachments.length > 0 && !explicitlyRequestsExternalSearch;
+        const retrievalPolicy = decideRetrievalPolicy({
+          manualSearch: webSearch,
+          engineNeedsSearch: hasAuthoritativeContext ? false : engineResult.needsSearch,
+          websiteInspection: Boolean(websiteInspectionRequest),
+          simpleGreeting,
+          mediaRequested: wantsMediaGallery,
+          visualSearch: shouldUseVisualAnchor,
+          contextualSearch: shouldUseContextualSearch,
+          contextualMedia: shouldAttachContextualMedia || Boolean(textResearchMediaScope),
+          hasAuthoritativeContext,
+        });
         const allowedModelTools = selectModelTools({
           disableTools: simpleGreeting,
+          allowWebSearch: retrievalPolicy.allowSearchTool,
           allowImageGeneration: wantsImageGeneration,
           allowVideoGeneration: wantsVideoGeneration,
         });
@@ -1320,7 +1333,12 @@ export default function useChat() {
             : 'CURRENT TURN MODE: Respond in text. Do not generate or refine images or videos, do not call media-generation tools, and do not carry a prior media task into this turn.';
         // Mira's stable identity and behavior contract live in the Ollama
         // model. Only small request-specific context crosses the network.
-        const runtimeContextBlock = [modalityBoundary, responsePreferencesBlock, adaptiveContext]
+        const runtimeContextBlock = [
+          modalityBoundary,
+          buildSearchToolGuidance(retrievalPolicy),
+          responsePreferencesBlock,
+          adaptiveContext,
+        ]
           .filter(Boolean)
           .join('\n\n');
 
@@ -1440,13 +1458,6 @@ export default function useChat() {
             userContent = `${userContent}\n\n=== CURRENT REQUEST CONTEXT ===\n${runtimeContextBlock}\n=== END CURRENT REQUEST CONTEXT ===`;
           }
 
-          const wantsMediaGallery = isMediaRequest(content);
-          const wantsOnlyMediaGallery = isMediaOnlyRequest(content);
-          const shouldUseVisualAnchor = needsVisualSearchAnchor(content, hasImages);
-          const shouldAttachContextualMedia = wantsContextualDeviceMedia(content);
-          const textResearchMediaScope = buildTextResearchMediaScope(content);
-          const shouldUseContextualSearch = needsContextualWebSearch(content, historySource);
-          const websiteInspectionRequest = detectWebsiteInspectionRequest(content);
           const recentContextAnchor = getRecentContextAnchor(historySource);
           const recentConversationContext = needsRecentConversationContext(content, historySource)
             ? buildRecentConversationContext(historySource)
@@ -1457,24 +1468,8 @@ export default function useChat() {
           if (recentConversationContextBlock) {
             userContent = `${userContent}${recentConversationContextBlock}`;
           }
-          // Auto-enable web search when an image question asks about a visible
-          // person/product/object/device. The image analysis becomes the search
-          // anchor, then the final answer uses live sources instead of stopping
-          // at a vision-only guess.
-          const retrievalPolicy = decideRetrievalPolicy({
-            manualSearch: webSearch,
-            engineNeedsSearch: engineResult.needsSearch,
-            websiteInspection: Boolean(websiteInspectionRequest),
-            simpleGreeting,
-            mediaRequested: wantsMediaGallery,
-            visualSearch: shouldUseVisualAnchor,
-            contextualSearch: shouldUseContextualSearch,
-            contextualMedia: shouldAttachContextualMedia || Boolean(textResearchMediaScope),
-          });
           const effectiveWebSearch = retrievalPolicy.search;
-          const responseModelTools = effectiveWebSearch
-            ? allowedModelTools.filter((tool) => tool?.function?.name !== TOOL_NAMES.WEB_SEARCH)
-            : allowedModelTools;
+          const responseModelTools = allowedModelTools;
           if (websiteInspectionRequest) {
             diagnosticLog('browser', 'website inspection intent takes precedence over web search', {
               runId,
@@ -1483,8 +1478,8 @@ export default function useChat() {
             });
             userContent = `${userContent}\n\nWEBSITE INSPECTION REQUEST: Call browser.inspect now using the MIRA_TOOL safeword. Do not answer from web search or general knowledge.`;
           }
-          if (effectiveWebSearch) {
-            diagnosticLog('search', 'web search triggered by router', {
+          if (retrievalPolicy.searchPriority) {
+            diagnosticLog('search', 'web search prioritized for model tool selection', {
               runId,
               manualToggle: Boolean(webSearch),
               engineRequested: Boolean(engineResult.needsSearch),
@@ -2383,11 +2378,8 @@ export default function useChat() {
           }
 
           // ── Model-driven fallback web search ──
-          // If MIRA answered that it lacks current/factual knowledge AND we did
-          // not already search the web, automatically run a web search and
-          // regenerate a grounded answer. This is what lets MIRA resort to the
-          // internet on its own when it is unable to answer — not only when the
-          // user toggles web access on.
+          // Execute retrieval only after MIRA explicitly requests web.search.
+          // Host-side confidence heuristics must never initiate a search.
           const explicitSearchRequest = extractWebSearchRequest(fullText);
           if (explicitSearchRequest?.query) {
             if (requestedWebSearchQuery !== explicitSearchRequest.query) {
@@ -2414,13 +2406,13 @@ export default function useChat() {
             !requestedDocumentFormat &&
             !hasImages &&
             content.trim().length > 0 &&
-            (Boolean(requestedWebSearchQuery) || indicatesLowConfidence(fullText));
+            Boolean(requestedWebSearchQuery);
 
           if (autoSearchEligible) {
             diagnosticWarn('search', 'automatic fallback search activated', {
               runId,
-              reason: requestedWebSearchQuery ? 'model-control' : 'low-confidence-answer',
-              query: String(requestedWebSearchQuery || buildContextualSearchQuery(content)).slice(0, 180),
+              reason: 'model-control',
+              query: String(requestedWebSearchQuery).slice(0, 180),
             });
             setIsSearching(true);
             cancelPendingStreamFlushes();
@@ -2434,7 +2426,7 @@ export default function useChat() {
               const fallbackFreshnessRequested = needsFreshInformation(content) || needsFreshInformation(fallbackQuery);
               const fallbackData = await searchWeb({
                 query: fallbackQuery,
-                includeMedia: false,
+                includeMedia: true,
                 freshness: fallbackFreshnessRequested,
               }, {
                 attemptsPerQuery: 1,
@@ -2446,6 +2438,28 @@ export default function useChat() {
                 groundingSearchData = fallbackData;
                 groundingSearchQuery = fallbackData.searchMeta?.queryUsed || fallbackQuery;
                 groundingFreshnessRequested = fallbackFreshnessRequested;
+                const fallbackVideos = filterRelevantMedia(fallbackData.media?.videos, fallbackQuery);
+                const fallbackImages = filterRelevantMedia(fallbackData.media?.images, fallbackQuery);
+                const fallbackArticleCandidates = [
+                  ...(Array.isArray(fallbackData.media?.articles) ? fallbackData.media.articles : []),
+                  ...fallbackResults.map((result) => ({
+                    ...result,
+                    type: result.type || 'article',
+                    confidence: Number(result.confidence || 1),
+                  })),
+                ];
+                const fallbackArticles = filterHighConfidenceArticles(fallbackArticleCandidates, fallbackQuery)
+                  .filter((article, index, articles) => (
+                    articles.findIndex((candidate) => candidate.url === article.url) === index
+                  ));
+                if (fallbackVideos.length || fallbackImages.length || fallbackArticles.length) {
+                  mediaForMessage = {
+                    videos: fallbackVideos,
+                    images: fallbackImages,
+                    articles: fallbackArticles,
+                    query: fallbackQuery,
+                  };
+                }
                 const snippets = fallbackResults
                   .map((r, i) => `[${i + 1}] ${r.title}${r.publishedAt ? `\nPublished: ${r.publishedAt}` : '\nPublished: date unavailable'}\n${r.snippet}${r.url ? '\nSource: ' + r.url : ''}`)
                   .join('\n\n');
