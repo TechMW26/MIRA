@@ -2,6 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "api/chat.js": { "maxDuration": 300, "regions": ["bom1"] },
+    "api/analyze.js": { "maxDuration": 60, "regions": ["bom1"] },
     "api/media.js": { "maxDuration": 120 },
     "api/cleanup-media.js": { "maxDuration": 300 }
   },

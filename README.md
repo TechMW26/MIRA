@@ -1,14 +1,14 @@
 # MIRA — Multi-Intelligent Responsive Assistant
 
-A conversational, research, vision, and media assistant backed by one dynamically discovered chat model.
+A conversational, research, vision, and media assistant backed by capability-selected Ollama models.
 
 ## Features
 
-- **Single-model chat** — The server selects the available completion model from the Ollama `/api/tags` registry
+- **Capability-routed models** — The server selects chat/thinking and vision models dynamically from Ollama `/api/tags`
 - **Automatic internet research** — Deterministic routing plus model-requested live search with citations
 - **Chat Interface** — Streaming responses, markdown rendering, syntax-highlighted code
 - **Permission-gated Chrome MCP inspection** — Agents can request structured website documentation only after user approval
-- **Image Analysis** — Dedicated Gemini vision analysis with ordered API-key fallback; raw images never enter normal chat
+- **Image Analysis** — Ollama vision runs first; Gemini is used only as an ordered-key fallback
 - **Image Generation** — Pollinations unified API with server-side authentication and live image-model discovery
 - **Project Management** — Organize conversations into projects
 - **Authentication** — Email/password registration and login via Firebase
@@ -40,14 +40,14 @@ VITE_FIREBASE_DATABASE_URL=
 BLOB_READ_WRITE_TOKEN=
 
 # Chat server; the model is discovered from /api/tags.
-OLLAMA_API_URL=http://147.93.102.103:11434/api/chat
+OLLAMA_API_URL=http://50.35.188.73:20005/api/chat
 OLLAMA_MAX_TOKENS=12000
 OLLAMA_CONTEXT_TOKENS=0
 OLLAMA_TEMPERATURE=0.2
 OLLAMA_TOP_P=0.85
 OLLAMA_REPEAT_PENALTY=1.2
 
-# Gemini vision only. GEMINI_API_KEYS accepts comma-separated fallback keys.
+# Gemini fallback only. Primary vision is discovered from Ollama /api/tags.
 GEMINI_API_KEYS=
 GEMINI_VISION_MODEL=gemini-2.5-flash
 

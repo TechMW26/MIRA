@@ -2,15 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildUpstreamPayload, POST, sanitizeTools, selectRegistryModel } from './chat.js';
 
-test('selects the first completion-capable model returned by the registry', () => {
+test('prefers a thinking-capable non-vision model for chat', () => {
   const selected = selectRegistryModel([
     { name: 'embedding-only', capabilities: ['embedding'] },
-    { name: 'runtime-model', capabilities: ['completion', 'vision', 'thinking'] },
-    { name: 'later-model', capabilities: ['completion'] },
+    { name: 'vision-model', capabilities: ['completion', 'vision'] },
+    { name: 'runtime-model', capabilities: ['completion', 'tools', 'thinking'] },
   ]);
   assert.deepEqual(selected, {
     name: 'runtime-model',
-    capabilities: ['completion', 'vision', 'thinking'],
+    capabilities: ['completion', 'tools', 'thinking'],
   });
 });
 

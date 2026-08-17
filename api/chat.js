@@ -47,16 +47,23 @@ function registryModelName(entry) {
 
 export function selectRegistryModel(models = []) {
   if (!Array.isArray(models)) return null;
-  const usable = models.find((entry) => {
+  const usable = models.filter((entry) => {
     const name = registryModelName(entry);
     if (!name) return false;
     const capabilities = Array.isArray(entry?.capabilities) ? entry.capabilities : [];
     return capabilities.length === 0 || capabilities.includes('completion');
   });
-  if (!usable) return null;
+  if (!usable.length) return null;
+  const selected = usable.find((entry) => {
+    const capabilities = Array.isArray(entry?.capabilities) ? entry.capabilities : [];
+    return capabilities.includes('thinking') && !capabilities.includes('vision');
+  }) || usable.find((entry) => {
+    const capabilities = Array.isArray(entry?.capabilities) ? entry.capabilities : [];
+    return !capabilities.includes('vision');
+  }) || usable[0];
   return {
-    name: registryModelName(usable),
-    capabilities: Array.isArray(usable.capabilities) ? usable.capabilities : [],
+    name: registryModelName(selected),
+    capabilities: Array.isArray(selected.capabilities) ? selected.capabilities : [],
   };
 }
 
