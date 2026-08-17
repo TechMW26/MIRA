@@ -436,30 +436,6 @@ async function searchYouTube(query, anchorScope = null, strictAnchor = false) {
   } catch { return null; }
 }
 
-// Drop dead / 404 article URLs before sending to the model and the UI.
-// Lightweight HEAD with 3s timeout; servers that block HEAD (405) are kept.
-async function validateUrls(items) {
-  if (!Array.isArray(items) || !items.length) return items || [];
-  const checks = items.map(async (r) => {
-    if (!r?.url || !/^https?:/i.test(r.url)) return { r, ok: true };
-    try {
-      const resp = await fetch(r.url, {
-        method: 'HEAD',
-        redirect: 'follow',
-        headers: { 'User-Agent': UA },
-        signal: AbortSignal.timeout(3500),
-      });
-      // Treat 405 (HEAD not allowed) and 403 (some bot walls) as "probably fine".
-      if (resp.status === 405 || resp.status === 403) return { r, ok: true };
-      return { r, ok: resp.status < 400 };
-    } catch {
-      return { r, ok: true }; // network blip — don't punish, model can still cite
-    }
-  });
-  const settled = await Promise.all(checks);
-  return settled.filter((x) => x.ok).map((x) => x.r);
-}
-
 // === Instagram via DuckDuckGo HTML search ===
 // DDG indexes /p/ and /reel/ URLs reasonably well; Bing aggressively blocks
 // site: queries. We embed via Instagram's own /embed endpoint.
@@ -520,13 +496,13 @@ function extractOgMedia(html, baseUrl) {
 }
 
 async function enrichFromArticles(results) {
-  const articleHits = (results || []).filter((r) => r.url && /^https?:\/\//i.test(r.url)).slice(0, 4);
+  const articleHits = (results || []).filter((r) => r.url && /^https?:\/\//i.test(r.url)).slice(0, 3);
   if (!articleHits.length) return { images: [], videos: [] };
   const fetched = await Promise.all(articleHits.map(async (r) => {
     try {
       const res = await fetch(r.url, {
         headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' },
-        signal: AbortSignal.timeout(6000),
+        signal: AbortSignal.timeout(3000),
       });
       if (!res.ok) return null;
       const ct = res.headers.get('content-type') || '';
@@ -659,12 +635,11 @@ export async function POST(req) {
       results = filterByAnchor(results, anchorScope, (r) => `${r.title || ''} ${r.snippet || ''} ${r.url || ''}`, true);
     }
 
-    // Validate article URLs and enrich media concurrently to keep latency bounded.
-    const [validatedResults, og] = await Promise.all([
-      validateUrls(results),
-      shouldFetchMedia ? enrichFromArticles(results) : Promise.resolve({ images: [], videos: [] }),
-    ]);
-    results = validatedResults;
+    // Search providers have already resolved these URLs. Avoid blocking the
+    // response on a second HEAD request to every result; only enrich media.
+    const og = shouldFetchMedia
+      ? await enrichFromArticles(results)
+      : { images: [], videos: [] };
 
     let resolvedBingImages = bingImages || [];
     if (shouldFetchMedia && strictAnchor) {

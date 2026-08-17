@@ -115,7 +115,7 @@ export async function addMessage(convId, message) {
   const msgRef = push(ref(db, `messages/${convId}`));
   await set(msgRef, {
     ...message,
-    timestamp: Date.now(),
+    timestamp: Number.isFinite(message?.timestamp) ? message.timestamp : Date.now(),
   });
   return msgRef.key;
 }

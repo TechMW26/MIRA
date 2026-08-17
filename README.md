@@ -41,11 +41,16 @@ BLOB_READ_WRITE_TOKEN=
 
 # Chat server; the model is discovered from /api/tags.
 OLLAMA_API_URL=http://50.35.188.73:20005/api/chat
+# Optional internal override; must match a completion model from /api/tags.
+OLLAMA_CHAT_MODEL=
 OLLAMA_MAX_TOKENS=12000
-OLLAMA_CONTEXT_TOKENS=0
+OLLAMA_CONTEXT_TOKENS=16384
 OLLAMA_TEMPERATURE=0.2
 OLLAMA_TOP_P=0.85
 OLLAMA_REPEAT_PENALTY=1.05
+OLLAMA_KEEP_ALIVE=-1
+OLLAMA_VISION_KEEP_ALIVE=0
+OLLAMA_START_TIMEOUT_MS=50000
 
 # Gemini fallback only. Primary vision is discovered from Ollama /api/tags.
 GEMINI_API_KEYS=

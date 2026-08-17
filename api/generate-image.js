@@ -128,6 +128,37 @@ async function decodeImageResponse(upstream) {
   return { bytes, contentType };
 }
 
+async function upstreamFailureResponse(upstream) {
+  await upstream.body?.cancel?.().catch?.(() => {});
+  const authenticationFailed = upstream.status === 401 || upstream.status === 403;
+  const paymentRequired = upstream.status === 402;
+  const rateLimited = upstream.status === 429;
+  const error = authenticationFailed
+    ? 'The image provider rejected its server credential.'
+    : paymentRequired
+      ? 'The image provider account requires additional balance.'
+      : rateLimited
+        ? 'The image provider is temporarily rate limited.'
+        : 'The image provider could not complete the request.';
+  return new Response(JSON.stringify({
+    error,
+    code: authenticationFailed
+      ? 'provider_authentication_failed'
+      : paymentRequired
+        ? 'provider_balance_required'
+        : rateLimited
+          ? 'provider_rate_limited'
+          : 'provider_request_failed',
+  }), {
+    status: authenticationFailed || paymentRequired || rateLimited ? 503 : 502,
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      'X-MIRA-Upstream-Status': String(upstream.status),
+    },
+  });
+}
+
 export async function GET(req) {
   const url = new URL(req.url);
   const rawPrompt = compactPrompt(url.searchParams.get('prompt') || '');
@@ -175,10 +206,7 @@ export async function GET(req) {
     });
     const upstream = await fetchGenerationWithRetries(payload, pollinationsKey);
     if (!upstream.ok) {
-      return new Response(JSON.stringify({ error: `Upstream ${upstream.status}` }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-      });
+      return upstreamFailureResponse(upstream);
     }
 
     const { bytes, contentType } = await decodeImageResponse(upstream);

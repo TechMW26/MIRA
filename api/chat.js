@@ -2,11 +2,10 @@ export const config = { maxDuration: 300 };
 
 const OLLAMA_CHAT_API_URL = String(process.env.OLLAMA_API_URL || '').trim();
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 12000);
-const OLLAMA_CONTEXT_TOKENS = Number(process.env.OLLAMA_CONTEXT_TOKENS || 0);
 const OLLAMA_TEMPERATURE = Number(process.env.OLLAMA_TEMPERATURE || 0.2);
 const OLLAMA_TOP_P = Number(process.env.OLLAMA_TOP_P || 0.85);
 const OLLAMA_REPEAT_PENALTY = Number(process.env.OLLAMA_REPEAT_PENALTY || 1.05);
-const OLLAMA_KEEP_ALIVE = String(process.env.OLLAMA_KEEP_ALIVE || '30m').trim();
+const OLLAMA_KEEP_ALIVE = String(process.env.OLLAMA_KEEP_ALIVE || '-1').trim();
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_TOKENS_CAP = 12000;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
@@ -25,10 +24,17 @@ const ACTIVE_CHAT_REQUESTS = new Map();
 const MODEL_REGISTRY_CACHE = { expiresAt: 0, selected: null };
 const MODEL_REGISTRY_CACHE_TTL_MS = 10 * 60 * 1000;
 
-const IDENTITY_PRIMER = [
-  { role: 'user', content: 'Quick check before we start: who are you?' },
-  { role: 'assistant', content: 'I am Mira, an AI assistant built by MW FutureTech. How can I help?' },
-];
+export function getContextTokens(value = process.env.OLLAMA_CONTEXT_TOKENS) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 16384;
+  return Math.max(1, Math.round(parsed));
+}
+
+export function getUpstreamStartTimeoutMs(value = process.env.OLLAMA_START_TIMEOUT_MS) {
+  const parsed = Number(value || 50000);
+  if (!Number.isFinite(parsed)) return 50000;
+  return Math.max(15000, Math.min(55000, Math.round(parsed)));
+}
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -45,7 +51,7 @@ function registryModelName(entry) {
   return String(entry?.name || entry?.model || '').trim();
 }
 
-export function selectRegistryModel(models = []) {
+export function selectRegistryModel(models = [], preferredModel = '') {
   if (!Array.isArray(models)) return null;
   const usable = models.filter((entry) => {
     const name = registryModelName(entry);
@@ -54,7 +60,10 @@ export function selectRegistryModel(models = []) {
     return capabilities.length === 0 || capabilities.includes('completion');
   });
   if (!usable.length) return null;
-  const selected = usable.find((entry) => {
+  const preferred = String(preferredModel || '').trim();
+  const selected = (preferred
+    ? usable.find((entry) => registryModelName(entry) === preferred)
+    : null) || usable.find((entry) => {
     const capabilities = Array.isArray(entry?.capabilities) ? entry.capabilities : [];
     return capabilities.includes('thinking') && !capabilities.includes('vision');
   }) || usable.find((entry) => {
@@ -84,7 +93,7 @@ async function fetchRegistryModel(signal) {
     const response = await fetch(`${baseUrl}/api/tags`, { signal: controller.signal });
     if (!response.ok) throw new Error(`Model registry request failed (${response.status}).`);
     const payload = await response.json().catch(() => ({}));
-    const selected = selectRegistryModel(payload?.models);
+    const selected = selectRegistryModel(payload?.models, process.env.OLLAMA_CHAT_MODEL);
     if (!selected) throw new Error('The model registry returned no completion model.');
     MODEL_REGISTRY_CACHE.selected = selected;
     MODEL_REGISTRY_CACHE.expiresAt = now + MODEL_REGISTRY_CACHE_TTL_MS;
@@ -111,7 +120,6 @@ function normalizeMessages(messages = [], systemPrompt = '') {
   const withoutSystem = normalized.filter((message) => message.role !== 'system');
   return [
     ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
-    ...(!systemPrompt ? IDENTITY_PRIMER : []),
     ...withoutSystem,
   ];
 }
@@ -148,12 +156,11 @@ export function buildUpstreamPayload({
   const normalized = normalizeMessages(messages, systemPrompt);
   const options = {
     num_predict: safeMax,
+    num_ctx: getContextTokens(),
     temperature: OLLAMA_TEMPERATURE,
     top_p: OLLAMA_TOP_P,
     repeat_penalty: OLLAMA_REPEAT_PENALTY,
   };
-  if (OLLAMA_CONTEXT_TOKENS > 0) options.num_ctx = OLLAMA_CONTEXT_TOKENS;
-
   const payload = {
     model: registryModel?.name || '',
     messages: normalized,
@@ -182,6 +189,8 @@ async function fetchUpstream(payload, signal) {
 
 export async function POST(req) {
   let requestId = '';
+  let upstreamStartTimedOut = false;
+  let upstreamStartTimer = null;
   try {
     const contentLength = Number(req.headers?.get?.('content-length') || 0);
     if (contentLength > MAX_BODY_BYTES) return jsonResponse({ error: 'Request body is too large.' }, 413);
@@ -213,6 +222,10 @@ export async function POST(req) {
     if (req.signal?.aborted) onClientAbort();
     else req.signal?.addEventListener?.('abort', onClientAbort, { once: true });
 
+    upstreamStartTimer = setTimeout(() => {
+      upstreamStartTimedOut = true;
+      controller.abort();
+    }, getUpstreamStartTimeoutMs());
     const registryModel = await fetchRegistryModel(controller.signal);
     const upstreamPayload = buildUpstreamPayload({
       registryModel,
@@ -223,8 +236,12 @@ export async function POST(req) {
       tools: body.tools,
     });
     const upstream = await fetchUpstream(upstreamPayload, controller.signal);
+    clearTimeout(upstreamStartTimer);
+    upstreamStartTimer = null;
     if (!upstream.ok) {
       const detail = await upstream.text().catch(() => '');
+      req.signal?.removeEventListener?.('abort', onClientAbort);
+      if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
       return jsonResponse({ error: detail || `Upstream request failed (${upstream.status}).` }, 502);
     }
 
@@ -270,7 +287,14 @@ export async function POST(req) {
       },
     });
   } catch (error) {
+    if (upstreamStartTimer) clearTimeout(upstreamStartTimer);
     if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+    if (upstreamStartTimedOut) {
+      return jsonResponse({
+        error: 'The model is busy and did not begin responding in time.',
+        code: 'model_start_timeout',
+      }, 504);
+    }
     const aborted = error?.name === 'AbortError';
     return jsonResponse({ error: aborted ? 'Generation stopped.' : (error?.message || 'Chat request failed.') }, aborted ? 499 : 500);
   }

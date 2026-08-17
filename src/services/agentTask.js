@@ -156,7 +156,11 @@ export async function runAgentTask({
   onPhase?.({ phase: 'planning' });
   let plan;
   try {
-    const planText = await generate(buildAgentPlanPrompt({ goal, context, requiresResearch }));
+    const planText = await generate(buildAgentPlanPrompt({ goal, context, requiresResearch }), {
+      phase: 'planning',
+      think: false,
+      maxTokens: 900,
+    });
     plan = parseAgentPlan(planText, { goal, requiresResearch });
   } catch (error) {
     if (error?.name === 'AbortError') throw error;
@@ -181,7 +185,11 @@ export async function runAgentTask({
         const evidence = await search(step.query || goal, { freshness });
         results.push(formatSearchEvidence(evidence, step.query || goal));
       } else {
-        const result = await generate(buildStepPrompt({ goal, context, plan, step, index, results }));
+        const result = await generate(buildStepPrompt({ goal, context, plan, step, index, results }), {
+          phase: 'executing',
+          think: true,
+          maxTokens: 2400,
+        });
         if (!String(result || '').trim()) throw new Error('Step returned no useful result.');
         results.push(compact(result, MAX_STEP_RESULT_CHARS));
       }

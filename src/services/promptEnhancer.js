@@ -11,8 +11,7 @@
 
 import { runChatCompletion } from './api.js';
 
-const CREATE_VERB_RE = /\b(build|create|make|design|write|implement|generate|develop|produce|craft|compose|draft|code|construct|architect|prototype|set\s*up|spin\s*up)\b/i;
-const SHORT_LOOKUP_RE = /^\s*(what|who|when|where|why|how|is|are|do|does|did|can|could|should|would|will|tell\s+me|show\s+me|give\s+me)\b/i;
+const EXPLICIT_PROMPT_REFINEMENT_RE = /(?:\b(?:refine|improve|rewrite|enhance|optimi[sz]e)\b.{0,40}\bprompt\b|\bprompt\b.{0,40}\b(?:refine|improve|rewrite|enhance|optimi[sz]e)\b)/i;
 
 export function shouldRunEnhancer({
   content,
@@ -29,19 +28,11 @@ export function shouldRunEnhancer({
   const text = String(content || '').trim();
   if (!text) return false;
   if (interpretation?.videoIntent) return false;
-  if (interpretation?.imageIntent) return text.length >= 3;
 
-  // Lookups, follow-ups, and casual chat: never run the preflight —
-  // it would add a full extra round-trip before any tokens stream back.
-  if (SHORT_LOOKUP_RE.test(text) && !CREATE_VERB_RE.test(text)) return false;
-
-  // Only spend a pre-flight round on substantive creation requests that
-  // genuinely benefit from rewriting or clarification.
-  const isCreationRequest = CREATE_VERB_RE.test(text);
-  if (!isCreationRequest) return false;
-  if (text.length < 80) return false;
-
-  return true;
+  // Normal requests are already refined by the main model's system contract.
+  // A second model pass before the real answer materially delays first-token
+  // delivery, so reserve it for users who explicitly ask for prompt editing.
+  return EXPLICIT_PROMPT_REFINEMENT_RE.test(text);
 }
 
 export function mergeOriginalImageRequest(original = '', refinement = '') {

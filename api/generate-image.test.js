@@ -101,3 +101,31 @@ test('posts edits with Kontext and the previous image reference', async () => {
     else process.env.POLLINATIONS_API_KEY = originalKey;
   }
 });
+
+test('surfaces rejected provider credentials without retrying', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.POLLINATIONS_API_KEY;
+  let attempts = 0;
+  process.env.POLLINATIONS_API_KEY = 'stale-server-secret';
+  globalThis.fetch = async () => {
+    attempts += 1;
+    return new Response(JSON.stringify({ error: { message: 'Unauthorized' } }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    const response = await GET(new Request('http://localhost/api/generate-image?prompt=an%20elephant'));
+    const payload = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('x-mira-upstream-status'), '401');
+    assert.equal(payload.code, 'provider_authentication_failed');
+    assert.match(payload.error, /credential/i);
+    assert.equal(attempts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.POLLINATIONS_API_KEY;
+    else process.env.POLLINATIONS_API_KEY = originalKey;
+  }
+});

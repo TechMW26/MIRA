@@ -68,7 +68,6 @@ import {
   polishAssistantAnswer,
 } from '../services/responseQuality';
 import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
-import { MIRA_IDENTITY_PROMPT } from '../config/systemPrompt';
 import { diagnosticLog, diagnosticWarn } from '../services/diagnostics.js';
 import { decideRetrievalPolicy } from '../services/retrievalPolicy.js';
 import {
@@ -85,6 +84,7 @@ import {
 } from '../services/contextPolicy.js';
 import { selectModelTools } from '../services/modelTools.js';
 import { runAgentTask, shouldRunAgentTask } from '../services/agentTask.js';
+import { isChatTimeoutError } from '../services/chatRequestPolicy.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 
@@ -465,7 +465,7 @@ async function fetchDocumentVisualImages(scope) {
       anchor: scope.entity || scope.mediaQuery || scope.query,
       strictAnchor: true,
     }, {
-      attemptsPerQuery: 2,
+      attemptsPerQuery: 1,
       retryEmpty: true,
     });
     const images = Array.isArray(data.media?.images) ? data.media.images : [];
@@ -1313,47 +1313,54 @@ export default function useChat() {
           mode: contextMode,
           learnedFacts: learnedFactsBlock,
         });
-        // Always prepend the Mira identity preamble. Without this the model
-        // has no anchor and will treat a bare-noun prompt ("Algaetree?") as
-        // an identity assignment.
         const modalityBoundary = wantsImageGeneration
           ? 'CURRENT TURN MODE: The user explicitly requested image generation or refinement. Image generation is allowed for this turn.'
           : wantsVideoGeneration
             ? 'CURRENT TURN MODE: The user explicitly requested video generation or refinement. Video generation is allowed for this turn.'
             : 'CURRENT TURN MODE: Respond in text. Do not generate or refine images or videos, do not call media-generation tools, and do not carry a prior media task into this turn.';
-        const userSystemPrompt = [MIRA_IDENTITY_PROMPT, modalityBoundary, responsePreferencesBlock, adaptiveContext]
+        // Mira's stable identity and behavior contract live in the Ollama
+        // model. Only small request-specific context crosses the network.
+        const runtimeContextBlock = [modalityBoundary, responsePreferencesBlock, adaptiveContext]
           .filter(Boolean)
           .join('\n\n');
 
-        if (replaceMessageId) {
-          await updateMessage(convId, replaceMessageId, {
-            content: displayContent,
-            type: 'text',
-            ...(options.promptContent ? { promptContent: options.promptContent } : { promptContent: null }),
-            ...(options.webPage ? { webPage: options.webPage } : { webPage: null }),
-            ...(attachmentData.length > 0 ? { attachments: attachmentData } : { attachments: null }),
-          });
-        } else {
-          await addMessage(convId, {
-            role: 'user',
-            content: displayContent,
-            type: 'text',
-            ...(options.promptContent ? { promptContent: options.promptContent } : {}),
-            ...(options.webPage ? { webPage: options.webPage } : {}),
-            ...(attachmentData.length > 0 ? { attachments: attachmentData } : {}),
-          });
-        }
-        if (!isCurrentRun()) return;
-
-        assistantMsgId = await addMessage(convId, {
+        const assistantTimestamp = Date.now() + 1;
+        const assistantWrite = addMessage(convId, {
           role: 'assistant',
           content: '',
           type: 'text',
+          timestamp: assistantTimestamp,
         });
+        if (replaceMessageId) {
+          [, assistantMsgId] = await Promise.all([
+            updateMessage(convId, replaceMessageId, {
+              content: displayContent,
+              type: 'text',
+              ...(options.promptContent ? { promptContent: options.promptContent } : { promptContent: null }),
+              ...(options.webPage ? { webPage: options.webPage } : { webPage: null }),
+              ...(attachmentData.length > 0 ? { attachments: attachmentData } : { attachments: null }),
+            }),
+            assistantWrite,
+          ]);
+        } else {
+          [, assistantMsgId] = await Promise.all([
+            addMessage(convId, {
+              role: 'user',
+              content: displayContent,
+              type: 'text',
+              timestamp: assistantTimestamp - 1,
+              ...(options.promptContent ? { promptContent: options.promptContent } : {}),
+              ...(options.webPage ? { webPage: options.webPage } : {}),
+              ...(attachmentData.length > 0 ? { attachments: attachmentData } : {}),
+            }),
+            assistantWrite,
+          ]);
+        }
         if (!isCurrentRun()) {
           await deleteMessage(convId, assistantMsgId).catch(() => {});
           return;
         }
+
         activeResponseRef.current = {
           runId,
           conversationId: convId,
@@ -1429,6 +1436,9 @@ export default function useChat() {
 
         {
           let userContent = options.promptContent || enhancedContent || content;
+          if (runtimeContextBlock) {
+            userContent = `${userContent}\n\n=== CURRENT REQUEST CONTEXT ===\n${runtimeContextBlock}\n=== END CURRENT REQUEST CONTEXT ===`;
+          }
 
           const wantsMediaGallery = isMediaRequest(content);
           const wantsOnlyMediaGallery = isMediaOnlyRequest(content);
@@ -1653,7 +1663,7 @@ export default function useChat() {
                 searchPayload.strictAnchor = true;
               }
               let searchData = await searchWeb(searchPayload, {
-                attemptsPerQuery: 2,
+                attemptsPerQuery: 1,
                 retryEmpty: true,
               });
               const strictRetryQuery = visualScope?.mediaQuery || textResearchMediaScope?.mediaQuery || visualSearchAnchor;
@@ -1667,7 +1677,7 @@ export default function useChat() {
                   strictAnchor: true,
                   freshness: freshnessRequested,
                 }, {
-                  attemptsPerQuery: 2,
+                  attemptsPerQuery: 1,
                   retryEmpty: true,
                 });
                 const retryHasResults = Array.isArray(retryData.results) && retryData.results.length > 0;
@@ -1890,7 +1900,6 @@ export default function useChat() {
           // ── Response cache check ──
           const cacheKey = makeCacheKey({
             messages: history,
-            systemPrompt: userSystemPrompt,
             images,
           });
           const cached = cacheKey ? getCachedResponse(cacheKey) : null;
@@ -1966,7 +1975,6 @@ export default function useChat() {
               {
                 think: shouldThink,
                 tools: responseModelTools,
-                ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                 onThinking: (accumulated) => {
                   if (!isCurrentRun()) return;
                   const thinkingControlRequest = extractWebSearchRequest(accumulated);
@@ -2017,7 +2025,10 @@ export default function useChat() {
               fullText = `[WEB_SEARCH: ${requestedWebSearchQuery}]`;
             } else if (groundingSearchData?.results?.length) {
               requestFailed = false;
-              diagnosticWarn('search', 'model failed after retrieval; retrying grounded synthesis', {
+              const timedOut = isChatTimeoutError(err);
+              diagnosticWarn('search', timedOut
+                ? 'model timed out after retrieval; using evidence fallback'
+                : 'model failed after retrieval; retrying grounded synthesis', {
                 runId,
                 query: String(groundingSearchQuery || content).slice(0, 180),
                 resultCount: groundingSearchData.results.length,
@@ -2026,44 +2037,50 @@ export default function useChat() {
               cancelPendingStreamFlushes();
               setStreamingContent('');
               setThinkingContent('');
-              try {
-                const retryHistory = history.map((message, index) => (
-                  index === history.length - 1 && message.role === 'user'
-                    ? {
-                      ...message,
-                      content: `${message.content}\n\nSYNTHESIS RETRY: Study the supplied search evidence, then answer the original question in your own words. Start with a simple direct summary, synthesize facts instead of copying snippets, and do not expose raw search payloads, HTML, internal controls, or tool arguments.`,
-                    }
-                    : message
-                ));
-                let groundedRetry = '';
-                await sendChatMessage(
-                  retryHistory,
-                  (accumulated) => {
-                    if (!isCurrentRun()) return;
-                    groundedRetry = stripAllControlText(accumulated);
-                    flushStreamingContent(groundedRetry);
-                  },
-                  images,
-                  {
-                    think: false,
-                    tools: [],
-                    ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
-                  },
-                );
-                fullText = groundedRetry.trim() || buildEvidenceFallbackAnswer(
-                  groundingSearchData,
-                  groundingSearchQuery || content,
-                );
-              } catch (retryError) {
+              if (timedOut) {
                 fullText = buildEvidenceFallbackAnswer(
                   groundingSearchData,
                   groundingSearchQuery || content,
                 );
-                diagnosticWarn('search', 'grounded synthesis retry failed; using concise fallback', {
-                  runId,
-                  query: String(groundingSearchQuery || content).slice(0, 180),
-                  error: retryError?.message || 'Unknown generation error',
-                });
+              } else {
+                try {
+                  const retryHistory = history.map((message, index) => (
+                    index === history.length - 1 && message.role === 'user'
+                      ? {
+                        ...message,
+                        content: `${message.content}\n\nSYNTHESIS RETRY: Study the supplied search evidence, then answer the original question in your own words. Start with a simple direct summary, synthesize facts instead of copying snippets, and do not expose raw search payloads, HTML, internal controls, or tool arguments.`,
+                      }
+                      : message
+                  ));
+                  let groundedRetry = '';
+                  await sendChatMessage(
+                    retryHistory,
+                    (accumulated) => {
+                      if (!isCurrentRun()) return;
+                      groundedRetry = stripAllControlText(accumulated);
+                      flushStreamingContent(groundedRetry);
+                    },
+                    images,
+                    {
+                      think: false,
+                      tools: [],
+                    },
+                  );
+                  fullText = groundedRetry.trim() || buildEvidenceFallbackAnswer(
+                    groundingSearchData,
+                    groundingSearchQuery || content,
+                  );
+                } catch (retryError) {
+                  fullText = buildEvidenceFallbackAnswer(
+                    groundingSearchData,
+                    groundingSearchQuery || content,
+                  );
+                  diagnosticWarn('search', 'grounded synthesis retry failed; using concise fallback', {
+                    runId,
+                    query: String(groundingSearchQuery || content).slice(0, 180),
+                    error: retryError?.message || 'Unknown generation error',
+                  });
+                }
               }
             } else {
               requestFailed = true;
@@ -2124,7 +2141,6 @@ export default function useChat() {
                   {
                     think: shouldThink,
                     tools: responseModelTools,
-                    ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   },
                 );
                 if (recoveredText.trim()) fullText = recoveredText.trim();
@@ -2161,7 +2177,6 @@ export default function useChat() {
                 {
                   think: shouldThink,
                   tools: responseModelTools,
-                  ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
                     finalThinkingText = stripAllControlText(accumulated);
@@ -2207,7 +2222,7 @@ export default function useChat() {
                         updatedAt: Date.now(),
                       }
                   ));
-                  const generate = async (prompt) => {
+                  const generate = async (prompt, generationOptions = {}) => {
                     if (!isCurrentRun()) {
                       const cancelled = new Error('Task workflow was stopped.');
                       cancelled.name = 'AbortError';
@@ -2219,7 +2234,8 @@ export default function useChat() {
                       (accumulated) => { result = stripAllControlText(accumulated); },
                       [],
                       {
-                        think: true,
+                        think: generationOptions.think ?? true,
+                        maxTokens: generationOptions.maxTokens,
                         tools: [],
                         systemPrompt: 'You are an internal planning and execution worker. Complete only the requested private phase. Never call or mention tools, never emit control markers, and never address the end user.',
                       },
@@ -2293,7 +2309,6 @@ export default function useChat() {
                   tools: isTaskResult
                     ? []
                     : responseModelTools.filter((tool) => tool?.function?.name !== finalToolCall.name),
-                  ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
                     finalThinkingText = stripAllControlText(accumulated);
@@ -2422,7 +2437,7 @@ export default function useChat() {
                 includeMedia: false,
                 freshness: fallbackFreshnessRequested,
               }, {
-                attemptsPerQuery: 3,
+                attemptsPerQuery: 1,
                 retryEmpty: true,
               });
               const fallbackResults = Array.isArray(fallbackData.results) ? fallbackData.results : [];
@@ -2455,7 +2470,6 @@ export default function useChat() {
                     {
                       think: false,
                       tools: [],
-                      ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                       onThinking: (accumulated) => {
                         if (!isCurrentRun()) return;
                         finalThinkingText = stripAllControlText(accumulated);
@@ -2504,6 +2518,7 @@ export default function useChat() {
             && !wantsVideoGeneration
             && !requestedDocumentFormat
             && !deterministicMediaReply
+            && Boolean(groundingSearchData)
             && String(fullText || '').trim().length > 0;
           const qualityAssessment = qualityEligible
             ? assessResponseQuality({
@@ -2554,7 +2569,6 @@ export default function useChat() {
                 {
                   think: true,
                   tools: responseModelTools,
-                  ...(userSystemPrompt ? { systemPrompt: userSystemPrompt } : {}),
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
                     finalThinkingText = stripAllControlText(accumulated);

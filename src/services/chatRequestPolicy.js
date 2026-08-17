@@ -17,3 +17,9 @@ export function getChatTimeoutMessage(kind = '') {
   }
   return 'The model took too long to complete the response.';
 }
+
+export function isChatTimeoutError(error) {
+  if (error?.name === 'ChatTimeoutError') return true;
+  return /(?:did not (?:start|begin) responding|model_start_timeout|response stalled|took too long|model is busy)/i
+    .test(String(error?.message || ''));
+}

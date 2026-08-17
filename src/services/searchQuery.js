@@ -1,39 +1,45 @@
-import { diagnosticLog, diagnosticWarn } from './diagnostics.js';
-import { buildSearchRetryQueries } from './webSearch.js';
+import { extractSearchSubject } from './searchRelevance.js';
 
-function fallbackQuery(latestMessage = '') {
-  const variants = buildSearchRetryQueries(latestMessage, false);
-  return variants[1] || variants[0] || String(latestMessage || '').trim();
+function cleanQuery(value = '') {
+  return String(value || '')
+    .replace(/^```(?:text)?|```$/gi, '')
+    .replace(/^(?:query|search query)\s*:\s*/i, '')
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 220);
 }
 
-export async function formSearchQuery({ latestMessage = '', context = '', signal } = {}) {
+function contextAnchor(context = '') {
+  const value = String(context || '');
+  const explicit = value.match(/(?:Image-derived searchable entity|Model search hint):\s*([^\n]{2,120})/i)?.[1]?.trim();
+  if (explicit) return extractSearchSubject(explicit);
+  const quoted = value.match(/["“]([^"”]{3,100})["”]/)?.[1]?.trim();
+  if (quoted) return extractSearchSubject(quoted);
+  const named = value.match(/\b[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]+|(?:\s+[A-Z][A-Za-z0-9]+){1,4})\b/)?.[0]?.trim();
+  return named ? extractSearchSubject(named) : '';
+}
+
+export function fallbackSearchQuery(latestMessage = '', context = '') {
+  const exact = cleanQuery(latestMessage);
+  const subject = extractSearchSubject(exact
+    .replace(/^(?:hi|hello|hey|please|kindly|can you|could you|would you)[,!\.\s]+/i, ''));
+  const referential = /\b(it|its|this|that|these|those|they|them)\b/i.test(subject);
+  const anchor = referential ? contextAnchor(context) : '';
+  const asksPurpose = /\bwhat\s+(?:does|do|did)\b[\s\S]*\bdo\b/i.test(subject);
+  const withoutReferences = subject
+    .replace(/\b(it|its|this|that|these|those|they|them)\b/gi, ' ')
+    .replace(/^(?:what|who|where|when|why|how)\s+/i, '')
+    .replace(/^(?:does|do|did|is|are|was|were|can)\s+/i, '')
+    .replace(/\bdo\s*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (anchor && asksPurpose) return `${anchor} purpose function`;
+  return [anchor, withoutReferences].filter(Boolean).join(' ').trim() || subject || exact;
+}
+
+export async function formSearchQuery({ latestMessage = '', context = '' } = {}) {
   const latest = String(latestMessage || '').trim();
   if (!latest) return '';
-
-  try {
-    const response = await fetch('/api/search-query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ latestMessage: latest, context }),
-      signal,
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload?.query) {
-      throw new Error(payload?.error || `Query formation failed (${response.status})`);
-    }
-    diagnosticLog('search', 'AI search query formed from latest message', {
-      latestMessage: latest.slice(0, 180),
-      query: String(payload.query).slice(0, 180),
-      source: payload.source || 'unknown',
-    });
-    return String(payload.query).trim();
-  } catch (error) {
-    const query = fallbackQuery(latest);
-    diagnosticWarn('search', 'AI query formation unavailable; using latest-message fallback', {
-      latestMessage: latest.slice(0, 180),
-      query: query.slice(0, 180),
-      error: error?.message || String(error),
-    });
-    return query;
-  }
+  return fallbackSearchQuery(latest, context);
 }

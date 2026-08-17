@@ -28,13 +28,15 @@ test('bounds and sanitizes model-generated plans', () => {
 
 test('executes planned research and reasoning sequentially before returning the final handoff', async () => {
   const generatedPrompts = [];
+  const generationOptions = [];
   const phases = [];
   let generation = 0;
   const output = await runAgentTask({
     goal: 'Compare two products',
     requiresResearch: true,
-    generate: async (prompt) => {
+    generate: async (prompt, options) => {
       generatedPrompts.push(prompt);
+      generationOptions.push(options);
       generation += 1;
       if (generation === 1) {
         return JSON.stringify([
@@ -48,6 +50,10 @@ test('executes planned research and reasoning sequentially before returning the 
     onPhase: (phase) => phases.push(phase),
   });
   assert.equal(generatedPrompts.length, 2);
+  assert.deepEqual(generationOptions, [
+    { phase: 'planning', think: false, maxTokens: 900 },
+    { phase: 'executing', think: true, maxTokens: 2400 },
+  ]);
   assert.match(output, /Benchmark/);
   assert.match(output, /product A for speed/);
   assert.match(output, /Final response requirement/);

@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildUpstreamPayload, POST, sanitizeTools, selectRegistryModel } from './chat.js';
+import {
+  buildUpstreamPayload,
+  getContextTokens,
+  getUpstreamStartTimeoutMs,
+  POST,
+  sanitizeTools,
+  selectRegistryModel,
+} from './chat.js';
 
 test('prefers a thinking-capable non-vision model for chat', () => {
   const selected = selectRegistryModel([
@@ -19,6 +26,31 @@ test('returns no selection when the registry has no completion model', () => {
   assert.equal(selectRegistryModel([]), null);
 });
 
+test('allows a hidden environment preference for testing any completion model', () => {
+  const selected = selectRegistryModel([
+    { name: 'primary', capabilities: ['completion', 'thinking'] },
+    { name: 'experimental', capabilities: ['completion'] },
+  ], 'experimental');
+  assert.equal(selected.name, 'experimental');
+  assert.equal(selectRegistryModel([
+    { name: 'primary', capabilities: ['completion'] },
+    { name: 'vision-only', capabilities: ['vision'] },
+  ], 'vision-only').name, 'primary');
+});
+
+test('bounds the upstream model-start timeout below the browser timeout', () => {
+  assert.equal(getUpstreamStartTimeoutMs(), 50000);
+  assert.equal(getUpstreamStartTimeoutMs(1000), 15000);
+  assert.equal(getUpstreamStartTimeoutMs(90000), 55000);
+});
+
+test('uses a concurrency-friendly default while allowing any configured context', () => {
+  assert.equal(getContextTokens(), 16384);
+  assert.equal(getContextTokens(0), 16384);
+  assert.equal(getContextTokens(1000), 1000);
+  assert.equal(getContextTokens(100000), 100000);
+});
+
 test('builds one streaming Ollama payload from the registry selection', () => {
   const payload = buildUpstreamPayload({
     registryModel: { name: 'runtime-model', capabilities: ['completion', 'thinking'] },
@@ -29,9 +61,11 @@ test('builds one streaming Ollama payload from the registry selection', () => {
   assert.equal(payload.model, 'runtime-model');
   assert.equal(payload.stream, true);
   assert.equal(payload.think, true);
-  assert.equal(payload.keep_alive, '30m');
+  assert.equal(payload.keep_alive, '-1');
   assert.equal(payload.options.num_predict, 500);
+  assert.equal(payload.options.num_ctx, 16384);
   assert.equal(payload.options.repeat_penalty, 1.05);
+  assert.deepEqual(payload.messages, [{ role: 'user', content: 'Hello' }]);
   assert.ok(payload.messages.some((message) => message.role === 'user' && message.content === 'Hello'));
 });
 

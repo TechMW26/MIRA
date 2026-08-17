@@ -5,7 +5,7 @@ import {
   shouldRunEnhancer,
 } from './promptEnhancer.js';
 
-test('runs the enhancer for short image requests but not greetings or video', () => {
+test('runs the enhancer only for explicit prompt refinement requests', () => {
   const base = {
     content: 'Generate a red elephant',
     hasImages: false,
@@ -15,7 +15,12 @@ test('runs the enhancer for short image requests but not greetings or video', ()
     isDocument: false,
   };
 
-  assert.equal(shouldRunEnhancer({ ...base, interpretation: { imageIntent: true } }), true);
+  assert.equal(shouldRunEnhancer({ ...base, interpretation: { imageIntent: true } }), false);
+  assert.equal(shouldRunEnhancer({
+    ...base,
+    content: 'Refine this prompt: generate a red elephant',
+    interpretation: { imageIntent: true },
+  }), true);
   assert.equal(shouldRunEnhancer({ ...base, interpretation: { videoIntent: true } }), false);
   assert.equal(shouldRunEnhancer({ ...base, isGreeting: true, interpretation: { imageIntent: true } }), false);
 });

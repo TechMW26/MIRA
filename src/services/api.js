@@ -526,7 +526,13 @@ export async function runChatCompletion({ messages, images = [], systemPrompt, m
   return { result: answer };
 }
 
-export async function sendChatMessage(messages, onChunk, images = [], { onThinking, systemPrompt, tools = MODEL_TOOLS, think } = {}) {
+export async function sendChatMessage(messages, onChunk, images = [], {
+  onThinking,
+  systemPrompt,
+  tools = MODEL_TOOLS,
+  think,
+  maxTokens,
+} = {}) {
   let latestAnswer = '';
   let latestThinking = '';
   const streamed = await requestChat({
@@ -535,6 +541,7 @@ export async function sendChatMessage(messages, onChunk, images = [], { onThinki
     systemPrompt,
     tools,
     think,
+    maxTokens,
     onChunk: ({ answerFull, thinkingFull }) => {
       const split = splitThinkingFromRaw(answerFull || '');
       const mergedThinking = [thinkingFull || '', split.thinking || '']
