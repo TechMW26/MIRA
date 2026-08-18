@@ -12,6 +12,7 @@ import {
   off,
   runTransaction,
 } from 'firebase/database';
+import { buildProjectContextTurn } from './projectContext.js';
 
 const PROJECT_RUN_LEASE_MS = 6 * 60 * 1000;
 
@@ -154,8 +155,69 @@ export function subscribeMessages(convId, callback) {
 // ── Shared project context ─────────────────────────────
 export async function getProjectContext(projectId) {
   if (!projectId) return null;
-  const snap = await get(ref(db, `projectContexts/${projectId}`));
-  return snap.exists() ? snap.val() : null;
+  const contextRef = ref(db, `projectContexts/${projectId}`);
+  const snap = await get(contextRef);
+  if (snap.exists()) return snap.val();
+
+  // Projects created before shared memory existed are bootstrapped once from
+  // their most recent chats. This keeps historical documents useful without
+  // copying raw image bytes into the context store.
+  const chatsSnap = await get(ref(db, `projectChats/${projectId}`));
+  const chats = [];
+  chatsSnap.forEach((child) => chats.push({ id: child.key, ...child.val() }));
+  const recentChats = chats
+    .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))
+    .slice(0, 8);
+  if (!recentChats.length) return null;
+
+  const conversations = {};
+  await Promise.all(recentChats.map(async (chat) => {
+    const messagesSnap = await get(ref(db, `messages/${chat.id}`));
+    const messages = [];
+    messagesSnap.forEach((child) => messages.push({ id: child.key, ...child.val() }));
+    const recentMessages = messages
+      .sort((left, right) => Number(left.timestamp || 0) - Number(right.timestamp || 0))
+      .slice(-24);
+    const turns = {};
+    for (let index = 0; index < recentMessages.length; index += 1) {
+      const userMessage = recentMessages[index];
+      if (userMessage.role !== 'user') continue;
+      let assistantMessage = null;
+      for (let next = index + 1; next < recentMessages.length; next += 1) {
+        if (recentMessages[next].role === 'user') break;
+        if (recentMessages[next].role === 'assistant' && String(recentMessages[next].content || '').trim()) {
+          assistantMessage = recentMessages[next];
+          break;
+        }
+      }
+      if (!assistantMessage) continue;
+      const attachments = Array.isArray(userMessage.attachments) ? userMessage.attachments : [];
+      const imageAnalyses = attachments
+        .filter((attachment) => attachment?.isImage)
+        .map((attachment) => ({
+          name: attachment.name || 'Attached image',
+          summary: `An image was attached for this request: ${String(userMessage.content || '').slice(0, 600)}`,
+        }));
+      turns[assistantMessage.id || userMessage.id] = buildProjectContextTurn({
+        userText: userMessage.promptContent || userMessage.content,
+        assistantText: assistantMessage.content,
+        attachments,
+        imageAnalyses,
+        author: userMessage.author,
+        conversationTitle: chat.title || 'Project chat',
+        timestamp: Number(assistantMessage.timestamp || userMessage.timestamp || Date.now()),
+      });
+    }
+    if (Object.keys(turns).length) {
+      conversations[chat.id] = { turns, updatedAt: Number(chat.updatedAt || Date.now()) };
+    }
+  }));
+  if (!Object.keys(conversations).length) return null;
+
+  const result = await runTransaction(contextRef, (current) => (
+    current || { conversations, bootstrappedAt: Date.now() }
+  ), { applyLocally: false });
+  return result.snapshot.exists() ? result.snapshot.val() : null;
 }
 
 export async function saveProjectContextTurn(projectId, convId, turnId, turn) {
