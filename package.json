@@ -71,10 +71,13 @@
     "productName": "MIRA",
     "icon": "Mira-Logo.png",
     "asar": true,
+    "npmRebuild": false,
+    "electronLanguages": ["en", "en-US"],
     "files": [
       "dist/**/*",
       "desktop/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/**/*"
     ],
     "directories": {
       "output": "release"

@@ -414,7 +414,7 @@ export async function inviteProjectMember(ownerUid, projectId, email) {
   if (!invited) throw new Error('No existing MIRA account uses that email.');
 
   const project = await ensureSharedProject(ownerUid, projectId);
-  if (project.ownerUid !== ownerUid) throw new Error('Only the project owner can invite collaborators.');
+  if (project.ownerUid !== ownerUid) throw new Error('Only the project owner can Invite.');
   if (invited.uid === ownerUid) throw new Error('You already own this project.');
   if (project.members?.[invited.uid]) throw new Error('That account already has access.');
 
@@ -651,6 +651,75 @@ export async function updateProject(uid, projectId, data) {
     update(ref(db, `projects/${ownerUid}/${projectId}`), next),
     update(ref(db, `sharedProjects/${projectId}`), next),
   ]);
+}
+
+async function requireProjectAccess(uid, projectId) {
+  const access = await get(ref(db, `userProjectAccess/${uid}/${projectId}`));
+  const ownerUid = access.val()?.ownerUid || uid;
+  const project = await ensureSharedProject(ownerUid, projectId);
+  if (project.ownerUid !== uid && !project.members?.[uid]) {
+    throw new Error('You do not have access to this project.');
+  }
+  return project;
+}
+
+export async function updateProjectInstructions(uid, projectId, instructions) {
+  const project = await requireProjectAccess(uid, projectId);
+  if (project.ownerUid !== uid) throw new Error('Only the project owner can change project instructions.');
+  const value = String(instructions || '').replace(/\u0000/g, '').trim().slice(0, 12000);
+  const now = Date.now();
+  await update(ref(db), {
+    [`projects/${project.ownerUid}/${projectId}/instructions`]: value || null,
+    [`projects/${project.ownerUid}/${projectId}/updatedAt`]: now,
+    [`sharedProjects/${projectId}/instructions`]: value || null,
+    [`sharedProjects/${projectId}/updatedAt`]: now,
+    [`projectContexts/${projectId}/projectProfile/instructions`]: value || null,
+    [`projectContexts/${projectId}/projectProfile/updatedAt`]: now,
+  });
+}
+
+export async function addProjectReferenceDocument(uid, projectId, document) {
+  const project = await requireProjectAccess(uid, projectId);
+  const documentId = push(ref(db, `projectContexts/${projectId}/projectProfile/documents`)).key;
+  const name = String(document?.name || 'Untitled document').trim().slice(0, 240);
+  const type = String(document?.type || '').trim().slice(0, 160);
+  const summary = String(document?.text || '')
+    .replace(/\u0000/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 16000);
+  if (!summary) throw new Error(`No readable text was found in ${name}.`);
+  const now = Date.now();
+  const uploadedBy = publicUserProfile(uid, await getUserProfile(uid) || {});
+  const metadata = { id: documentId, name, type, size: Number(document?.size || 0), uploadedAt: now, uploadedBy };
+  await update(ref(db), {
+    [`projects/${project.ownerUid}/${projectId}/referenceDocuments/${documentId}`]: metadata,
+    [`projects/${project.ownerUid}/${projectId}/updatedAt`]: now,
+    [`sharedProjects/${projectId}/referenceDocuments/${documentId}`]: metadata,
+    [`sharedProjects/${projectId}/updatedAt`]: now,
+    [`projectContexts/${projectId}/projectProfile/documents/${documentId}`]: { ...metadata, summary },
+    [`projectContexts/${projectId}/projectProfile/updatedAt`]: now,
+  });
+  return metadata;
+}
+
+export async function removeProjectReferenceDocument(uid, projectId, documentId) {
+  const project = await requireProjectAccess(uid, projectId);
+  const documentSnap = await get(ref(db, `sharedProjects/${projectId}/referenceDocuments/${documentId}`));
+  if (!documentSnap.exists()) return;
+  const uploaderUid = documentSnap.val()?.uploadedBy?.uid;
+  if (project.ownerUid !== uid && uploaderUid !== uid) {
+    throw new Error('Only the project owner or uploader can remove this document.');
+  }
+  const now = Date.now();
+  await update(ref(db), {
+    [`projects/${project.ownerUid}/${projectId}/referenceDocuments/${documentId}`]: null,
+    [`projects/${project.ownerUid}/${projectId}/updatedAt`]: now,
+    [`sharedProjects/${projectId}/referenceDocuments/${documentId}`]: null,
+    [`sharedProjects/${projectId}/updatedAt`]: now,
+    [`projectContexts/${projectId}/projectProfile/documents/${documentId}`]: null,
+    [`projectContexts/${projectId}/projectProfile/updatedAt`]: now,
+  });
 }
 
 export async function updateProjectConversation(projectId, convId, data) {

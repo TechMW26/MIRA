@@ -8,3 +8,7 @@ dist-ssr
 .vercel
 .env*.local
 release
+MIRA-macOS-arm64.dmg
+MIRA-macOS-arm64.zip
+MIRA-Windows-x64-Setup.exe
+MIRA-Windows-x64-Portable.exe

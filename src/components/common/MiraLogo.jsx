@@ -1,19 +1,15 @@
 export default function MiraLogo({ size = 32, className = '', wordmark = false }) {
   return (
     <span className={`inline-flex items-center gap-3 ${className}`} aria-label="MIRA">
-      <svg
+      <img
+        src="/mira-logo.png"
         width={size}
         height={size}
-        viewBox="0 0 48 48"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        role="img"
+        alt=""
         aria-hidden="true"
-      >
-        <rect x="3" y="3" width="42" height="42" rx="13" fill="rgba(94,234,212,0.06)" stroke="currentColor" strokeWidth="1.5" />
-        <path d="M13 32V16L24 27L35 16V32" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
-        <circle cx="24" cy="24" r="2.2" fill="currentColor" />
-      </svg>
+        className="block flex-shrink-0 object-contain"
+        style={{ width: size, height: size }}
+      />
       {wordmark && (
         <span className="flex flex-col leading-none">
           <span className="font-semibold tracking-[0.34em]" style={{ fontSize: Math.max(12, size * 0.42) }}>MIRA</span>
