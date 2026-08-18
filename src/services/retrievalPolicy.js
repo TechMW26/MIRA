@@ -35,13 +35,12 @@ export function decideRetrievalPolicy({
     || contextualSearch
   );
 
-  // Retrieval is model-initiated only. The host exposes web.search and may
-  // recommend it, but never runs a speculative search before the model asks.
-  // Self-contained uploads stay offline unless the user explicitly requests
-  // external/current verification (represented by searchPriority).
+  // A priority decision is deterministic truth-validation, not speculative
+  // browsing. Prefetch evidence so a model cannot skip the required tool call;
+  // ordinary conversation and self-contained uploads remain offline.
   return {
-    search: false,
-    includeMedia: false,
+    search: searchPriority,
+    includeMedia: Boolean(searchPriority && (mediaRequested || visualSearch || contextualMedia)),
     allowSearchTool: true,
     searchPriority,
   };

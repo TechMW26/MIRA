@@ -197,6 +197,10 @@ function detectSearchNeed(text, hasImages = false) {
   const infoIntent = INFO_INTENT_SIGNALS.some((rx) => rx.test(value));
   const specificity = scoreTopicSpecificity(value);
   const words = value.split(/\s+/).filter(Boolean).length;
+  const topicTokens = value.toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.replace(/[^a-z0-9-]/g, ''))
+    .filter((token) => token && !STRUCTURAL_STOPWORDS.has(token));
 
   // 3) Bare topic shorthand — a short prompt that is just a topic, optionally
   //    ending in "?". e.g. "Algaetree?", "TensorFlow", or "OpenAI?".
@@ -214,6 +218,18 @@ function detectSearchNeed(text, hasImages = false) {
     if (specificity.score >= 1) return true;
     if (words >= 4) return true;
     return false;
+  }
+
+  // Multi-word factual definitions can be deceptively ambiguous even when
+  // each individual word looks ordinary (for example, "algae tree"). Route
+  // them through live evidence when at least one meaningful topic token is
+  // outside the common evergreen vocabulary.
+  if (
+    infoIntent
+    && topicTokens.length >= 2
+    && topicTokens.some((token) => !COMMON_TOPIC_TOKENS.has(token))
+  ) {
+    return true;
   }
 
   // 5) Informational intent → search only when the topic looks specific

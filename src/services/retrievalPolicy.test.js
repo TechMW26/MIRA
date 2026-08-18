@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSearchToolGuidance, decideRetrievalPolicy } from './retrievalPolicy.js';
 
-test('current facts prioritize model-initiated search without host prefetch', () => {
+test('current facts require deterministic truth-validation search', () => {
   assert.deepEqual(decideRetrievalPolicy({ engineNeedsSearch: true }), {
-    search: false,
+    search: true,
     includeMedia: false,
     allowSearchTool: true,
     searchPriority: true,
@@ -13,20 +13,20 @@ test('current facts prioritize model-initiated search without host prefetch', ()
 
 test('explicit media needs prioritize the model search tool', () => {
   assert.deepEqual(decideRetrievalPolicy({ mediaRequested: true }), {
-    search: false,
-    includeMedia: false,
+    search: true,
+    includeMedia: true,
     allowSearchTool: true,
     searchPriority: true,
   });
   assert.deepEqual(decideRetrievalPolicy({ visualSearch: true }), {
-    search: false,
-    includeMedia: false,
+    search: true,
+    includeMedia: true,
     allowSearchTool: true,
     searchPriority: true,
   });
   assert.deepEqual(decideRetrievalPolicy({ engineNeedsSearch: true, contextualMedia: true }), {
-    search: false,
-    includeMedia: false,
+    search: true,
+    includeMedia: true,
     allowSearchTool: true,
     searchPriority: true,
   });
@@ -53,9 +53,9 @@ test('website inspection and greetings bypass generic retrieval', () => {
   });
 });
 
-test('manual web mode tells the model to search instead of prefetching', () => {
+test('manual web mode always fetches evidence before answering', () => {
   assert.deepEqual(decideRetrievalPolicy({ manualSearch: true }), {
-    search: false,
+    search: true,
     includeMedia: false,
     allowSearchTool: true,
     searchPriority: true,

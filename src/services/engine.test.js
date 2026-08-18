@@ -21,6 +21,7 @@ test('identifies requests that require newest-first evidence', () => {
 test('routes sufficiently specific niche topics to search', () => {
   assert.equal(processQuery('Tell me about AlgaeTree BioUrban').needsSearch, true);
   assert.equal(processQuery('Tell me something about the Algae tree').needsSearch, true);
+  assert.equal(processQuery('What is an algae tree?').needsSearch, true);
 });
 
 test('does not expose model-routing metadata', () => {
