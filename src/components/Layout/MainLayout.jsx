@@ -5,6 +5,7 @@ import Sidebar from '../Sidebar/Sidebar';
 import ChatWindow from '../Chat/ChatWindow';
 import HudOverlay from '../Chat/HudOverlay';
 import SettingsModal from '../Profile/ProfilePage';
+import DesktopWorkspace from '../Desktop/DesktopWorkspace';
 import { stopChatGeneration } from '../../services/api';
 
 export default function MainLayout() {
@@ -15,6 +16,7 @@ export default function MainLayout() {
     setCurrentConversationId,
     activeProjectId,
     setActiveProjectId,
+    showWorkspace,
   } = useChatContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const hasResetSessionRef = useRef(false);
@@ -58,8 +60,11 @@ export default function MainLayout() {
       <div className="flex-1 flex flex-col min-w-0 relative z-10">
         <HudOverlay />
 
-        <div className="flex-1 min-h-0 flex flex-col">
-          <ChatWindow />
+        <div className={`flex-1 min-h-0 flex ${showWorkspace ? 'desktop-workspace-split' : 'flex-col'}`}>
+          {showWorkspace && <DesktopWorkspace />}
+          <div className={`min-h-0 min-w-0 flex flex-col ${showWorkspace ? 'desktop-chat-pane' : 'flex-1'}`}>
+            <ChatWindow />
+          </div>
         </div>
       </div>
 

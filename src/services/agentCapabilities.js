@@ -9,6 +9,7 @@ export const AGENT_CAPABILITIES = Object.freeze({
   IMAGE: 'image.generate',
   VIDEO: 'video.generate',
   FILE_READ: 'filesystem.read',
+  FILE_LIST: 'filesystem.list',
   FILE_WRITE: 'filesystem.write',
   FILE_SEARCH: 'filesystem.search',
   SHELL_RUN: 'shell.run',
@@ -19,6 +20,7 @@ export const AGENT_CAPABILITIES = Object.freeze({
 
 export const DESKTOP_AGENT_CAPABILITIES = Object.freeze([
   AGENT_CAPABILITIES.FILE_READ,
+  AGENT_CAPABILITIES.FILE_LIST,
   AGENT_CAPABILITIES.FILE_WRITE,
   AGENT_CAPABILITIES.FILE_SEARCH,
   AGENT_CAPABILITIES.SHELL_RUN,

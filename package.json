@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "description": "MIRA - Multi-Intelligent Responsive Assistant",
+  "author": "MW FutureTech",
   "main": "desktop/main.cjs",
   "type": "module",
   "engines": {
@@ -68,6 +69,7 @@
   "build": {
     "appId": "cloud.itsmira.desktop",
     "productName": "MIRA",
+    "icon": "Mira-Logo.png",
     "asar": true,
     "files": [
       "dist/**/*",

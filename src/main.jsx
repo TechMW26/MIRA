@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
+import { BrowserRouter, HashRouter } from 'react-router-dom';
 import App from './App';
 import { AuthProvider } from './contexts/AuthContext';
 import { ChatProvider } from './contexts/ChatContext';
@@ -23,16 +23,18 @@ async function registerApplicationWorker() {
   });
 }
 
-registerApplicationWorker();
+if (window.location.protocol !== 'file:') registerApplicationWorker();
+
+const ApplicationRouter = window.location.protocol === 'file:' ? HashRouter : BrowserRouter;
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <ApplicationRouter>
       <AuthProvider>
         <ChatProvider>
           <App />
         </ChatProvider>
       </AuthProvider>
-    </BrowserRouter>
+    </ApplicationRouter>
   </React.StrictMode>
 );

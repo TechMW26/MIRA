@@ -6,6 +6,20 @@ export function getDesktopBridge(scope = globalThis) {
   return bridge;
 }
 
+export async function getDesktopRuntimeInfo(scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.getRuntimeInfo !== 'function') return null;
+  return await bridge.getRuntimeInfo();
+}
+
+export async function chooseDesktopWorkspace(scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.chooseWorkspace !== 'function') {
+    throw new Error('Workspace selection is available only in the MIRA desktop application.');
+  }
+  return await bridge.chooseWorkspace();
+}
+
 export async function executeDesktopTool(call, scope = globalThis) {
   const name = String(call?.name || '');
   if (!DESKTOP_AGENT_CAPABILITIES.includes(name)) {

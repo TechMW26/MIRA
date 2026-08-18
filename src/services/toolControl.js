@@ -9,6 +9,7 @@ export const TOOL_NAMES = Object.freeze({
   IMAGE: 'image.generate',
   VIDEO: 'video.generate',
   FILE_READ: 'filesystem.read',
+  FILE_LIST: 'filesystem.list',
   FILE_WRITE: 'filesystem.write',
   FILE_SEARCH: 'filesystem.search',
   SHELL_RUN: 'shell.run',

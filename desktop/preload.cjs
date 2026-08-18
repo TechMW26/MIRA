@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const capabilities = Object.freeze([
   'filesystem.read',
+  'filesystem.list',
   'filesystem.write',
   'filesystem.search',
   'shell.run',

@@ -21,6 +21,14 @@ const ALLOWED_TOOL_NAMES = new Set([
   'task.run',
   'image.generate',
   'video.generate',
+  'filesystem.read',
+  'filesystem.list',
+  'filesystem.write',
+  'filesystem.search',
+  'shell.run',
+  'test.run',
+  'git.status',
+  'git.diff',
 ]);
 const ACTIVE_CHAT_REQUESTS = new Map();
 const MODEL_REGISTRY_CACHE = { expiresAt: 0, selected: null };

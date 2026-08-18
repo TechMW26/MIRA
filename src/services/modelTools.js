@@ -49,6 +49,9 @@ export const MODEL_TOOLS = [
   functionTool(AGENT_CAPABILITIES.FILE_READ, 'Read a UTF-8 text file inside the open desktop workspace.', {
     path: { type: 'string', description: 'Workspace-relative file path.' },
   }, ['path']),
+  functionTool(AGENT_CAPABILITIES.FILE_LIST, 'List files and folders inside the open desktop workspace.', {
+    path: { type: 'string', description: 'Workspace-relative directory path.' },
+  }, []),
   functionTool(AGENT_CAPABILITIES.FILE_WRITE, 'Write a UTF-8 text file inside the open desktop workspace after user approval.', {
     path: { type: 'string', description: 'Workspace-relative file path.' },
     content: { type: 'string', description: 'Complete replacement content.' },

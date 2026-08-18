@@ -1,5 +1,5 @@
 import React from 'react';
-import { Menu, X } from 'lucide-react';
+import { Code2, Menu, X } from 'lucide-react';
 import { useChatContext } from '../../contexts/ChatContext';
 import MiraLogo from '../common/MiraLogo';
 
@@ -9,7 +9,8 @@ import MiraLogo from '../common/MiraLogo';
  * 38px-tall baseline. Bottom chrome is now handled by the composer dock glow.
  */
 export default function HudOverlay() {
-  const { sidebarOpen, setSidebarOpen } = useChatContext();
+  const { sidebarOpen, setSidebarOpen, showWorkspace, setShowWorkspace } = useChatContext();
+  const isDesktop = typeof window !== 'undefined' && Boolean(window.miraDesktop);
 
   return (
     <>
@@ -28,6 +29,20 @@ export default function HudOverlay() {
       >
         {sidebarOpen ? <X size={18} /> : <Menu size={18} />}
       </button>
+
+      {isDesktop && (
+        <button
+          type="button"
+          onClick={() => setShowWorkspace(!showWorkspace)}
+          className="desktop-workspace-trigger"
+          title={showWorkspace ? 'Close workspace' : 'Open workspace IDE'}
+          aria-label={showWorkspace ? 'Close workspace IDE' : 'Open workspace IDE'}
+          aria-pressed={showWorkspace}
+        >
+          <Code2 size={17} />
+          <span>Workspace</span>
+        </button>
+      )}
 
     </>
   );

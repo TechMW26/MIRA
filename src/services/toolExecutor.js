@@ -102,6 +102,7 @@ export async function executeHostTool(call, { runTask } = {}) {
   }
   if ([
     TOOL_NAMES.FILE_READ,
+    TOOL_NAMES.FILE_LIST,
     TOOL_NAMES.FILE_WRITE,
     TOOL_NAMES.FILE_SEARCH,
     TOOL_NAMES.SHELL_RUN,

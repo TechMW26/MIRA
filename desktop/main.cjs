@@ -8,8 +8,10 @@ const execFileAsync = promisify(execFile);
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
+const PRODUCTION_APP_URL = 'https://www.itsmira.cloud';
 const DESKTOP_CAPABILITIES = Object.freeze([
   'filesystem.read',
+  'filesystem.list',
   'filesystem.write',
   'filesystem.search',
   'shell.run',
@@ -140,6 +142,23 @@ async function invokeDesktopTool(window, call = {}) {
     return await fs.readFile(target, 'utf8');
   }
 
+  if (name === 'filesystem.list') {
+    const target = await resolveWorkspacePath(window, args.path || '.');
+    const stat = await fs.stat(target);
+    if (!stat.isDirectory()) throw new Error('The requested path is not a directory.');
+    const entries = await fs.readdir(target, { withFileTypes: true });
+    const relativeBase = path.relative(workspaceRoot, target);
+    return JSON.stringify(entries
+      .filter((entry) => !entry.name.startsWith('.') && entry.name !== 'node_modules')
+      .slice(0, 500)
+      .map((entry) => ({
+        name: entry.name,
+        path: path.posix.join(relativeBase.split(path.sep).join('/'), entry.name),
+        type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other',
+      }))
+      .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'directory' ? -1 : 1)));
+  }
+
   if (name === 'filesystem.write') {
     const target = await resolveWorkspacePath(window, args.path);
     const content = String(args.content ?? '');
@@ -213,12 +232,12 @@ function createWindow() {
   window.webContents.on('will-navigate', (event, url) => {
     const allowed = process.argv.includes('--dev')
       ? url.startsWith('http://127.0.0.1:3000')
-      : url.startsWith('file:');
+      : url.startsWith(PRODUCTION_APP_URL);
     if (!allowed) event.preventDefault();
   });
 
   if (process.argv.includes('--dev')) window.loadURL('http://127.0.0.1:3000');
-  else window.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  else window.loadURL(PRODUCTION_APP_URL);
   window.once('ready-to-show', () => window.show());
   return window;
 }

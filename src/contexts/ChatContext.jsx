@@ -15,6 +15,7 @@ export function ChatProvider({ children }) {
   const [isSearching, setIsSearching] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showWorkspace, setShowWorkspace] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState(null);
   // Tracks which projects have been PIN-unlocked this session
   const [unlockedProjects, setUnlockedProjects] = useState(new Set());
@@ -42,6 +43,8 @@ export function ChatProvider({ children }) {
     setSidebarOpen,
     showSettings,
     setShowSettings,
+    showWorkspace,
+    setShowWorkspace,
     startNewChat,
     activeProjectId,
     setActiveProjectId,
