@@ -51,8 +51,8 @@ export default function Sidebar() {
     unlockProject, isProjectUnlocked,
   } = useChatContext();
 
-  // Auto-hide: once the sidebar is open, close it after 2s of the pointer not
-  // hovering over it. Entering the sidebar cancels the countdown.
+  // Auto-hide only after the pointer has remained outside for three seconds.
+  // Internal navigation never closes the sidebar; the close button remains explicit.
   const hideTimer = useRef(null);
   const cancelHide = useCallback(() => {
     if (hideTimer.current) {
@@ -66,12 +66,12 @@ export default function Sidebar() {
       if (!supportsHover) return;
     }
     cancelHide();
-    hideTimer.current = setTimeout(() => setSidebarOpen(false), 2000);
+    hideTimer.current = setTimeout(() => setSidebarOpen(false), 3000);
   }, [cancelHide, setSidebarOpen]);
   useEffect(() => {
-    if (sidebarOpen) scheduleHide();
+    if (sidebarOpen) cancelHide();
     return cancelHide;
-  }, [sidebarOpen, scheduleHide, cancelHide]);
+  }, [sidebarOpen, cancelHide]);
 
   const [conversations, setConversations] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -152,26 +152,6 @@ export default function Sidebar() {
     window.addEventListener('click', handler);
     return () => window.removeEventListener('click', handler);
   }, []);
-
-  // Close sidebar on outside click/tap (desktop + mobile).
-  useEffect(() => {
-    if (!sidebarOpen) return undefined;
-
-    const handleOutsidePointer = (event) => {
-      const sidebarEl = sidebarRef.current;
-      const contextMenuEl = contextMenuRef.current;
-      const target = event.target;
-      if (!sidebarEl || !(target instanceof Node)) return;
-      if (sidebarEl.contains(target)) return;
-      if (contextMenuEl && contextMenuEl.contains(target)) return;
-      setSidebarOpen(false);
-    };
-
-    window.addEventListener('pointerdown', handleOutsidePointer, true);
-    return () => {
-      window.removeEventListener('pointerdown', handleOutsidePointer, true);
-    };
-  }, [sidebarOpen, setSidebarOpen]);
 
   const filtered = search
     ? conversations.filter((c) => c.title?.toLowerCase().includes(search.toLowerCase()))
@@ -301,7 +281,6 @@ export default function Sidebar() {
       stopChatGeneration();
       setActiveProjectId(project.id);
       setCurrentConversationId(null);
-      setSidebarOpen(false);
     });
   }
 
@@ -397,7 +376,6 @@ export default function Sidebar() {
                 onClick={() => {
                   if (currentConversationId !== conv.id) stopChatGeneration();
                   setCurrentConversationId(conv.id);
-                  setSidebarOpen(false);
                 }}
                 onContextMenu={(e) => handleContextMenu(e, conv)}
                 draggable={showDrag}
@@ -429,7 +407,6 @@ export default function Sidebar() {
         <div
           className="fixed inset-0 backdrop-blur-sm z-40 lg:hidden animate-fade-in"
           style={{ background: 'var(--overlay-bg)' }}
-          onClick={() => setSidebarOpen(false)}
         />
       )}
 
@@ -484,7 +461,6 @@ export default function Sidebar() {
               <button
                 onClick={() => {
                   startNewChat();
-                  setSidebarOpen(false);
                 }}
                 className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
                 style={{ color: 'var(--text-secondary)' }}
@@ -659,7 +635,6 @@ export default function Sidebar() {
                   onClick={() => {
                     setShowUserMenu(false);
                     setShowSettings(true);
-                    setSidebarOpen(false);
                   }}
                   className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm transition-all rounded-lg"
                   style={{ color: 'var(--text-secondary)' }}
@@ -670,7 +645,6 @@ export default function Sidebar() {
                   onClick={() => {
                     stopChatGeneration();
                     setShowUserMenu(false);
-                    setSidebarOpen(false);
                     logout();
                   }}
                   className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm transition-all rounded-lg"
