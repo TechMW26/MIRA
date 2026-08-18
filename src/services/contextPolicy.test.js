@@ -54,6 +54,7 @@ test('media generation tools require current-turn media intent', () => {
 test('web search can be withheld for self-contained turns', () => {
   const tools = selectModelTools({ allowWebSearch: false });
   assert.equal(tools.some((tool) => tool.function.name === 'web.search'), false);
+  assert.equal(tools.some((tool) => tool.function.name === 'task.run'), true);
 });
 
 test('only the most recent assistant turn can anchor a refinement', () => {

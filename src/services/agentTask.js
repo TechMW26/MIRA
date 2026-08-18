@@ -5,6 +5,7 @@ const MAX_STEP_RESULT_CHARS = 5000;
 
 const RESEARCH_WORKFLOW_PATTERN = /\b(research|investigate|deep\s+dive|due\s+diligence|literature\s+review|market\s+analysis|competitive\s+analysis|compare\s+(?:current|latest)|evaluate\s+(?:current|latest)|verify\s+across\s+sources)\b/i;
 const PLANNING_WORKFLOW_PATTERN = /\b(plan|roadmap|strategy|step[-\s]?by[-\s]?step|break\s+(?:it\s+)?down|split\s+into\s+steps|phases?|milestones?|end[-\s]?to[-\s]?end|implementation\s+plan|execution\s+plan|action\s+plan|first.+then|and\s+then)\b/i;
+const EXTERNAL_EVIDENCE_PATTERN = /\b(web|internet|online|sources?|citations?|evidence|data\s+sources?|current|latest|recent|today|market|news|pricing|availability|verify|fact[-\s]?check)\b/i;
 
 function compact(value = '', limit = MAX_CONTEXT_CHARS) {
   const normalized = String(value || '').replace(/\s+/g, ' ').trim();
@@ -28,6 +29,11 @@ export function shouldRunAgentTask({
     return true;
   }
   return complexity === 'high' && /\b(build|design|implement|debug|audit|migrate|launch|create|prepare|solve)\b/i.test(value);
+}
+
+export function agentTaskRequiresResearch(goal = '', explicit = false) {
+  const value = String(goal || '').trim();
+  return Boolean(explicit || RESEARCH_WORKFLOW_PATTERN.test(value) || EXTERNAL_EVIDENCE_PATTERN.test(value));
 }
 
 function extractJsonArray(text = '') {
@@ -152,19 +158,20 @@ export async function runAgentTask({
 } = {}) {
   if (!String(goal || '').trim()) throw new Error('A task goal is required.');
   if (typeof generate !== 'function') throw new Error('The task planning model is unavailable.');
+  const useResearch = agentTaskRequiresResearch(goal, requiresResearch);
 
   onPhase?.({ phase: 'planning' });
   let plan;
   try {
-    const planText = await generate(buildAgentPlanPrompt({ goal, context, requiresResearch }), {
+    const planText = await generate(buildAgentPlanPrompt({ goal, context, requiresResearch: useResearch }), {
       phase: 'planning',
       think: false,
       maxTokens: 900,
     });
-    plan = parseAgentPlan(planText, { goal, requiresResearch });
+    plan = parseAgentPlan(planText, { goal, requiresResearch: useResearch });
   } catch (error) {
     if (error?.name === 'AbortError') throw error;
-    plan = fallbackAgentPlan(goal, requiresResearch);
+    plan = fallbackAgentPlan(goal, useResearch);
   }
   onPhase?.({
     phase: 'planned',

@@ -87,7 +87,7 @@ import {
   isSimpleGreeting,
 } from '../services/contextPolicy.js';
 import { selectModelTools } from '../services/modelTools.js';
-import { runAgentTask, shouldRunAgentTask } from '../services/agentTask.js';
+import { agentTaskRequiresResearch, runAgentTask, shouldRunAgentTask } from '../services/agentTask.js';
 import { isChatTimeoutError } from '../services/chatRequestPolicy.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
@@ -1905,10 +1905,18 @@ export default function useChat() {
 
           history.push({ role: 'user', content: userContent });
 
+          const taskRequiresResearch = agentTaskRequiresResearch(content, Boolean(
+            webSearch
+            || engineResult.needsSearch
+            || retrievalPolicy.searchPriority
+            || groundingSearchData
+            || needsFreshInformation(content)
+          ));
+
           const autoTaskCall = shouldRunAgentTask({
             text: content,
             complexity: engineResult.classification?.complexity || 'low',
-            requiresResearch: Boolean(effectiveWebSearch || groundingSearchData),
+            requiresResearch: taskRequiresResearch,
             simpleGreeting,
             mediaIntent: Boolean(wantsImageGeneration || wantsVideoGeneration || wantsOnlyMediaGallery),
             websiteInspection: Boolean(websiteInspectionRequest),
@@ -1950,7 +1958,7 @@ export default function useChat() {
             diagnosticLog('tool', 'automatic task workflow started', {
               runId,
               complexity: engineResult.classification?.complexity || 'low',
-              research: Boolean(effectiveWebSearch || groundingSearchData),
+              research: taskRequiresResearch,
             });
           } else if (cached && isCurrentRun()) {
             fullText = humanizeAssistantText(cached);
@@ -2284,7 +2292,7 @@ export default function useChat() {
                   return await runAgentTask({
                     goal,
                     context: history[history.length - 1]?.content || '',
-                    requiresResearch: Boolean(effectiveWebSearch || groundingSearchData),
+                    requiresResearch: agentTaskRequiresResearch(goal, taskRequiresResearch),
                     freshness: needsFreshInformation(content),
                     generate,
                     search: async (query, { freshness }) => {
@@ -2299,8 +2307,9 @@ export default function useChat() {
                         strictAnchor: false,
                         freshness,
                         includeMedia: false,
+                        requireTextResults: true,
                       }, {
-                        attemptsPerQuery: 1,
+                        attemptsPerQuery: 2,
                         retryEmpty: true,
                       });
                     },

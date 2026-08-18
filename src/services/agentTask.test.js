@@ -1,10 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  agentTaskRequiresResearch,
   parseAgentPlan,
   runAgentTask,
   shouldRunAgentTask,
 } from './agentTask.js';
+
+test('infers live research from the task goal before any search has run', () => {
+  assert.equal(agentTaskRequiresResearch('Gather current market data via web search'), true);
+  assert.equal(agentTaskRequiresResearch('Compare the latest product pricing'), true);
+  assert.equal(agentTaskRequiresResearch('Rewrite this paragraph'), false);
+});
+
+test('keeps an AI-requested task.run research plan wired to web search', async () => {
+  let searchCalls = 0;
+  await runAgentTask({
+    goal: 'Research current battery market data and summarize the sources',
+    generate: async (_prompt, options) => {
+      if (options.phase === 'planning') {
+        return JSON.stringify([
+          { title: 'Gather web data', instruction: 'Find current evidence', tool: 'web.search', query: 'battery market data' },
+          { title: 'Synthesize', instruction: 'Summarize the evidence', tool: 'reason' },
+        ]);
+      }
+      return 'Synthesis complete.';
+    },
+    search: async () => {
+      searchCalls += 1;
+      return { results: [{ title: 'Market source', snippet: 'Current market evidence', url: 'https://example.com/market' }] };
+    },
+  });
+  assert.equal(searchCalls, 1);
+});
 
 test('automatically plans research and explicit multi-step work but not simple questions', () => {
   assert.equal(shouldRunAgentTask({ text: 'Research current battery recycling companies', requiresResearch: true }), true);
