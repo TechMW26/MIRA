@@ -24,6 +24,8 @@ import {
   acquireConversationRun,
   releaseConversationRun,
   subscribeMessages,
+  getProjectContext,
+  saveProjectContextTurn,
 } from '../services/database';
 import { useAuth } from '../contexts/AuthContext';
 import { useChatContext } from '../contexts/ChatContext';
@@ -95,6 +97,7 @@ import {
   shouldRunAgentTask,
 } from '../services/agentTask.js';
 import { isChatTimeoutError } from '../services/chatRequestPolicy.js';
+import { buildProjectContextPrompt, buildProjectContextTurn } from '../services/projectContext.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 
@@ -1373,6 +1376,41 @@ export default function useChat() {
         const currentConversation = Array.isArray(chatConversations)
           ? chatConversations.find((c) => c?.id === convId)
           : null;
+        let projectImageAnalyses = [];
+        let sharedProjectContext = null;
+        if (activeProjectId && !simpleGreeting) {
+          try {
+            sharedProjectContext = await getProjectContext(activeProjectId);
+          } catch (contextError) {
+            diagnosticWarn('context', 'shared project context could not be loaded', {
+              projectId: activeProjectId,
+              error: contextError?.message || 'Unknown context error',
+            });
+          }
+        }
+        const sharedProjectContextBlock = buildProjectContextPrompt(sharedProjectContext, {
+          currentConversationId: convId,
+        });
+        const persistProjectTurn = async (assistantText) => {
+          if (!activeProjectId || !assistantMsgId || !String(assistantText || '').trim()) return;
+          const turn = buildProjectContextTurn({
+            userText: content,
+            assistantText,
+            attachments: textAttachments,
+            imageAnalyses: projectImageAnalyses,
+            author: messageAuthor,
+            conversationTitle: currentConversation?.title || 'Project chat',
+          });
+          try {
+            await saveProjectContextTurn(activeProjectId, convId, assistantMsgId, turn);
+          } catch (contextError) {
+            diagnosticWarn('context', 'shared project context could not be updated', {
+              projectId: activeProjectId,
+              conversationId: convId,
+              error: contextError?.message || 'Unknown context error',
+            });
+          }
+        };
         const isFirstTurn = (historySource?.length || 0) === 0;
         const contextMode = decideContextMode(content, isFirstTurn);
         const adaptiveLearningEnabled = !isActingForAnotherUser && profile?.preferences?.adaptiveLearning !== false;
@@ -1398,6 +1436,7 @@ export default function useChat() {
         const runtimeContextBlock = [
           modalityBoundary,
           buildSearchToolGuidance(retrievalPolicy),
+          sharedProjectContextBlock,
           responsePreferencesBlock,
           adaptiveContext,
         ]
@@ -1572,6 +1611,10 @@ export default function useChat() {
               const failure = analyses.find((analysis) => analysis.status === 'rejected');
               throw new Error(failure?.reason?.message || 'Image analysis failed.');
             }
+            projectImageAnalyses = successfulAnalyses.map(({ index, text }) => ({
+              name: imageAttachments[index]?.name || `Image ${index + 1}`,
+              summary: text,
+            }));
             if (shouldUseVisualAnchor) {
               visualSearchAnchor = cleanVisualSearchAnchor(
                 extractVisionSearchAnchor(successfulAnalyses[0].text),
@@ -1926,6 +1969,7 @@ export default function useChat() {
               { role: 'user', content },
               { role: 'assistant', content: deterministicMediaReply },
             ]).catch(() => {});
+            await persistProjectTurn(deterministicMediaReply);
             return;
           }
 
@@ -2758,6 +2802,7 @@ export default function useChat() {
               { role: 'assistant', content: titleSource },
             ];
             refreshConversationTitle(convId, titleTranscript).catch(() => {});
+            await persistProjectTurn(titleSource);
           }
         }
       } catch (err) {

@@ -197,7 +197,11 @@ export function buildUpstreamPayload({
     options,
   };
   const safeTools = sanitizeTools(tools);
-  if (registryModel?.capabilities?.includes('tools') && safeTools.length) payload.tools = safeTools;
+  // Some Ollama model manifests (including Qwen3-Coder) expose a tool-aware
+  // template but omit `tools` from /api/tags. Ollama still accepts and parses
+  // native calls correctly, so pass only our allowlisted schemas whenever the
+  // selected model supports completion.
+  if (safeTools.length) payload.tools = safeTools;
   // /api/tags may omit capabilities even when the selected model supports
   // reasoning. Preserve an explicit caller preference so simple requests do
   // not spend latency on unnecessary reasoning tokens.

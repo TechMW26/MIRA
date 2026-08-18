@@ -117,3 +117,12 @@ test('forwards only supported native tools to capable registry models', () => {
   });
   assert.deepEqual(payload.tools.map((tool) => tool.function.name), ['web.search']);
 });
+
+test('forwards allowlisted tools when Ollama tags omit tool capability metadata', () => {
+  const payload = buildUpstreamPayload({
+    registryModel: { name: 'coder-model', capabilities: ['completion'] },
+    messages: [{ role: 'user', content: 'Check the weather.' }],
+    tools: [{ type: 'function', function: { name: 'weather.lookup', parameters: { type: 'object', properties: { city: { type: 'string' } } } } }],
+  });
+  assert.deepEqual(payload.tools.map((tool) => tool.function.name), ['weather.lookup']);
+});

@@ -151,6 +151,32 @@ export function subscribeMessages(convId, callback) {
   return () => off(msgRef);
 }
 
+// ── Shared project context ─────────────────────────────
+export async function getProjectContext(projectId) {
+  if (!projectId) return null;
+  const snap = await get(ref(db, `projectContexts/${projectId}`));
+  return snap.exists() ? snap.val() : null;
+}
+
+export async function saveProjectContextTurn(projectId, convId, turnId, turn) {
+  if (!projectId || !convId || !turnId || !turn) return;
+  const conversationRef = ref(db, `projectContexts/${projectId}/conversations/${convId}`);
+  await runTransaction(conversationRef, (current) => {
+    const turns = {
+      ...(current?.turns || {}),
+      [turnId]: turn,
+    };
+    const retainedTurns = Object.entries(turns)
+      .sort(([, left], [, right]) => Number(right?.timestamp || 0) - Number(left?.timestamp || 0))
+      .slice(0, 16)
+      .reduce((result, [id, value]) => ({ ...result, [id]: value }), {});
+    return {
+      turns: retainedTurns,
+      updatedAt: Number(turn.timestamp || Date.now()),
+    };
+  }, { applyLocally: false });
+}
+
 // ── Projects ───────────────────────────────────────────
 export async function createProject(uid, name, description = '') {
   const projRef = push(ref(db, `projects/${uid}`));
@@ -460,6 +486,7 @@ export async function deleteProject(uid, projectId) {
     [`projects/${uid}/${projectId}`]: null,
     [`sharedProjects/${projectId}`]: null,
     [`projectChats/${projectId}`]: null,
+    [`projectContexts/${projectId}`]: null,
   };
   const chats = await get(ref(db, `projectChats/${projectId}`));
   chats.forEach((chatSnap) => {
@@ -502,6 +529,7 @@ export async function removeConversationFromProject(uid, projectId, convId) {
     remove(ref(db, `projects/${uid}/${projectId}/conversations/${convId}`)),
     remove(ref(db, `sharedProjects/${projectId}/conversations/${convId}`)),
     remove(ref(db, `projectChats/${projectId}/${convId}`)),
+    remove(ref(db, `projectContexts/${projectId}/conversations/${convId}`)),
     update(ref(db, `conversations/${conversationOwnerUid}/${convId}`), { projectId: null, updatedAt: Date.now() }),
   ]);
 }
