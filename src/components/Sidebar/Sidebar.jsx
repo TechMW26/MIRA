@@ -17,6 +17,8 @@ import {
   Lock,
   Unlock,
   ArrowLeft,
+  UserPlus,
+  Users,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useChatContext } from '../../contexts/ChatContext';
@@ -32,6 +34,9 @@ import {
   addConversationToProject,
   removeConversationFromProject,
   updateProject,
+  inviteProjectMember,
+  removeProjectMember,
+  subscribeProjectConversations,
 } from '../../services/database';
 import { groupConversationsByDate } from '../../utils/helpers';
 import { stopChatGeneration } from '../../services/api';
@@ -70,6 +75,8 @@ export default function Sidebar() {
 
   const [conversations, setConversations] = useState([]);
   const [projects, setProjects] = useState([]);
+  const [sharedProjectConversations, setSharedProjectConversations] = useState([]);
+  const [sharedProjectConversationsReady, setSharedProjectConversationsReady] = useState(false);
   const [search, setSearch] = useState('');
   const [showProjects, setShowProjects] = useState(true);
   const [showNewProject, setShowNewProject] = useState(false);
@@ -83,6 +90,10 @@ export default function Sidebar() {
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
   const [projectMenu, setProjectMenu] = useState(null);
+  const [inviteProject, setInviteProject] = useState(null);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteStatus, setInviteStatus] = useState('');
+  const [inviteLoading, setInviteLoading] = useState(false);
   const sidebarRef = useRef(null);
   const contextMenuRef = useRef(null);
   const [moveMenuLeft, setMoveMenuLeft] = useState(false);
@@ -95,14 +106,30 @@ export default function Sidebar() {
   }, [user]);
 
   useEffect(() => {
-    if (currentConversationId && conversations.length > 0) {
-      const exists = conversations.some((conversation) => conversation.id === currentConversationId);
+    if (!activeProjectId) {
+      setSharedProjectConversations([]);
+      setSharedProjectConversationsReady(false);
+      return undefined;
+    }
+    setSharedProjectConversationsReady(false);
+    return subscribeProjectConversations(activeProjectId, (next) => {
+      setSharedProjectConversations(next);
+      setSharedProjectConversationsReady(true);
+    });
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    if (currentConversationId) {
+      if (activeProjectId && !sharedProjectConversationsReady) return;
+      if (!activeProjectId && conversations.length === 0) return;
+      const exists = conversations.some((conversation) => conversation.id === currentConversationId)
+        || sharedProjectConversations.some((conversation) => conversation.id === currentConversationId);
       if (!exists) {
         stopChatGeneration();
         setCurrentConversationId(null);
       }
     }
-  }, [currentConversationId, conversations, setCurrentConversationId]);
+  }, [activeProjectId, currentConversationId, conversations, setCurrentConversationId, sharedProjectConversations, sharedProjectConversationsReady]);
 
   useEffect(() => {
     if (activeProjectId && projects.length > 0) {
@@ -112,6 +139,12 @@ export default function Sidebar() {
       }
     }
   }, [activeProjectId, projects, setActiveProjectId]);
+
+  useEffect(() => {
+    if (!inviteProject) return;
+    const updated = projects.find((project) => project.id === inviteProject.id);
+    if (updated) setInviteProject(updated);
+  }, [inviteProject?.id, projects]);
 
   // Close menus on outside click
   useEffect(() => {
@@ -151,7 +184,10 @@ export default function Sidebar() {
   // Get chats belonging to the active project
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const projectConversations = activeProjectId
-    ? conversations.filter((c) => c.projectId === activeProjectId)
+    ? [...new Map([
+      ...conversations.filter((c) => c.projectId === activeProjectId),
+      ...sharedProjectConversations,
+    ].map((conversation) => [conversation.id, conversation])).values()]
     : [];
   const projectGrouped = groupConversationsByDate(
     search ? projectConversations.filter((c) => c.title?.toLowerCase().includes(search.toLowerCase())) : projectConversations
@@ -163,12 +199,45 @@ export default function Sidebar() {
     setContextMenu(null);
     if (user) {
       if (currentConversationId === convId) stopChatGeneration();
-      const conv = conversations.find((c) => c.id === convId);
+      const conv = [...conversations, ...sharedProjectConversations].find((c) => c.id === convId);
+      if (conv?.ownerUid && conv.ownerUid !== user.uid && activeProject?.ownerUid !== user.uid) return;
       if (conv?.projectId) {
         await removeConversationFromProject(user.uid, conv.projectId, convId);
       }
-      await deleteConversation(user.uid, convId);
+      await deleteConversation(conv?.ownerUid || user.uid, convId);
       if (currentConversationId === convId) startNewChat();
+    }
+  }
+
+  function openInviteModal(project) {
+    setProjectMenu(null);
+    setInviteProject(project);
+    setInviteEmail('');
+    setInviteStatus('');
+  }
+
+  async function handleInvite() {
+    if (!inviteProject || !user || !inviteEmail.trim()) return;
+    setInviteLoading(true);
+    setInviteStatus('');
+    try {
+      const invited = await inviteProjectMember(user.uid, inviteProject.id, inviteEmail);
+      setInviteEmail('');
+      setInviteStatus(`${invited.displayName || invited.email} can now access this project.`);
+    } catch (error) {
+      setInviteStatus(error?.message || 'Could not invite that account.');
+    } finally {
+      setInviteLoading(false);
+    }
+  }
+
+  async function handleRemoveMember(memberUid) {
+    if (!inviteProject || !user) return;
+    try {
+      await removeProjectMember(user.uid, inviteProject.id, memberUid);
+      setInviteStatus('Collaborator removed.');
+    } catch (error) {
+      setInviteStatus(error?.message || 'Could not remove that collaborator.');
     }
   }
 
@@ -401,6 +470,17 @@ export default function Sidebar() {
               </div>
             </div>
             <div className="flex items-center gap-0.5">
+              {activeProject?.isOwner && (
+                <button
+                  onClick={() => openInviteModal(activeProject)}
+                  className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
+                  style={{ color: 'var(--text-secondary)' }}
+                  title="Invite collaborators"
+                  aria-label="Invite collaborators"
+                >
+                  <UserPlus size={15} />
+                </button>
+              )}
               <button
                 onClick={() => {
                   startNewChat();
@@ -489,7 +569,10 @@ export default function Sidebar() {
                             <button onClick={() => handleOpenProject(p)} className="flex items-center gap-2 w-full px-3 py-2 text-sm transition rounded-lg" style={{ color: 'var(--text-secondary)' }}>
                               <FolderOpen size={13} /> Open
                             </button>
-                            {p.pin ? (
+                            {p.isOwner && <button onClick={() => openInviteModal(p)} className="flex items-center gap-2 w-full px-3 py-2 text-sm transition rounded-lg" style={{ color: 'var(--text-secondary)' }}>
+                              <UserPlus size={13} /> Invite people
+                            </button>}
+                            {p.isOwner && (p.pin ? (
                               <button onClick={() => handleRemovePin(p)} className="flex items-center gap-2 w-full px-3 py-2 text-sm transition rounded-lg" style={{ color: 'var(--text-secondary)' }}>
                                 <Unlock size={13} /> Remove PIN
                               </button>
@@ -497,10 +580,10 @@ export default function Sidebar() {
                               <button onClick={() => handleSetPin(p)} className="flex items-center gap-2 w-full px-3 py-2 text-sm transition rounded-lg" style={{ color: 'var(--text-secondary)' }}>
                                 <Lock size={13} /> Set PIN
                               </button>
-                            )}
-                            <button onClick={() => handleDeleteProject(p)} className="flex items-center gap-2 w-full px-3 py-2 text-sm text-red-400 hover:bg-red-500/10 transition rounded-lg">
+                            ))}
+                            {p.isOwner && <button onClick={() => handleDeleteProject(p)} className="flex items-center gap-2 w-full px-3 py-2 text-sm text-red-400 hover:bg-red-500/10 transition rounded-lg">
                               <Trash2 size={13} /> Delete
-                            </button>
+                            </button>}
                           </div>
                         )}
                       </div>
@@ -690,6 +773,57 @@ export default function Sidebar() {
               >
                 {pinModal.mode === 'set' ? 'Set PIN' : 'Unlock'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {inviteProject && (
+        <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(4px)' }} onClick={() => setInviteProject(null)}>
+          <div className="glass-strong rounded-2xl p-6 w-full max-w-md shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 mb-5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'var(--accent-glow)' }}>
+                  <Users size={18} style={{ color: 'var(--accent)' }} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Project collaborators</h3>
+                  <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>{inviteProject.name}</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => setInviteProject(null)} className="p-1.5 rounded-lg" aria-label="Close collaborator dialog" style={{ color: 'var(--text-tertiary)' }}><X size={16} /></button>
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                type="email"
+                value={inviteEmail}
+                onChange={(event) => { setInviteEmail(event.target.value); setInviteStatus(''); }}
+                onKeyDown={(event) => event.key === 'Enter' && handleInvite()}
+                placeholder="Existing account email"
+                className="flex-1 glass-input rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-1 focus:ring-[var(--border)]"
+                style={{ color: 'var(--text-primary)' }}
+                autoFocus
+              />
+              <button type="button" onClick={handleInvite} disabled={inviteLoading || !inviteEmail.trim()} className="px-4 rounded-xl text-sm font-medium disabled:opacity-50" style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}>
+                {inviteLoading ? 'Adding…' : 'Invite'}
+              </button>
+            </div>
+            {inviteStatus && <p className="mt-2 text-xs" role="status" style={{ color: 'var(--text-secondary)' }}>{inviteStatus}</p>}
+
+            <div className="mt-5 space-y-2 max-h-56 overflow-y-auto">
+              {Object.values(inviteProject.members || {}).map((member) => (
+                <div key={member.uid} className="flex items-center gap-3 rounded-xl px-3 py-2" style={{ background: 'var(--glass-bg)', border: '1px solid var(--border)' }}>
+                  <UserAvatar profile={member} size={30} rounded="rounded-lg" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm truncate" style={{ color: 'var(--text-primary)' }}>{member.displayName || member.email}</p>
+                    <p className="text-[10px] truncate" style={{ color: 'var(--text-tertiary)' }}>{member.role === 'owner' ? 'Owner' : member.email}</p>
+                  </div>
+                  {member.role !== 'owner' && (
+                    <button type="button" onClick={() => handleRemoveMember(member.uid)} className="p-1.5 rounded-lg text-red-400" aria-label={`Remove ${member.displayName || member.email}`} title="Remove collaborator"><X size={14} /></button>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         </div>

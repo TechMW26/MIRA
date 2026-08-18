@@ -91,6 +91,8 @@ export default function ChatInput({
   onSteer,
   onStop,
   isGenerating,
+  isConversationBusy = false,
+  busyUser = null,
   isSearching,
   webSearch,
   onToggleWebSearch,
@@ -104,6 +106,7 @@ export default function ChatInput({
   onEditQueued,
   onSendQueuedNow,
   onHeightChange,
+  currentUserId = '',
 }) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState([]);
@@ -175,7 +178,9 @@ export default function ChatInput({
     }
   }
 
-  function handleSubmit(e, mode = isGenerating ? 'queue' : 'send') {
+  const queueMode = isGenerating || isConversationBusy;
+
+  function handleSubmit(e, mode = queueMode ? 'queue' : 'send') {
     e?.preventDefault();
     if (!input.trim() && attachments.length === 0) return;
     if (mode === 'queue' && queueLimitReached) {
@@ -354,11 +359,14 @@ export default function ChatInput({
                 {queuedPrompts.map((prompt, index) => {
                   const isEditing = editingQueuedId === prompt.id;
                   const attachmentCount = prompt.attachments?.length || 0;
+                  const canManage = !prompt.author?.uid || prompt.author.uid === currentUserId;
+                  const authorName = prompt.author?.displayName || prompt.author?.email || '';
                   return (
                     <article key={prompt.id} className="queued-prompt-card">
                       <div className="queued-prompt-card__topline">
                         <span className="queued-prompt-card__position">{index === 0 ? 'Next' : `Queued ${index + 1}`}</span>
                         <div className="queued-prompt-card__meta">
+                          {authorName && <span>{authorName}</span>}
                           {prompt.webSearch && <span><Globe size={11} /> Web</span>}
                           {attachmentCount > 0 && <span><Paperclip size={11} /> {attachmentCount}</span>}
                         </div>
@@ -380,7 +388,7 @@ export default function ChatInput({
                         </p>
                       )}
 
-                      <div className="queued-prompt-card__actions">
+                      {canManage && <div className="queued-prompt-card__actions">
                         {isEditing ? (
                           <>
                             <button type="button" onClick={cancelQueuedEdit} className="queued-prompt-action" aria-label={`Discard edits to queued prompt ${index + 1}`}>
@@ -414,7 +422,7 @@ export default function ChatInput({
                             </button>
                           </>
                         )}
-                      </div>
+                      </div>}
                     </article>
                   );
                 })}
@@ -474,9 +482,11 @@ export default function ChatInput({
               </div>
             )}
 
-            {isGenerating && (
+            {queueMode && (
               <p className="pt-2 text-[10px] tracking-wide" style={{ color: 'var(--text-tertiary)' }}>
-                Enter queues · Command/Control + Enter steers now
+                {isGenerating
+                  ? 'Enter queues · Command/Control + Enter steers now'
+                  : `${busyUser?.displayName || busyUser?.email || 'A collaborator'} is responding · Enter queues your prompt`}
               </p>
             )}
 
@@ -583,6 +593,17 @@ export default function ChatInput({
                     <CornerDownRight size={18} />
                   </button>
                 </>
+              ) : isConversationBusy ? (
+                <button
+                  type="button"
+                  onClick={(event) => handleSubmit(event, 'queue')}
+                  disabled={!input.trim() && attachments.length === 0}
+                  className="composer-send-btn"
+                  title="Queue after the current response"
+                  aria-label="Queue prompt"
+                >
+                  <ListPlus size={18} />
+                </button>
               ) : (
                 <button
                   type="button"

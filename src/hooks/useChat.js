@@ -19,6 +19,10 @@ import {
   updateConversation,
   updateConversationTitle,
   addConversationToProject,
+  updateProjectConversation,
+  enqueueConversationPrompt,
+  acquireConversationRun,
+  releaseConversationRun,
   subscribeMessages,
 } from '../services/database';
 import { useAuth } from '../contexts/AuthContext';
@@ -138,9 +142,9 @@ function applyTaskWorkflowPhase(workflow, update = {}) {
   if (update.phase === 'synthesizing') return { ...next, phase: 'synthesizing' };
   return next;
 }
-const HISTORY_ATTACHMENT_CHAR_LIMIT = 16000;
-const MAX_HISTORY_MESSAGES_FOR_MODEL = 24;
-const MAX_HISTORY_CHARS_FOR_MODEL = 18000;
+const HISTORY_ATTACHMENT_CHAR_LIMIT = 24000;
+const MAX_HISTORY_MESSAGES_FOR_MODEL = 32;
+const MAX_HISTORY_CHARS_FOR_MODEL = 48000;
 const MAX_GREETING_HISTORY_MESSAGES = 6;
 const MAX_GREETING_HISTORY_CHARS = 4000;
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
@@ -856,12 +860,19 @@ export default function useChat() {
   const generationRunRef = useRef(0);
   const activeResponseRef = useRef(null);
 
+  const persistConversationUpdate = useCallback(async (conversationId, data) => {
+    if (!user?.uid || !conversationId) return;
+    if (activeProjectId) await updateProjectConversation(activeProjectId, conversationId, data);
+    else await updateConversation(user.uid, conversationId, data);
+  }, [activeProjectId, user?.uid]);
+
   const refreshConversationTitle = useCallback(async (conversationId, transcript = []) => {
     if (!user?.uid || !conversationId || !Array.isArray(transcript) || transcript.length === 0) return;
     const title = await generateConversationTitle(transcript);
     if (!title || title === 'New Chat') return;
-    await updateConversationTitle(user.uid, conversationId, title);
-  }, [user?.uid]);
+    if (activeProjectId) await updateProjectConversation(activeProjectId, conversationId, { title, titleUpdatedAt: Date.now() });
+    else await updateConversationTitle(user.uid, conversationId, title);
+  }, [activeProjectId, user?.uid]);
 
   const flushStreamingContent = useCallback((value) => {
     if (abortRef.current) return;
@@ -1105,6 +1116,27 @@ export default function useChat() {
       const interruptExisting = Boolean(options.interruptExisting || options.replaceMessageId);
       if (isGenerating && !interruptExisting) return;
       const runId = generationRunRef.current + 1;
+      const projectRunToken = `${user.uid}-${Date.now()}-${runId}`;
+      const messageAuthor = options.author?.uid ? options.author : profile;
+      const isActingForAnotherUser = messageAuthor.uid !== user.uid;
+      const requestProfile = isActingForAnotherUser ? messageAuthor : profile;
+      let lockedConversationId = null;
+
+      if (activeProjectId && currentConversationId) {
+        const acquired = await acquireConversationRun(currentConversationId, projectRunToken, messageAuthor);
+        if (!acquired) {
+          if (options.queueOnBusy !== false) {
+            await enqueueConversationPrompt(currentConversationId, {
+              content,
+              attachments,
+              webSearch,
+              conversationId: currentConversationId,
+            }, messageAuthor);
+          }
+          return { queued: true };
+        }
+        lockedConversationId = currentConversationId;
+      }
       generationRunRef.current = runId;
       const interruptedResponse = options.steering && activeResponseRef.current?.content
         ? { ...activeResponseRef.current }
@@ -1180,6 +1212,7 @@ export default function useChat() {
           ...(options.promptContent ? { promptContent: options.promptContent } : {}),
           ...(options.webPage ? { webPage: options.webPage } : {}),
           ...(attachmentData.length > 0 ? { attachments: attachmentData } : {}),
+          author: messageAuthor,
           localEcho: true,
         };
         setMessages((prev) => [...prev, localEcho]);
@@ -1221,6 +1254,9 @@ export default function useChat() {
           setCurrentConversationId(convId);
           if (activeProjectId) {
             await addConversationToProject(user.uid, activeProjectId, convId);
+            const acquired = await acquireConversationRun(convId, projectRunToken, messageAuthor);
+            if (!acquired) throw new Error('This project chat became busy. Please send again.');
+            lockedConversationId = convId;
           }
         }
         if (!isCurrentRun()) return;
@@ -1307,20 +1343,20 @@ export default function useChat() {
 
         // ── Adaptive user context (token-efficient) ──
         // Cache profile locally so heuristic + future sessions can use it.
-        cacheProfile(profile);
+        if (!isActingForAnotherUser) cacheProfile(profile);
         const currentConversation = Array.isArray(chatConversations)
           ? chatConversations.find((c) => c?.id === convId)
           : null;
         const isFirstTurn = (historySource?.length || 0) === 0;
         const contextMode = decideContextMode(content, isFirstTurn);
-        const adaptiveLearningEnabled = profile?.preferences?.adaptiveLearning !== false;
-        if (adaptiveLearningEnabled) learnResponsePreferences(content, { scope: user.uid });
+        const adaptiveLearningEnabled = !isActingForAnotherUser && profile?.preferences?.adaptiveLearning !== false;
+        if (adaptiveLearningEnabled) learnResponsePreferences(content, { scope: messageAuthor.uid });
         const learnedFactsBlock = buildLearnedFactsBlock();
         const responsePreferencesBlock = adaptiveLearningEnabled
-          ? buildResponsePreferencesBlock(profile?.preferences, { scope: user.uid })
+          ? buildResponsePreferencesBlock(profile?.preferences, { scope: messageAuthor.uid })
           : '';
         const adaptiveContext = buildAdaptiveContext({
-          profile,
+          profile: requestProfile,
           conversation: currentConversation,
           messages: historySource,
           mode: contextMode,
@@ -1348,6 +1384,7 @@ export default function useChat() {
           content: '',
           type: 'text',
           timestamp: assistantTimestamp,
+          generatedBy: messageAuthor,
         });
         if (replaceMessageId) {
           [, assistantMsgId] = await Promise.all([
@@ -1370,6 +1407,7 @@ export default function useChat() {
               ...(options.promptContent ? { promptContent: options.promptContent } : {}),
               ...(options.webPage ? { webPage: options.webPage } : {}),
               ...(attachmentData.length > 0 ? { attachments: attachmentData } : {}),
+              author: messageAuthor,
             }),
             assistantWrite,
           ]);
@@ -1423,7 +1461,7 @@ export default function useChat() {
                 });
                 if (isNewChat) {
                   generateSmartTitle(content, decision.question).then((title) => {
-                    updateConversation(user.uid, convId, { title });
+                    persistConversationUpdate(convId, { title });
                   });
                 }
                 refreshConversationTitle(convId, [
@@ -1854,7 +1892,7 @@ export default function useChat() {
             });
             if (isNewChat) {
               generateSmartTitle(content, deterministicMediaReply).then((title) => {
-                updateConversation(user.uid, convId, { title });
+                persistConversationUpdate(convId, { title });
               });
             }
             refreshConversationTitle(convId, [
@@ -2651,7 +2689,7 @@ export default function useChat() {
 
             if (isNewChat) {
               generateSmartTitle(content, titleSource).then((title) => {
-                updateConversation(user.uid, convId, { title });
+                persistConversationUpdate(convId, { title });
               });
             }
             const titleTranscript = [
@@ -2678,6 +2716,11 @@ export default function useChat() {
           });
         }
       } finally {
+        if (lockedConversationId) {
+          releaseConversationRun(lockedConversationId, projectRunToken).catch((error) => {
+            console.warn('Failed to release project chat run:', error?.message);
+          });
+        }
         if (generationRunRef.current !== runId) return;
         if (activeResponseRef.current?.runId === runId) activeResponseRef.current = null;
         cancelPendingStreamFlushes();
@@ -2699,7 +2742,9 @@ export default function useChat() {
       normalizeImageForUpload,
       pruneMessagesAfter,
       refreshConversationTitle,
+      persistConversationUpdate,
       finalizeActiveResponse,
+      profile,
     ]
   );
 

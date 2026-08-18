@@ -3,6 +3,13 @@ import { useChatContext } from '../../contexts/ChatContext';
 import useChat from '../../hooks/useChat';
 import useUserProfile from '../../hooks/useUserProfile';
 import {
+  enqueueConversationPrompt,
+  removeConversationPrompt,
+  subscribeConversationQueue,
+  subscribeConversationRun,
+  updateConversationPrompt,
+} from '../../services/database';
+import {
   createQueuedPrompt,
   enqueuePrompt,
   MAX_PROMPT_QUEUE,
@@ -106,7 +113,7 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
 }
 
 export default function ChatWindow() {
-  const { currentConversationId, isGenerating, isSearching } = useChatContext();
+  const { currentConversationId, isGenerating, isSearching, activeProjectId } = useChatContext();
   const {
     messages,
     streamingContent,
@@ -126,6 +133,8 @@ export default function ChatWindow() {
   const [chatFontSize, setChatFontSize] = useState(getStoredFontSize);
   const [iconAttractor, setIconAttractor] = useState(null);
   const [promptQueue, setPromptQueue] = useState([]);
+  const [sharedPromptQueue, setSharedPromptQueue] = useState([]);
+  const [activeConversationRun, setActiveConversationRun] = useState(null);
   const [composerHeight, setComposerHeight] = useState(176);
   const scrollAreaRef = useRef(null);
   const autoScrollRef = useRef(true);
@@ -178,6 +187,24 @@ export default function ChatWindow() {
     return sendMessage(content, attachments, ws, options);
   }, [sendMessage]);
 
+  useEffect(() => {
+    if (!activeProjectId || !currentConversationId) {
+      setSharedPromptQueue([]);
+      setActiveConversationRun(null);
+      return undefined;
+    }
+    const unsubscribeQueue = subscribeConversationQueue(currentConversationId, setSharedPromptQueue);
+    const unsubscribeRun = subscribeConversationRun(currentConversationId, setActiveConversationRun);
+    return () => {
+      unsubscribeQueue();
+      unsubscribeRun();
+    };
+  }, [activeProjectId, currentConversationId]);
+
+  const usingSharedQueue = Boolean(activeProjectId && currentConversationId);
+  const visiblePromptQueue = usingSharedQueue ? sharedPromptQueue : promptQueue;
+  const remoteRun = activeConversationRun?.author?.uid !== userProfile.uid ? activeConversationRun : null;
+
   const queuePrompt = useCallback((content, attachments, ws) => {
     const queued = createQueuedPrompt({
       content,
@@ -185,33 +212,56 @@ export default function ChatWindow() {
       webSearch: ws,
       conversationId: currentConversationId,
     });
+    if (activeProjectId && currentConversationId) {
+      return enqueueConversationPrompt(currentConversationId, queued, userProfile);
+    }
     setPromptQueue((current) => enqueuePrompt(current, queued));
-  }, [currentConversationId]);
+    return undefined;
+  }, [activeProjectId, currentConversationId, userProfile]);
 
   const steerPrompt = useCallback((content, attachments, ws) => (
     sendToChat(content, attachments, ws, { interruptExisting: true, steering: true })
   ), [sendToChat]);
 
   const removePromptFromQueue = useCallback((promptId) => {
+    if (usingSharedQueue) return removeConversationPrompt(currentConversationId, promptId, userProfile.uid);
     setPromptQueue((current) => removeQueuedPrompt(current, promptId));
-  }, []);
+    return undefined;
+  }, [currentConversationId, userProfile.uid, usingSharedQueue]);
 
   const editPromptInQueue = useCallback((promptId, content) => {
+    if (usingSharedQueue) return updateConversationPrompt(currentConversationId, promptId, userProfile.uid, { content });
     setPromptQueue((current) => updateQueuedPrompt(current, promptId, { content }));
-  }, []);
+    return undefined;
+  }, [currentConversationId, userProfile.uid, usingSharedQueue]);
 
   const sendQueuedPromptNow = useCallback((promptId) => {
-    const queued = promptQueue.find((prompt) => prompt.id === promptId);
+    const queued = visiblePromptQueue.find((prompt) => prompt.id === promptId);
     if (!queued) return;
+    if (queued.author?.uid && queued.author.uid !== userProfile.uid) return;
+    if (usingSharedQueue && activeConversationRun) return;
+    if (usingSharedQueue) {
+      queueDrainRef.current = true;
+      return Promise.resolve(sendToChat(queued.content, queued.attachments, queued.webSearch, {
+        queueOnBusy: false,
+        author: queued.author || userProfile,
+      })).then((result) => {
+        if (!result?.queued) return removeConversationPrompt(currentConversationId, promptId, userProfile.uid);
+        return undefined;
+      }).finally(() => {
+        queueDrainRef.current = false;
+      });
+    }
     setPromptQueue((current) => removeQueuedPrompt(current, promptId));
     if (queued.conversationId && queued.conversationId !== currentConversationId) return;
     return sendToChat(queued.content, queued.attachments, queued.webSearch, {
       interruptExisting: isGenerating,
       steering: isGenerating,
     });
-  }, [currentConversationId, isGenerating, promptQueue, sendToChat]);
+  }, [activeConversationRun, currentConversationId, isGenerating, sendToChat, userProfile, usingSharedQueue, visiblePromptQueue]);
 
   useEffect(() => {
+    if (usingSharedQueue) return;
     if (isGenerating || queueDrainRef.current || promptQueue.length === 0) return;
     const { next, remaining } = takeNextQueuedPrompt(promptQueue);
     if (!next) return;
@@ -224,7 +274,23 @@ export default function ChatWindow() {
       .finally(() => {
         queueDrainRef.current = false;
       });
-  }, [currentConversationId, isGenerating, promptQueue, sendToChat]);
+  }, [currentConversationId, isGenerating, promptQueue, sendToChat, usingSharedQueue]);
+
+  useEffect(() => {
+    if (!usingSharedQueue || isGenerating || activeConversationRun || queueDrainRef.current) return;
+    const next = sharedPromptQueue[0];
+    if (!next) return;
+    queueDrainRef.current = true;
+    Promise.resolve(sendToChat(next.content, next.attachments || [], next.webSearch, {
+      queueOnBusy: false,
+      author: next.author || userProfile,
+    })).then((result) => {
+      if (!result?.queued) return removeConversationPrompt(currentConversationId, next.id, next.author?.uid || userProfile.uid);
+      return undefined;
+    }).finally(() => {
+      queueDrainRef.current = false;
+    });
+  }, [activeConversationRun, currentConversationId, isGenerating, sendToChat, sharedPromptQueue, userProfile, usingSharedQueue]);
 
   useEffect(() => {
     const previousConversationId = previousConversationRef.current;
@@ -298,6 +364,8 @@ export default function ChatWindow() {
           onSteer={(text, attachments) => steerPrompt(text, attachments, webSearch)}
           onStop={stopGenerating}
           isGenerating={isGenerating}
+          isConversationBusy={Boolean(remoteRun)}
+          busyUser={remoteRun?.author}
           isSearching={isSearching}
           webSearch={webSearch}
           onToggleWebSearch={() => setWebSearch(v => !v)}
@@ -305,8 +373,9 @@ export default function ChatWindow() {
           onTogglePanel={togglePanel}
           onShare={() => setShowShare(true)}
           messages={messages}
-          queuedPrompts={promptQueue}
-          queueLimitReached={promptQueue.length >= MAX_PROMPT_QUEUE}
+          queuedPrompts={visiblePromptQueue}
+          queueLimitReached={visiblePromptQueue.length >= MAX_PROMPT_QUEUE}
+          currentUserId={userProfile.uid}
           onRemoveQueued={removePromptFromQueue}
           onEditQueued={editPromptInQueue}
           onSendQueuedNow={sendQueuedPromptNow}

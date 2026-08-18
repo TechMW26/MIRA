@@ -776,6 +776,9 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
 
 function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, isSearching = false, userProfile = null }) {
   const isUser = message.role === 'user';
+  const messageAuthor = message.author?.uid ? message.author : userProfile;
+  const authorName = messageAuthor?.displayName || messageAuthor?.email || 'User';
+  const canManageUserMessage = !message.author?.uid || message.author.uid === userProfile?.uid;
   const [copied, setCopied] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
@@ -953,10 +956,14 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
     <div className={`group flex gap-3 px-4 lg:px-0 ${isUser ? 'justify-end' : 'justify-start'} animate-fade-in`}>
       <div className={`${isUser ? 'max-w-[88%] sm:max-w-[84%]' : 'max-w-[920px] min-w-0'}`}>
         {isUser ? (
-          <div
-            className="hud-chat-bubble hud-chat-bubble-user"
-            style={{ color: 'var(--user-bubble-text)' }}
-          >
+          <div>
+            <div className="mb-1 mr-1 text-right text-[10px] font-semibold tracking-wide" style={{ color: 'var(--text-tertiary)' }}>
+              {authorName}
+            </div>
+            <div
+              className="hud-chat-bubble hud-chat-bubble-user"
+              style={{ color: 'var(--user-bubble-text)' }}
+            >
             {message.content && (
               <p className="whitespace-pre-wrap break-words overflow-x-auto max-w-full" style={{ lineHeight: 1.6 }}>{message.content}</p>
             )}
@@ -970,6 +977,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
                 ))}
               </div>
             )}
+            </div>
           </div>
         ) : message.type === 'image_loading' ? (
           <div className="hud-chat-bubble hud-chat-bubble-assistant">
@@ -1028,7 +1036,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
         )}
 
         {/* Actions */}
-        {isUser && message.content && (
+        {isUser && message.content && canManageUserMessage && (
           <div className="flex items-center gap-1 mt-1.5 mr-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 justify-end">
             <button onClick={() => setShowEditModal(true)} className="p-1.5 rounded-md transition-all hover:scale-110" style={{ color: 'var(--hud-cyan-soft)' }} title="Edit and resend">
               <Pencil size={13} />
@@ -1090,7 +1098,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
       {/* User avatar */}
       {isUser && (
         <div className="flex-shrink-0 mt-1">
-          <UserAvatar profile={userProfile} size={32} className="shadow-sm" title="You" />
+          <UserAvatar profile={messageAuthor} size={32} className="shadow-sm" title={authorName} />
         </div>
       )}
     </div>
