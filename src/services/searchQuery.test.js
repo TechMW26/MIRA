@@ -5,6 +5,7 @@ import { fallbackSearchQuery, formSearchQuery } from './searchQuery.js';
 test('forms search queries locally without a network round trip', async () => {
   assert.equal(await formSearchQuery({ latestMessage: 'What is an algae tree?' }), 'algae tree');
   assert.equal(fallbackSearchQuery('Please tell me about MIRA AI'), 'MIRA AI');
+  assert.equal(fallbackSearchQuery('Can you help me with better understanding of canact'), 'canact');
 });
 
 test('uses conversation context for referential follow-ups', async () => {

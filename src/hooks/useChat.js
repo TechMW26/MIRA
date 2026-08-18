@@ -1867,7 +1867,7 @@ export default function useChat() {
                 const freshnessRules = freshnessRequested
                   ? `\n- FRESHNESS IS MANDATORY: The user requested latest/current information. The host has ranked the evidence newest-first and limited it to the freshest retrieved cohort.\n- Use ONLY the newest relevant retrieved facts. Prefer the greatest Published timestamp. Ignore older claims when a newer source updates, supersedes, or conflicts with them.\n- State the exact date of the newest evidence you rely on. If every result says "date unavailable", say that recency could not be independently confirmed instead of presenting it as definitively latest.`
                   : '';
-                userContent = `${content}${recentConversationContextBlock}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${searchData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${searchQuery}"${contextBlock}\nFreshness requested: ${freshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${searchData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===${mediaBlock}\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${freshnessRules}\n- Read every source title and snippet before answering. If multiple titles/snippets directly name the user's entity, the search succeeded: synthesize the evidence and do not claim nothing was found.\n- Start with a polished direct explanation. Add only the most useful supporting facts; avoid filler introductions and repetitive bullets.\n- Conversation context comes FIRST. Resolve pronouns and phrases like "this device", "that product", "it", or "the company" from the conversation context anchor before interpreting search results.\n- If the search results clearly do not match the entity the user is referring to in this conversation, IGNORE the search results and answer from prior turns / your own knowledge instead. Do NOT pivot to an unrelated topic just because it appeared in the search results.\n- If the user asks who makes, produces, owns, founded, launched, or sells the referenced thing, search results are required evidence. Do not say you need more details when the context anchor already names the referenced thing.\n- Do not print numeric source markers such as [1] or [1, 2]. The host preserves source provenance separately.\n- MEDIA RULES (strict, NON-NEGOTIABLE):\n   • NEVER write or paste any YouTube, Instagram, Twitter/X, TikTok, or article URL as text or as a markdown link in your reply. The UI renders verified media separately.\n   • NEVER invent video titles, image descriptions, durations, channel names, view counts, or URLs. If you do not have a verified value, omit it.\n   • The UI auto-renders an embedded video player + image gallery directly under your reply for every item in the MEDIA GALLERY block. Do NOT enumerate them.\n   • When the user asks for "videos", "images", "more media", "social posts", or similar, reply with ONE short sentence pointing at the gallery and stop.\n   • If the MEDIA GALLERY block is empty, say plainly that you couldn't find relevant media this time. Do NOT invent placeholder links to fill the gap.\n\nAnswer:`;
+                userContent = `${content}${recentConversationContextBlock}${sharedProjectContextBlock ? `\n\n${sharedProjectContextBlock}` : ''}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${searchData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${searchQuery}"${contextBlock}\nFreshness requested: ${freshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${searchData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===${mediaBlock}\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${freshnessRules}\n- Treat project conversations, document digests, image analyses, current-chat context, and live web evidence as distinct sources of truth. Use all relevant sources.\n- Project context is first-party product knowledge. Never discard it merely because public search is sparse or absent. If web evidence conflicts with project material, state the discrepancy instead of silently choosing one.\n- Read every source title and snippet before answering. If multiple titles/snippets directly name the user's entity, the search succeeded: synthesize the evidence and do not claim nothing was found.\n- Start with a polished direct explanation. Add only the most useful supporting facts; avoid filler introductions and repetitive bullets.\n- Conversation context comes FIRST. Resolve pronouns and phrases like "this device", "that product", "it", or "the company" from the conversation context anchor before interpreting search results.\n- If the search results clearly do not match the entity the user is referring to in this conversation, IGNORE the search results and answer from project context, prior turns, or reliable knowledge instead. Do NOT pivot to an unrelated topic just because it appeared in the search results.\n- If the user asks who makes, produces, owns, founded, launched, or sells the referenced thing, search results are required evidence when available. Do not say you need more details when project or conversation context already names the referenced thing.\n- Do not print numeric source markers such as [1] or [1, 2]. The host preserves source provenance separately.\n- MEDIA RULES (strict, NON-NEGOTIABLE):\n   • NEVER write or paste any YouTube, Instagram, Twitter/X, TikTok, or article URL as text or as a markdown link in your reply. The UI renders verified media separately.\n   • NEVER invent video titles, image descriptions, durations, channel names, view counts, or URLs. If you do not have a verified value, omit it.\n   • The UI auto-renders an embedded video player + image gallery directly under your reply for every item in the MEDIA GALLERY block. Do NOT enumerate them.\n   • When the user asks for "videos", "images", "more media", "social posts", or similar, reply with ONE short sentence pointing at the gallery and stop.\n   • If the MEDIA GALLERY block is empty, say plainly that you couldn't find relevant media this time. Do NOT invent placeholder links to fill the gap.\n\nAnswer:`;
                 if (!wantsOnlyMediaGallery && shouldAttachRelatedMedia) {
                   userContent = userContent.replace(
                     '   • When the user asks for "videos", "images", "more media", "social posts", or similar, reply with ONE short sentence pointing at the gallery (e.g. "Here are the most relevant clips and photos I found — see the gallery below.") and stop.',
@@ -1879,7 +1879,7 @@ export default function useChat() {
                 const contextNote = recentContextAnchor
                   ? `\nConversation context anchor from previous turns: "${recentContextAnchor}"`
                   : '';
-                userContent = `${content}${recentConversationContextBlock}\n\n[Web search returned no results.${mediaBlock ? ' A related media gallery is rendered below; reference it briefly without inventing links.' : ' Answer from conversation context and your knowledge; note your cutoff date if relevant.'}]${contextNote}${mediaBlock}`;
+                userContent = `${content}${recentConversationContextBlock}${sharedProjectContextBlock ? `\n\n${sharedProjectContextBlock}` : ''}\n\n[Web search returned no useful public results.${sharedProjectContextBlock ? ' The project context above remains first-party source material: answer from it directly and do not request another search.' : mediaBlock ? ' A related media gallery is rendered below; reference it briefly without inventing links.' : ' Answer from conversation context and reliable knowledge; note your cutoff date if relevant.'}]${contextNote}${mediaBlock}`;
               }
               if (visualSearchAnchor) {
                 userContent = userContent
@@ -2550,6 +2550,35 @@ export default function useChat() {
             content.trim().length > 0 &&
             Boolean(requestedWebSearchQuery);
 
+          const regenerateFromProjectContext = async (searchStatus) => {
+            if (!sharedProjectContextBlock || !isCurrentRun()) return '';
+            const projectHistory = history.slice(0, -1);
+            projectHistory.push({
+              role: 'user',
+              content: `${content}\n\n${sharedProjectContextBlock}\n\nEXTERNAL VALIDATION STATUS: ${searchStatus}\nAnswer directly from the relevant project conversations, document digests, and image analyses above. These are first-party sources for this project. Do not request another web search and do not say information is unavailable when the project sources answer the question.`,
+            });
+            let projectAnswer = '';
+            await sendChatMessage(
+              projectHistory,
+              (accumulated) => {
+                if (!isCurrentRun()) return;
+                projectAnswer = stripAllControlText(accumulated);
+                flushStreamingContent(projectAnswer);
+              },
+              images,
+              {
+                think: shouldThink,
+                tools: [],
+                onThinking: (accumulated) => {
+                  if (!isCurrentRun()) return;
+                  finalThinkingText = stripAllControlText(accumulated);
+                  flushThinkingContent(finalThinkingText);
+                },
+              },
+            );
+            return projectAnswer.trim();
+          };
+
           if (autoSearchEligible) {
             diagnosticWarn('search', 'automatic fallback search activated', {
               runId,
@@ -2608,7 +2637,7 @@ export default function useChat() {
                 const fallbackFreshnessRules = fallbackFreshnessRequested
                   ? '\n- The user needs latest/current information. Use only the newest relevant retrieved facts, prefer the greatest Published timestamp, state its exact date, and ignore older conflicting claims. If dates are unavailable, say recency could not be confirmed.'
                   : '';
-                const groundedUserContent = `${content}${recentConversationContextBlock}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${fallbackData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${fallbackQuery}"\nFreshness requested: ${fallbackFreshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${fallbackData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${fallbackFreshnessRules}\n- You previously could not answer this from your own knowledge; now answer the user's question directly using these results.\n- Keep the answer polished and concise. Do not print numeric source markers; source provenance is handled separately.\n- Do not repeat that you lack current information — you now have it above.\n- Never invent URLs, citations, numbers, or facts beyond these results. If the results still do not cover it, say what is missing.`;
+                const groundedUserContent = `${content}${recentConversationContextBlock}${sharedProjectContextBlock ? `\n\n${sharedProjectContextBlock}` : ''}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${fallbackData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${fallbackQuery}"\nFreshness requested: ${fallbackFreshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${fallbackData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${fallbackFreshnessRules}\n- Use all relevant project, conversation, document, image-analysis, and web evidence. Project context is first-party knowledge and remains valid when public results are sparse.\n- Keep the answer polished and concise. Do not print numeric source markers; source provenance is handled separately.\n- Do not repeat that you lack current information when project or web evidence answers the question.\n- Never invent URLs, citations, numbers, or facts beyond these sources. If the sources conflict, state the discrepancy.`;
                 history[history.length - 1] = { role: 'user', content: groundedUserContent };
 
                 let retryText = '';
@@ -2648,12 +2677,16 @@ export default function useChat() {
                   fullText = stripAllControlText(retryText);
                 }
               } else if (requestedWebSearchQuery) {
-                fullText = `I searched the web for "${fallbackQuery}", but the available sources did not provide enough reliable information to answer confidently.`;
+                fullText = await regenerateFromProjectContext(
+                  `No useful public web results were found for "${fallbackQuery}".`,
+                ) || `I searched the web for "${fallbackQuery}", but the available sources did not provide enough reliable information to answer confidently.`;
               }
             } catch (autoErr) {
               console.warn('Auto fallback web search failed:', autoErr?.message);
               if (requestedWebSearchQuery) {
-                fullText = 'I tried to search the internet for this, but the search service is temporarily unavailable. Please try again in a moment.';
+                fullText = await regenerateFromProjectContext(
+                  'Public web validation was temporarily unavailable.',
+                ) || 'I tried to search the internet for this, but the search service is temporarily unavailable. Please try again in a moment.';
               }
             } finally {
               if (isCurrentRun()) setIsSearching(false);

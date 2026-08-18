@@ -32,6 +32,7 @@ export function fallbackSearchQuery(latestMessage = '', context = '') {
   const anchor = referential ? contextAnchor(context) : '';
   const asksPurpose = /\bwhat\s+(?:does|do|did)\b[\s\S]*\bdo\b/i.test(subject);
   const withoutReferences = subject
+    .replace(/^(?:help\s+me\s+(?:with\s+)?(?:a\s+)?(?:better\s+)?understanding\s+(?:of|about)|help\s+me\s+(?:understand|learn\s+about)|explain)\s+/i, '')
     .replace(/\b(?:for|about|on)\s+(?:the\s+)?(?:same|former|latter)\b/gi, ' ')
     .replace(/\b(it|its|this|that|these|those|they|them|same|former|latter)\b/gi, ' ')
     .replace(/^(?:what|who|where|when|why|how)\s+/i, '')

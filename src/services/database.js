@@ -157,7 +157,8 @@ export async function getProjectContext(projectId) {
   if (!projectId) return null;
   const contextRef = ref(db, `projectContexts/${projectId}`);
   const snap = await get(contextRef);
-  if (snap.exists()) return snap.val();
+  const existingContext = snap.exists() ? snap.val() : null;
+  if (existingContext?.bootstrappedAt) return existingContext;
 
   // Projects created before shared memory existed are bootstrapped once from
   // their most recent chats. This keeps historical documents useful without
@@ -168,17 +169,47 @@ export async function getProjectContext(projectId) {
   const recentChats = chats
     .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))
     .slice(0, 8);
-  if (!recentChats.length) return null;
+  if (!recentChats.length) return existingContext;
 
   const conversations = {};
   await Promise.all(recentChats.map(async (chat) => {
     const messagesSnap = await get(ref(db, `messages/${chat.id}`));
     const messages = [];
     messagesSnap.forEach((child) => messages.push({ id: child.key, ...child.val() }));
-    const recentMessages = messages
-      .sort((left, right) => Number(left.timestamp || 0) - Number(right.timestamp || 0))
-      .slice(-24);
+    const sortedMessages = messages
+      .sort((left, right) => Number(left.timestamp || 0) - Number(right.timestamp || 0));
+    const recentMessages = sortedMessages.slice(-24);
     const turns = {};
+    const projectFiles = [];
+    const projectImageAnalyses = [];
+    const seenFiles = new Set();
+    [...sortedMessages].reverse().forEach((message) => {
+      if (message.role !== 'user') return;
+      (Array.isArray(message.attachments) ? message.attachments : []).forEach((attachment) => {
+        const key = `${String(attachment?.name || '').toLowerCase()}|${String(attachment?.type || '').toLowerCase()}`;
+        if (!attachment || seenFiles.has(key) || seenFiles.size >= 16) return;
+        seenFiles.add(key);
+        if (attachment.isImage) {
+          projectImageAnalyses.push({
+            name: attachment.name || 'Attached image',
+            summary: `This image was supplied with the project request: ${String(message.content || '').slice(0, 600)}`,
+          });
+        } else {
+          projectFiles.push(attachment);
+        }
+      });
+    });
+    if (projectFiles.length || projectImageAnalyses.length) {
+      turns.projectReferences = buildProjectContextTurn({
+        userText: 'Project reference files and images shared across conversations.',
+        assistantText: 'Use these first-party project sources when they are relevant to later requests.',
+        attachments: projectFiles,
+        imageAnalyses: projectImageAnalyses,
+        author: {},
+        conversationTitle: chat.title || 'Project references',
+        timestamp: Number(chat.updatedAt || Date.now()),
+      });
+    }
     for (let index = 0; index < recentMessages.length; index += 1) {
       const userMessage = recentMessages[index];
       if (userMessage.role !== 'user') continue;
@@ -212,11 +243,26 @@ export async function getProjectContext(projectId) {
       conversations[chat.id] = { turns, updatedAt: Number(chat.updatedAt || Date.now()) };
     }
   }));
-  if (!Object.keys(conversations).length) return null;
+  if (!Object.keys(conversations).length) return existingContext;
 
-  const result = await runTransaction(contextRef, (current) => (
-    current || { conversations, bootstrappedAt: Date.now() }
-  ), { applyLocally: false });
+  const result = await runTransaction(contextRef, (current) => {
+    const mergedConversations = { ...conversations };
+    Object.entries(current?.conversations || {}).forEach(([conversationId, conversation]) => {
+      mergedConversations[conversationId] = {
+        ...(mergedConversations[conversationId] || {}),
+        ...conversation,
+        turns: {
+          ...(mergedConversations[conversationId]?.turns || {}),
+          ...(conversation?.turns || {}),
+        },
+      };
+    });
+    return {
+      ...(current || {}),
+      conversations: mergedConversations,
+      bootstrappedAt: Date.now(),
+    };
+  }, { applyLocally: false });
   return result.snapshot.exists() ? result.snapshot.val() : null;
 }
 

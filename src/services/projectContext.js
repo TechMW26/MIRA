@@ -99,8 +99,9 @@ export function buildProjectContextPrompt(projectContext, {
   });
   if (!turns.length) return '';
 
-  turns.sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0));
-  const selectedTurns = turns
+  const chronologicalTurns = [...turns]
+    .sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0));
+  const selectedTurns = [...chronologicalTurns]
     .sort((left, right) => {
       const leftOther = left.conversationId !== currentConversationId ? 1 : 0;
       const rightOther = right.conversationId !== currentConversationId ? 1 : 0;
@@ -115,6 +116,11 @@ export function buildProjectContextPrompt(projectContext, {
 
   const documents = [];
   const images = [];
+  chronologicalTurns.forEach((turn) => {
+    const title = summarizeProjectText(turn.conversationTitle || 'Project chat', 140);
+    (turn.documents || []).forEach((document) => documents.push({ ...document, title }));
+    (turn.images || []).forEach((image) => images.push({ ...image, title }));
+  });
   selectedTurns.forEach((turn) => {
     const scope = turn.conversationId === currentConversationId ? 'this chat' : 'another project chat';
     const title = summarizeProjectText(turn.conversationTitle || 'Project chat', 140);
@@ -125,8 +131,6 @@ export function buildProjectContextPrompt(projectContext, {
       .filter(Boolean)
       .join(' ');
     appendWithinLimit(lines, digest, state);
-    (turn.documents || []).forEach((document) => documents.push({ ...document, title }));
-    (turn.images || []).forEach((image) => images.push({ ...image, title }));
   });
 
   const seenDocuments = new Set();

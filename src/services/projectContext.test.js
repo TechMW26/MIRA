@@ -39,3 +39,25 @@ test('project prompt shares other-chat context and labels summarized evidence', 
   assert.match(prompt, /research\.pdf/);
   assert.match(prompt, /not claim these summaries are verbatim/i);
 });
+
+test('project prompt retains document truth even when its turn is older than recent chat digests', () => {
+  const turns = {};
+  for (let index = 0; index < 18; index += 1) {
+    turns[`turn-${index}`] = {
+      timestamp: index + 2,
+      conversationTitle: 'Ongoing work',
+      request: `Request ${index}`,
+      outcome: `Outcome ${index}`,
+    };
+  }
+  turns.documentTurn = {
+    timestamp: 1,
+    conversationTitle: 'CANACT specification',
+    request: 'Study the attached product specification.',
+    outcome: 'The document defines the CANACT application.',
+    documents: [{ name: 'CANACT-spec.docx', summary: 'CANACT includes onboarding, KYC, a local activity feed, and help requests.' }],
+  };
+  const prompt = buildProjectContextPrompt({ conversations: { canact: { turns } } });
+  assert.match(prompt, /CANACT-spec\.docx/);
+  assert.match(prompt, /onboarding, KYC/);
+});
