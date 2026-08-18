@@ -183,6 +183,7 @@ export default function Sidebar() {
 
   // Get chats belonging to the active project
   const activeProject = projects.find((p) => p.id === activeProjectId);
+  const activeProjectMemberCount = Math.max(1, Object.keys(activeProject?.members || {}).length);
   const projectConversations = activeProjectId
     ? [...new Map([
       ...conversations.filter((c) => c.projectId === activeProjectId),
@@ -449,7 +450,6 @@ export default function Sidebar() {
                     stopChatGeneration();
                     setActiveProjectId(null);
                     setCurrentConversationId(null);
-                    setSidebarOpen(false);
                   }}
                   className="p-1.5 rounded-xl transition-all hover:scale-105"
                   style={{ color: 'var(--text-secondary)' }}
@@ -520,6 +520,28 @@ export default function Sidebar() {
           {/* ── PROJECT WORKSPACE VIEW ── */}
           {activeProjectId ? (
             <div className="flex-1 overflow-y-auto px-2 space-y-3 pb-2">
+              <div className="mx-1 rounded-xl p-2.5" style={{ background: 'var(--glass-bg)', border: '1px solid var(--border)' }}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
+                      {activeProjectMemberCount} member{activeProjectMemberCount === 1 ? '' : 's'}
+                    </p>
+                    <p className="text-[10px] truncate" style={{ color: 'var(--text-tertiary)' }}>
+                      Shared project workspace
+                    </p>
+                  </div>
+                  {activeProject?.isOwner && (
+                    <button
+                      type="button"
+                      onClick={() => openInviteModal(activeProject)}
+                      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-medium transition-all hover:opacity-90"
+                      style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}
+                    >
+                      <UserPlus size={13} /> Invite collaborators
+                    </button>
+                  )}
+                </div>
+              </div>
               {renderChatList(projectGrouped, true)}
             </div>
           ) : (
