@@ -8,6 +8,13 @@ export const TOOL_NAMES = Object.freeze({
   TASK: 'task.run',
   IMAGE: 'image.generate',
   VIDEO: 'video.generate',
+  FILE_READ: 'filesystem.read',
+  FILE_WRITE: 'filesystem.write',
+  FILE_SEARCH: 'filesystem.search',
+  SHELL_RUN: 'shell.run',
+  TEST_RUN: 'test.run',
+  GIT_STATUS: 'git.status',
+  GIT_DIFF: 'git.diff',
 });
 
 const PREFIX = '[MIRA_TOOL:';

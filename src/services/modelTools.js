@@ -1,3 +1,9 @@
+import {
+  AGENT_CAPABILITIES,
+  filterToolsForRuntime,
+  getAgentRuntimeCapabilities,
+} from './agentCapabilities.js';
+
 function functionTool(name, description, properties, required = []) {
   return {
     type: 'function',
@@ -40,6 +46,31 @@ export const MODEL_TOOLS = [
   functionTool('video.generate', 'Generate or refine a short video.', {
     prompt: { type: 'string', description: 'A complete video generation prompt.' },
   }, ['prompt']),
+  functionTool(AGENT_CAPABILITIES.FILE_READ, 'Read a UTF-8 text file inside the open desktop workspace.', {
+    path: { type: 'string', description: 'Workspace-relative file path.' },
+  }, ['path']),
+  functionTool(AGENT_CAPABILITIES.FILE_WRITE, 'Write a UTF-8 text file inside the open desktop workspace after user approval.', {
+    path: { type: 'string', description: 'Workspace-relative file path.' },
+    content: { type: 'string', description: 'Complete replacement content.' },
+  }, ['path', 'content']),
+  functionTool(AGENT_CAPABILITIES.FILE_SEARCH, 'Search text inside the open desktop workspace with ripgrep.', {
+    query: { type: 'string', description: 'Literal text or regular expression to search for.' },
+    glob: { type: 'string', description: 'Optional ripgrep file glob such as *.js.' },
+  }, ['query']),
+  functionTool(AGENT_CAPABILITIES.SHELL_RUN, 'Run one executable inside the open desktop workspace after user approval. Pass arguments separately; shell syntax is not supported.', {
+    command: { type: 'string', description: 'Executable name, such as npm, node, git, or python.' },
+    args: { type: 'array', items: { type: 'string' }, description: 'Arguments passed directly to the executable.' },
+    cwd: { type: 'string', description: 'Optional workspace-relative working directory.' },
+  }, ['command']),
+  functionTool(AGENT_CAPABILITIES.TEST_RUN, 'Run a project test command inside the open desktop workspace and return its exit status and output.', {
+    command: { type: 'string', description: 'Test executable, usually npm, pnpm, yarn, pytest, cargo, or go.' },
+    args: { type: 'array', items: { type: 'string' }, description: 'Test arguments passed directly to the executable.' },
+    cwd: { type: 'string', description: 'Optional workspace-relative working directory.' },
+  }, ['command']),
+  functionTool(AGENT_CAPABILITIES.GIT_STATUS, 'Read the Git status of the open desktop workspace.', {}, []),
+  functionTool(AGENT_CAPABILITIES.GIT_DIFF, 'Read a Git diff from the open desktop workspace.', {
+    staged: { type: 'boolean', description: 'Return the staged diff when true.' },
+  }, []),
 ];
 
 export function selectModelTools({
@@ -47,13 +78,15 @@ export function selectModelTools({
   allowWebSearch = true,
   allowImageGeneration = false,
   allowVideoGeneration = false,
+  runtime = getAgentRuntimeCapabilities(),
 } = {}) {
   if (disableTools) return [];
-  return MODEL_TOOLS.filter((tool) => {
+  const selected = MODEL_TOOLS.filter((tool) => {
     const name = tool?.function?.name;
     if (name === 'web.search') return allowWebSearch;
     if (name === 'image.generate') return allowImageGeneration;
     if (name === 'video.generate') return allowVideoGeneration;
     return true;
   });
+  return filterToolsForRuntime(selected, runtime);
 }

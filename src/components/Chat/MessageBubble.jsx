@@ -774,7 +774,7 @@ function EditPromptModal({ open, initialValue, onClose, onSave }) {
   );
 }
 
-function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, isSearching = false, userProfile = null }) {
+function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, isSearching = false, taskWorkflow = null, userProfile = null }) {
   const isUser = message.role === 'user';
   const messageAuthor = message.author?.uid ? message.author : userProfile;
   const authorName = messageAuthor?.displayName || messageAuthor?.email || 'User';
@@ -787,6 +787,21 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
   const videoPrompt = !isUser ? extractVideoPrompt(message.content) : '';
   const showThinking = !isUser && Boolean(message.thinkingContent);
   const searchingBubbleActive = !isUser && isLast && isSearching && message.content === '' && !showThinking;
+  const taskBubbleActive = !isUser && isLast && taskWorkflow?.status === 'running';
+  const activeTaskStep = taskBubbleActive && Array.isArray(taskWorkflow.steps)
+    ? taskWorkflow.steps[taskWorkflow.currentStep ?? 0]
+    : null;
+  const taskStatusText = taskWorkflow?.phase === 'planning'
+    ? 'Building the execution plan'
+    : taskWorkflow?.phase === 'synthesizing'
+      ? 'Combining completed findings'
+      : taskWorkflow?.phase === 'responding'
+        ? 'Preparing the final response'
+        : activeTaskStep?.status === 'retrying'
+          ? `Retrying ${activeTaskStep.title || 'the current step'} (${activeTaskStep.attempt || 2}/${activeTaskStep.maxAttempts || 3})`
+          : activeTaskStep?.title
+            ? `Working on: ${activeTaskStep.title}`
+            : 'Running the task workflow';
   const thinkingOnly = Boolean(message.isThinkingActive && showThinking && !message.content);
   const suggestedExportFormat = !isUser && !message.isStreaming && !imagePrompt && !videoPrompt
     ? getSuggestedExportFormat(message)
@@ -991,11 +1006,21 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
             </div>
           </div>
         ) : (
-          <div className={`hud-chat-bubble hud-chat-bubble-assistant${thinkingOnly ? ' is-thinking-only' : ''}${(!thinkingOnly && (message.isStreaming || searchingBubbleActive)) ? ' is-active' : ''}`}>
+          <div className={`hud-chat-bubble hud-chat-bubble-assistant${thinkingOnly ? ' is-thinking-only' : ''}${(!thinkingOnly && (message.isStreaming || searchingBubbleActive || taskBubbleActive)) ? ' is-active' : ''}${taskBubbleActive ? ' is-task-active' : ''}`}>
             <div className="hud-chat-bubble-label">
-              {searchingBubbleActive ? 'MIRA · SEARCHING' : message.isThinkingActive ? 'MIRA · THINKING' : message.isStreaming ? 'MIRA · RESPONDING' : 'MIRA'}
+              {taskBubbleActive ? 'MIRA · TASK ACTIVE' : searchingBubbleActive ? 'MIRA · SEARCHING' : message.isThinkingActive ? 'MIRA · THINKING' : message.isStreaming ? 'MIRA · RESPONDING' : 'MIRA'}
             </div>
             <div className="prose prose-base max-w-none overflow-x-auto break-words prose-headings:font-bold prose-p:leading-relaxed prose-li:leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+              {taskBubbleActive && (
+                <div className="task-live-status" role="status" aria-live="polite">
+                  <span className="task-live-orb" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <div className="task-live-copy">{taskStatusText}</div>
+                    {taskWorkflow.goal && <div className="task-live-goal">{taskWorkflow.goal}</div>}
+                  </div>
+                  <span className="task-live-dots" aria-hidden="true"><i /><i /><i /></span>
+                </div>
+              )}
               {showThinking && (
                 <ThinkingSection content={message.thinkingContent} isActive={message.isThinkingActive} />
               )}

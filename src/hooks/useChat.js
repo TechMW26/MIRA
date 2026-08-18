@@ -87,7 +87,13 @@ import {
   isSimpleGreeting,
 } from '../services/contextPolicy.js';
 import { selectModelTools } from '../services/modelTools.js';
-import { agentTaskRequiresResearch, runAgentTask, shouldRunAgentTask } from '../services/agentTask.js';
+import { getAgentRuntimeCapabilities } from '../services/agentCapabilities.js';
+import {
+  agentTaskRequiresResearch,
+  extractAgentTaskFallback,
+  runAgentTask,
+  shouldRunAgentTask,
+} from '../services/agentTask.js';
 import { isChatTimeoutError } from '../services/chatRequestPolicy.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
@@ -121,6 +127,25 @@ function applyTaskWorkflowPhase(workflow, update = {}) {
       currentStep: activeIndex,
       steps: next.steps.map((step, index) => (
         index === activeIndex ? { ...step, status: 'running' } : step
+      )),
+    };
+  }
+  if (update.phase === 'step-retrying') {
+    const retryIndex = Math.max(0, Number(update.step || 1) - 1);
+    return {
+      ...next,
+      phase: 'executing',
+      currentStep: retryIndex,
+      steps: next.steps.map((step, index) => (
+        index === retryIndex
+          ? {
+            ...step,
+            status: 'retrying',
+            attempt: Number(update.attempt || 2),
+            maxAttempts: Number(update.maxAttempts || 3),
+            retryError: String(update.error || ''),
+          }
+          : step
       )),
     };
   }
@@ -1337,6 +1362,7 @@ export default function useChat() {
           allowWebSearch: retrievalPolicy.allowSearchTool,
           allowImageGeneration: wantsImageGeneration,
           allowVideoGeneration: wantsVideoGeneration,
+          runtime: getAgentRuntimeCapabilities(),
         });
 
         const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: simpleGreeting });
@@ -2240,6 +2266,13 @@ export default function useChat() {
             TOOL_NAMES.CURRENCY,
             TOOL_NAMES.CODE,
             TOOL_NAMES.TASK,
+            TOOL_NAMES.FILE_READ,
+            TOOL_NAMES.FILE_WRITE,
+            TOOL_NAMES.FILE_SEARCH,
+            TOOL_NAMES.SHELL_RUN,
+            TOOL_NAMES.TEST_RUN,
+            TOOL_NAMES.GIT_STATUS,
+            TOOL_NAMES.GIT_DIFF,
           ]);
           if (finalToolCall && inlineToolNames.has(finalToolCall.name) && !requestFailed && isCurrentRun()) {
             cancelPendingStreamFlushes();
@@ -2291,7 +2324,12 @@ export default function useChat() {
                   };
                   return await runAgentTask({
                     goal,
-                    context: history[history.length - 1]?.content || '',
+                    context: [
+                      getRecentContextEntities(historySource)[0]
+                        ? `Recent subject anchor: ${getRecentContextEntities(historySource)[0]}`
+                        : '',
+                      buildRecentConversationContext(historySource),
+                    ].filter(Boolean).join('\n'),
                     requiresResearch: agentTaskRequiresResearch(goal, taskRequiresResearch),
                     freshness: needsFreshInformation(content),
                     generate,
@@ -2338,27 +2376,40 @@ export default function useChat() {
                   : `${content}\n\n=== TOOL RESULT ===\n${toolResult}\n=== END TOOL RESULT ===\n\nContinue the original request using this result. Do not emit the same tool call again.`,
               };
               let continuedAnswer = '';
-              await sendChatMessage(
-                history,
-                (accumulated) => {
-                  if (!isCurrentRun()) return;
-                  continuedAnswer = stripAllControlText(accumulated);
-                  flushStreamingContent(continuedAnswer);
-                },
-                images,
-                {
-                  think: shouldThink,
-                  tools: isTaskResult
-                    ? []
-                    : responseModelTools.filter((tool) => tool?.function?.name !== finalToolCall.name),
-                  onThinking: (accumulated) => {
+              try {
+                await sendChatMessage(
+                  history,
+                  (accumulated) => {
                     if (!isCurrentRun()) return;
-                    finalThinkingText = stripAllControlText(accumulated);
-                    flushThinkingContent(finalThinkingText);
+                    continuedAnswer = stripAllControlText(accumulated);
+                    flushStreamingContent(continuedAnswer);
                   },
-                },
-              );
-              fullText = continuedAnswer;
+                  images,
+                  {
+                    think: shouldThink,
+                    tools: isTaskResult
+                      ? []
+                      : responseModelTools.filter((tool) => tool?.function?.name !== finalToolCall.name),
+                    onThinking: (accumulated) => {
+                      if (!isCurrentRun()) return;
+                      finalThinkingText = stripAllControlText(accumulated);
+                      flushThinkingContent(finalThinkingText);
+                    },
+                  },
+                );
+                if (!continuedAnswer.trim()) throw new Error('The final task response was empty.');
+                fullText = continuedAnswer;
+              } catch (responseError) {
+                const taskFallback = isTaskResult ? extractAgentTaskFallback(toolResult) : '';
+                if (!taskFallback) throw responseError;
+                diagnosticWarn('tool', 'final task synthesis failed; using completed task data', {
+                  runId,
+                  error: responseError?.message || 'Empty final response',
+                });
+                continuedAnswer = taskFallback;
+                fullText = taskFallback;
+                flushStreamingContent(taskFallback);
+              }
               if (isTaskResult && isCurrentRun()) {
                 setTaskWorkflow((current) => (
                   current?.runId === runId

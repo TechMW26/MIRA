@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   agentTaskRequiresResearch,
+  extractAgentTaskFallback,
   parseAgentPlan,
   runAgentTask,
   shouldRunAgentTask,
@@ -105,4 +106,53 @@ test('stops the workflow immediately when generation is cancelled', async () => 
     goal: 'Cancelled task',
     generate: async () => { throw cancelled; },
   }), { name: 'AbortError' });
+});
+
+test('retries empty task steps and completes after a transient failure', async () => {
+  const phases = [];
+  let stepAttempts = 0;
+  const output = await runAgentTask({
+    goal: 'Prepare a two-step answer',
+    generate: async (_prompt, options) => {
+      if (options.phase === 'planning') {
+        return JSON.stringify([
+          { title: 'Draft', instruction: 'Draft the answer', tool: 'reason' },
+          { title: 'Verify', instruction: 'Verify the answer', tool: 'reason' },
+        ]);
+      }
+      stepAttempts += 1;
+      if (stepAttempts === 1) return '';
+      return stepAttempts === 2 ? 'Draft completed.' : 'Verification completed.';
+    },
+    onPhase: (phase) => phases.push(phase),
+  });
+
+  assert.equal(stepAttempts, 3);
+  assert.equal(phases.filter((phase) => phase.phase === 'step-retrying').length, 1);
+  assert.match(output, /Draft completed/);
+  assert.match(output, /Verification completed/);
+});
+
+test('continues after an exhausted step and exposes a user-safe partial fallback', async () => {
+  let executionCalls = 0;
+  const output = await runAgentTask({
+    goal: 'Research and summarize a market',
+    generate: async (_prompt, options) => {
+      if (options.phase === 'planning') {
+        return JSON.stringify([
+          { title: 'Unavailable source', instruction: 'Get unavailable data', tool: 'reason' },
+          { title: 'Available analysis', instruction: 'Use the available evidence', tool: 'reason' },
+        ]);
+      }
+      executionCalls += 1;
+      if (executionCalls <= 3) return '';
+      return 'The available evidence supports a cautious market assessment.';
+    },
+  });
+
+  const fallback = extractAgentTaskFallback(output);
+  assert.equal(executionCalls, 4);
+  assert.match(fallback, /available evidence supports/i);
+  assert.match(fallback, /Incomplete areas/i);
+  assert.match(fallback, /Unavailable source/);
 });

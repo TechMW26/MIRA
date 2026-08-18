@@ -1,7 +1,12 @@
+import { fallbackSearchQuery } from './searchQuery.js';
+
 const MAX_TASK_STEPS = 5;
 const MAX_RESEARCH_STEPS = 2;
 const MAX_CONTEXT_CHARS = 14000;
 const MAX_STEP_RESULT_CHARS = 5000;
+const MAX_STEP_ATTEMPTS = 3;
+const FALLBACK_START = '=== USER-SAFE TASK FALLBACK ===';
+const FALLBACK_END = '=== END USER-SAFE TASK FALLBACK ===';
 
 const RESEARCH_WORKFLOW_PATTERN = /\b(research|investigate|deep\s+dive|due\s+diligence|literature\s+review|market\s+analysis|competitive\s+analysis|compare\s+(?:current|latest)|evaluate\s+(?:current|latest)|verify\s+across\s+sources)\b/i;
 const PLANNING_WORKFLOW_PATTERN = /\b(plan|roadmap|strategy|step[-\s]?by[-\s]?step|break\s+(?:it\s+)?down|split\s+into\s+steps|phases?|milestones?|end[-\s]?to[-\s]?end|implementation\s+plan|execution\s+plan|action\s+plan|first.+then|and\s+then)\b/i;
@@ -136,7 +141,7 @@ function formatSearchEvidence(payload = {}, query = '') {
 
 function buildStepPrompt({ goal, context, plan, step, index, results }) {
   const priorResults = results.map((result, resultIndex) => (
-    `Completed step ${resultIndex + 1} (${plan[resultIndex].title}):\n${compact(result, MAX_STEP_RESULT_CHARS)}`
+    `Completed step ${resultIndex + 1} (${plan[resultIndex].title}):\n${compact(result?.text || result, MAX_STEP_RESULT_CHARS)}`
   )).join('\n\n');
   return [
     `Execute step ${index + 1} of ${plan.length} for this goal: ${compact(goal)}`,
@@ -145,6 +150,76 @@ function buildStepPrompt({ goal, context, plan, step, index, results }) {
     priorResults ? `Prior completed results:\n${priorResults}` : '',
     'Return only the useful result of this step. Do not expose hidden reasoning, planning syntax, or tool mechanics.',
   ].filter(Boolean).join('\n\n');
+}
+
+function resolveTaskSearchQuery(query, goal, context) {
+  const requested = String(query || goal || '').trim();
+  return fallbackSearchQuery(requested, context) || fallbackSearchQuery(goal, context) || requested;
+}
+
+function retryableTaskError(error) {
+  if (error?.name === 'AbortError') return false;
+  const message = String(error?.message || error || '').toLowerCase();
+  return !/(not approved|permission denied|unauthori[sz]ed|invalid credential|authentication failed|bad request)/i.test(message);
+}
+
+async function waitForRetry(attempt) {
+  await new Promise((resolve) => setTimeout(resolve, Math.min(1200, 250 * (2 ** (attempt - 1)))));
+}
+
+async function executeStepWithRetry({ operation, onPhase, step, total, title }) {
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await operation(attempt);
+      if (!String(result || '').trim()) throw new Error('The task step returned no result.');
+      return String(result).trim();
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      lastError = error;
+      if (attempt >= MAX_STEP_ATTEMPTS || !retryableTaskError(error)) break;
+      onPhase?.({
+        phase: 'step-retrying',
+        step,
+        total,
+        title,
+        attempt: attempt + 1,
+        maxAttempts: MAX_STEP_ATTEMPTS,
+        error: error?.message || 'The step returned no result.',
+      });
+      await waitForRetry(attempt);
+    }
+  }
+  throw lastError || new Error('The task step could not be completed.');
+}
+
+function buildTaskFallback(goal, plan, results) {
+  const completed = results
+    .map((result, index) => ({ ...result, title: plan[index]?.title || `Step ${index + 1}` }))
+    .filter((result) => result.status === 'done' && String(result.text || '').trim());
+  const failed = results
+    .map((result, index) => ({ ...result, title: plan[index]?.title || `Step ${index + 1}` }))
+    .filter((result) => result.status === 'error');
+
+  if (!completed.length) {
+    return `I couldn't obtain reliable task results for **${compact(goal, 300)}** after automatic retries.${failed.length ? `\n\nIncomplete areas: ${failed.map((item) => item.title).join(', ')}.` : ''}`;
+  }
+
+  return [
+    `## Findings`,
+    ...completed.map((result) => `### ${result.title}\n\n${compact(result.text, MAX_STEP_RESULT_CHARS)}`),
+    failed.length
+      ? `## Incomplete areas\n\n${failed.map((result) => `- **${result.title}:** ${compact(result.text, 500)}`).join('\n')}`
+      : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+export function extractAgentTaskFallback(handoff = '') {
+  const value = String(handoff || '');
+  const start = value.indexOf(FALLBACK_START);
+  const end = value.indexOf(FALLBACK_END);
+  if (start < 0 || end <= start) return '';
+  return value.slice(start + FALLBACK_START.length, end).trim();
 }
 
 export async function runAgentTask({
@@ -188,29 +263,39 @@ export async function runAgentTask({
     const step = plan[index];
     onPhase?.({ phase: 'executing', step: index + 1, total: plan.length, title: step.title });
     try {
-      if (step.tool === 'web.search' && typeof search === 'function') {
-        const evidence = await search(step.query || goal, { freshness });
-        results.push(formatSearchEvidence(evidence, step.query || goal));
-      } else {
-        const result = await generate(buildStepPrompt({ goal, context, plan, step, index, results }), {
-          phase: 'executing',
-          think: true,
-          maxTokens: 2400,
-        });
-        if (!String(result || '').trim()) throw new Error('Step returned no useful result.');
-        results.push(compact(result, MAX_STEP_RESULT_CHARS));
-      }
+      const result = await executeStepWithRetry({
+        step: index + 1,
+        total: plan.length,
+        title: step.title,
+        onPhase,
+        operation: async () => {
+          if (step.tool === 'web.search' && typeof search === 'function') {
+            const resolvedQuery = resolveTaskSearchQuery(step.query, goal, context);
+            const evidence = await search(resolvedQuery, { freshness });
+            if (!Array.isArray(evidence?.results) || evidence.results.length === 0) {
+              throw new Error('Web search returned no useful evidence.');
+            }
+            return formatSearchEvidence(evidence, resolvedQuery);
+          }
+          return await generate(buildStepPrompt({ goal, context, plan, step, index, results }), {
+            phase: 'executing',
+            think: true,
+            maxTokens: 2400,
+          });
+        },
+      });
+      results.push({ status: 'done', text: compact(result, MAX_STEP_RESULT_CHARS) });
       onPhase?.({
         phase: 'step-completed',
         step: index + 1,
         total: plan.length,
         title: step.title,
-        result: results[index],
+        result: results[index].text,
       });
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
-      const result = `Step could not be completed: ${error?.message || 'Unknown error'}`;
-      results.push(result);
+      const result = `Step could not be completed after ${MAX_STEP_ATTEMPTS} attempts: ${error?.message || 'Unknown error'}`;
+      results.push({ status: 'error', text: result });
       onPhase?.({
         phase: 'step-error',
         step: index + 1,
@@ -222,10 +307,12 @@ export async function runAgentTask({
   }
 
   onPhase?.({ phase: 'synthesizing', total: plan.length });
+  const fallback = buildTaskFallback(goal, plan, results);
   return [
     `Original goal: ${compact(goal)}`,
     'Completed internal work:',
-    ...plan.map((step, index) => `\n${index + 1}. ${step.title}\n${results[index] || 'No result.'}`),
+    ...plan.map((step, index) => `\n${index + 1}. ${step.title}\n${results[index]?.text || 'No result.'}`),
+    `\n${FALLBACK_START}\n${fallback}\n${FALLBACK_END}`,
     '\nFinal response requirement: answer the original goal directly using the completed work. Resolve inconsistencies, preserve source URLs for citations when useful, omit process chatter, and do not mention internal plans or tools.',
   ].join('\n');
 }

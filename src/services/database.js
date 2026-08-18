@@ -8,7 +8,6 @@ import {
   remove,
   query,
   orderByChild,
-  equalTo,
   onValue,
   off,
   runTransaction,
@@ -269,11 +268,14 @@ async function ensureSharedProject(ownerUid, projectId) {
 export async function inviteProjectMember(ownerUid, projectId, email) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
   if (!normalizedEmail) throw new Error('Enter an email address.');
-  const usersQuery = query(ref(db, 'users'), orderByChild('email'), equalTo(normalizedEmail));
-  const usersSnap = await get(usersQuery);
+  // Read once and match locally. Realtime Database rejects an orderByChild
+  // query unless the deployed rules explicitly index that child.
+  const usersSnap = await get(ref(db, 'users'));
   let invited = null;
   usersSnap.forEach((child) => {
-    if (!invited) invited = publicUserProfile(child.key, child.val());
+    if (!invited && String(child.val()?.email || '').trim().toLowerCase() === normalizedEmail) {
+      invited = publicUserProfile(child.key, child.val());
+    }
   });
   if (!invited) throw new Error('No existing MIRA account uses that email.');
 
@@ -283,11 +285,30 @@ export async function inviteProjectMember(ownerUid, projectId, email) {
   if (project.members?.[invited.uid]) throw new Error('That account already has access.');
 
   const now = Date.now();
-  const updates = {
-    [`sharedProjects/${projectId}/members/${invited.uid}`]: { ...invited, role: 'member', joinedAt: now, invitedBy: ownerUid },
-    [`sharedProjects/${projectId}/updatedAt`]: now,
-    [`userProjectAccess/${invited.uid}/${projectId}`]: { ownerUid, role: 'member', addedAt: now },
+  const owner = project.members?.[ownerUid]
+    || publicUserProfile(ownerUid, await getUserProfile(ownerUid) || {});
+  const invitation = {
+    projectId,
+    projectName: String(project.name || 'Untitled project'),
+    ownerUid,
+    invitedUid: invited.uid,
+    invitedBy: publicUserProfile(ownerUid, owner),
+    invitee: invited,
+    status: 'pending',
+    createdAt: now,
   };
+  const existing = await get(ref(db, `projectInvitations/${invited.uid}/${projectId}`));
+  if (existing.exists()) throw new Error('An invitation is already pending for that account.');
+  await update(ref(db), {
+    [`projectInvitations/${invited.uid}/${projectId}`]: invitation,
+    [`projectInvitationsByProject/${projectId}/${invited.uid}`]: invitation,
+  });
+  return { ...invited, invitation };
+}
+
+async function buildProjectConversationAccessUpdates(project, projectId, invited, now) {
+  const updates = {};
+  const ownerUid = project.ownerUid;
 
   const conversations = project.conversations || {};
   await Promise.all(Object.keys(conversations).map(async (convId) => {
@@ -306,8 +327,92 @@ export async function inviteProjectMember(ownerUid, projectId, email) {
       }
     });
   }));
+  updates[`sharedProjects/${projectId}/members/${invited.uid}`] = {
+    ...invited,
+    role: 'member',
+    joinedAt: now,
+    invitedBy: ownerUid,
+  };
+  updates[`sharedProjects/${projectId}/updatedAt`] = now;
+  updates[`userProjectAccess/${invited.uid}/${projectId}`] = {
+    ownerUid,
+    role: 'member',
+    addedAt: now,
+  };
+  return updates;
+}
+
+export function subscribeProjectInvitations(uid, callback) {
+  if (!uid) {
+    callback([]);
+    return () => {};
+  }
+  const invitationsRef = ref(db, `projectInvitations/${uid}`);
+  onValue(invitationsRef, (snap) => {
+    const invitations = [];
+    snap.forEach((child) => {
+      const invitation = child.val() || {};
+      if (invitation.status === 'pending') invitations.push({ id: child.key, ...invitation });
+    });
+    callback(invitations.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+  });
+  return () => off(invitationsRef);
+}
+
+export function subscribeOutgoingProjectInvitations(projectId, callback) {
+  if (!projectId) {
+    callback([]);
+    return () => {};
+  }
+  const invitationsRef = ref(db, `projectInvitationsByProject/${projectId}`);
+  onValue(invitationsRef, (snap) => {
+    const invitations = [];
+    snap.forEach((child) => {
+      const invitation = child.val() || {};
+      if (invitation.status === 'pending') invitations.push({ id: child.key, ...invitation });
+    });
+    callback(invitations.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+  });
+  return () => off(invitationsRef);
+}
+
+export async function acceptProjectInvitation(uid, projectId) {
+  const invitationRef = ref(db, `projectInvitations/${uid}/${projectId}`);
+  const invitationSnap = await get(invitationRef);
+  if (!invitationSnap.exists()) throw new Error('This invitation is no longer available.');
+  const invitation = invitationSnap.val() || {};
+  if (invitation.status !== 'pending' || invitation.invitedUid !== uid) {
+    throw new Error('This invitation is no longer available.');
+  }
+  const project = await ensureSharedProject(invitation.ownerUid, projectId);
+  const invited = invitation.invitee || publicUserProfile(uid, await getUserProfile(uid) || {});
+  const updates = await buildProjectConversationAccessUpdates(project, projectId, invited, Date.now());
+  updates[`projectInvitations/${uid}/${projectId}`] = null;
+  updates[`projectInvitationsByProject/${projectId}/${uid}`] = null;
   await update(ref(db), updates);
-  return invited;
+  return { id: projectId, ...project, members: { ...(project.members || {}), [uid]: invited } };
+}
+
+export async function declineProjectInvitation(uid, projectId) {
+  const invitationSnap = await get(ref(db, `projectInvitations/${uid}/${projectId}`));
+  if (!invitationSnap.exists()) return;
+  const invitation = invitationSnap.val() || {};
+  if (invitation.invitedUid !== uid) throw new Error('You cannot decline this invitation.');
+  await update(ref(db), {
+    [`projectInvitations/${uid}/${projectId}`]: null,
+    [`projectInvitationsByProject/${projectId}/${uid}`]: null,
+  });
+}
+
+export async function cancelProjectInvitation(ownerUid, projectId, invitedUid) {
+  const invitationSnap = await get(ref(db, `projectInvitationsByProject/${projectId}/${invitedUid}`));
+  if (!invitationSnap.exists()) return;
+  const invitation = invitationSnap.val() || {};
+  if (invitation.ownerUid !== ownerUid) throw new Error('Only the project owner can cancel this invitation.');
+  await update(ref(db), {
+    [`projectInvitations/${invitedUid}/${projectId}`]: null,
+    [`projectInvitationsByProject/${projectId}/${invitedUid}`]: null,
+  });
 }
 
 export async function removeProjectMember(ownerUid, projectId, memberUid) {
@@ -345,7 +450,10 @@ export async function deleteProject(uid, projectId) {
     });
     if (Object.keys(updates).length > 0) await update(ref(db), updates);
   }
-  const shared = await get(ref(db, `sharedProjects/${projectId}`));
+  const [shared, pendingInvitations] = await Promise.all([
+    get(ref(db, `sharedProjects/${projectId}`)),
+    get(ref(db, `projectInvitationsByProject/${projectId}`)),
+  ]);
   const project = shared.exists() ? shared.val() : null;
   if (project?.ownerUid && project.ownerUid !== uid) throw new Error('Only the project owner can delete this project.');
   const updates = {
@@ -363,6 +471,10 @@ export async function deleteProject(uid, projectId) {
   Object.keys(project?.members || { [uid]: true }).forEach((memberUid) => {
     updates[`userProjectAccess/${memberUid}/${projectId}`] = null;
   });
+  pendingInvitations.forEach((invitationSnap) => {
+    updates[`projectInvitations/${invitationSnap.key}/${projectId}`] = null;
+  });
+  updates[`projectInvitationsByProject/${projectId}`] = null;
   await update(ref(db), updates);
 }
 

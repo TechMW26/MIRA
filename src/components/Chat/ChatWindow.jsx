@@ -351,6 +351,7 @@ export default function ChatWindow() {
                   webSearch={webSearch}
                   isGenerating={isGenerating}
                   isSearching={isSearching}
+                  taskWorkflow={isGenerating && i === displayMessages.length - 1 ? taskWorkflow : null}
                   userProfile={userProfile}
                 />
               ))

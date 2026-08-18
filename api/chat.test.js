@@ -69,14 +69,15 @@ test('builds one streaming Ollama payload from the registry selection', () => {
   assert.ok(payload.messages.some((message) => message.role === 'user' && message.content === 'Hello'));
 });
 
-test('forwards disabled thinking even when tags omit model capabilities', () => {
+test('uses a prompt-level thinking switch when tags omit native thinking support', () => {
   const payload = buildUpstreamPayload({
     registryModel: { name: 'runtime-model', capabilities: [] },
     messages: [{ role: 'user', content: 'Hello' }],
     systemPrompt: 'You are Mira.',
     think: false,
   });
-  assert.equal(payload.think, false);
+  assert.equal(payload.think, undefined);
+  assert.equal(payload.messages.at(-1).content, '/no_think\nHello');
   assert.equal(payload.messages.some((message) => message.content.startsWith('Quick check before we start')), false);
 });
 

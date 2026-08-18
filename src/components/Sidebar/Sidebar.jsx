@@ -19,6 +19,8 @@ import {
   ArrowLeft,
   UserPlus,
   Users,
+  Bell,
+  Check,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useChatContext } from '../../contexts/ChatContext';
@@ -37,6 +39,11 @@ import {
   inviteProjectMember,
   removeProjectMember,
   subscribeProjectConversations,
+  subscribeProjectInvitations,
+  subscribeOutgoingProjectInvitations,
+  acceptProjectInvitation,
+  declineProjectInvitation,
+  cancelProjectInvitation,
 } from '../../services/database';
 import { groupConversationsByDate } from '../../utils/helpers';
 import { stopChatGeneration } from '../../services/api';
@@ -94,6 +101,11 @@ export default function Sidebar() {
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteStatus, setInviteStatus] = useState('');
   const [inviteLoading, setInviteLoading] = useState(false);
+  const [projectInvitations, setProjectInvitations] = useState([]);
+  const [outgoingInvitations, setOutgoingInvitations] = useState([]);
+  const [inviteAction, setInviteAction] = useState('');
+  const [inviteActionError, setInviteActionError] = useState('');
+  const [dismissedInviteId, setDismissedInviteId] = useState('');
   const sidebarRef = useRef(null);
   const contextMenuRef = useRef(null);
   const [moveMenuLeft, setMoveMenuLeft] = useState(false);
@@ -102,8 +114,23 @@ export default function Sidebar() {
     if (!user) return;
     const unsub1 = subscribeConversations(user.uid, setConversations);
     const unsub2 = subscribeProjects(user.uid, setProjects);
-    return () => { unsub1(); unsub2(); };
+    const unsub3 = subscribeProjectInvitations(user.uid, setProjectInvitations);
+    return () => { unsub1(); unsub2(); unsub3(); };
   }, [user]);
+
+  useEffect(() => {
+    if (!inviteProject?.id) {
+      setOutgoingInvitations([]);
+      return undefined;
+    }
+    return subscribeOutgoingProjectInvitations(inviteProject.id, setOutgoingInvitations);
+  }, [inviteProject?.id]);
+
+  useEffect(() => {
+    if (dismissedInviteId && !projectInvitations.some((invitation) => invitation.id === dismissedInviteId)) {
+      setDismissedInviteId('');
+    }
+  }, [dismissedInviteId, projectInvitations]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -204,11 +231,42 @@ export default function Sidebar() {
     try {
       const invited = await inviteProjectMember(user.uid, inviteProject.id, inviteEmail);
       setInviteEmail('');
-      setInviteStatus(`${invited.displayName || invited.email} can now access this project.`);
+      setInviteStatus(`Invitation sent to ${invited.displayName || invited.email}.`);
     } catch (error) {
       setInviteStatus(error?.message || 'Could not invite that account.');
     } finally {
       setInviteLoading(false);
+    }
+  }
+
+  async function handleInvitationAction(invitation, action) {
+    if (!user || !invitation?.id) return;
+    setInviteAction(`${action}:${invitation.id}`);
+    setInviteActionError('');
+    try {
+      if (action === 'accept') {
+        await acceptProjectInvitation(user.uid, invitation.id);
+      } else {
+        await declineProjectInvitation(user.uid, invitation.id);
+      }
+    } catch (error) {
+      setInviteActionError(error?.message || `Could not ${action} this invitation.`);
+    } finally {
+      setInviteAction('');
+    }
+  }
+
+  async function handleCancelInvitation(invitation) {
+    if (!user || !inviteProject) return;
+    setInviteAction(`cancel:${invitation.id}`);
+    setInviteStatus('');
+    try {
+      await cancelProjectInvitation(user.uid, inviteProject.id, invitation.id);
+      setInviteStatus('Invitation cancelled.');
+    } catch (error) {
+      setInviteStatus(error?.message || 'Could not cancel that invitation.');
+    } finally {
+      setInviteAction('');
     }
   }
 
@@ -493,6 +551,48 @@ export default function Sidebar() {
             </div>
           </div>
 
+          {projectInvitations.length > 0 && (
+            <section className="px-3 mb-3" aria-label="Project invitations">
+              <div className="flex items-center gap-2 px-2 py-1.5 text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-tertiary)' }}>
+                <Bell size={11} /> Invitations
+                <span className="ml-auto min-w-5 rounded-full px-1.5 py-0.5 text-center" style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}>
+                  {projectInvitations.length}
+                </span>
+              </div>
+              <div className="space-y-2">
+                {projectInvitations.map((invitation) => (
+                  <div key={invitation.id} className="rounded-xl p-3" style={{ background: 'var(--glass-bg)', border: '1px solid var(--border)' }}>
+                    <p className="truncate text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{invitation.projectName}</p>
+                    <p className="mt-0.5 truncate text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                      Invited by {invitation.invitedBy?.displayName || invitation.invitedBy?.email || 'a collaborator'}
+                    </p>
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleInvitationAction(invitation, 'accept')}
+                        disabled={Boolean(inviteAction)}
+                        className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium disabled:opacity-50"
+                        style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
+                      >
+                        <Check size={12} /> {inviteAction === `accept:${invitation.id}` ? 'Joining…' : 'Accept'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleInvitationAction(invitation, 'decline')}
+                        disabled={Boolean(inviteAction)}
+                        className="flex-1 rounded-lg px-2 py-1.5 text-[11px] font-medium disabled:opacity-50"
+                        style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}
+                      >
+                        {inviteAction === `decline:${invitation.id}` ? 'Declining…' : 'Decline'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {inviteActionError && <p className="px-2 pt-2 text-[10px] text-red-400" role="alert">{inviteActionError}</p>}
+            </section>
+          )}
+
           {/* ── PROJECT WORKSPACE VIEW ── */}
           {activeProjectId ? (
             <div className="flex-1 overflow-y-auto px-2 space-y-3 pb-2">
@@ -658,6 +758,51 @@ export default function Sidebar() {
         </div>
       </aside>
 
+      {projectInvitations[0] && projectInvitations[0].id !== dismissedInviteId && (
+        <aside
+          className="fixed bottom-5 right-5 z-[220] w-[min(24rem,calc(100vw-2rem))] glass-strong rounded-2xl p-4 shadow-2xl animate-fade-in"
+          style={{ border: '1px solid var(--border)' }}
+          aria-live="polite"
+          aria-label="New project invitation"
+        >
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl" style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}>
+              <UserPlus size={18} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Project invitation</p>
+              <p className="mt-1 text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                {projectInvitations[0].invitedBy?.displayName || projectInvitations[0].invitedBy?.email || 'A collaborator'} invited you to <strong>{projectInvitations[0].projectName}</strong>.
+              </p>
+            </div>
+            <button type="button" onClick={() => setDismissedInviteId(projectInvitations[0].id)} className="rounded-lg p-1.5" aria-label="Dismiss invitation popup" style={{ color: 'var(--text-tertiary)' }}>
+              <X size={15} />
+            </button>
+          </div>
+          <div className="mt-4 flex gap-2 pl-[3.25rem]">
+            <button
+              type="button"
+              onClick={() => handleInvitationAction(projectInvitations[0], 'decline')}
+              disabled={Boolean(inviteAction)}
+              className="flex-1 rounded-xl px-3 py-2 text-xs font-medium disabled:opacity-50"
+              style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}
+            >
+              Decline
+            </button>
+            <button
+              type="button"
+              onClick={() => handleInvitationAction(projectInvitations[0], 'accept')}
+              disabled={Boolean(inviteAction)}
+              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium disabled:opacity-50"
+              style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
+            >
+              <Check size={13} /> Accept
+            </button>
+          </div>
+          {inviteActionError && <p className="mt-2 pl-[3.25rem] text-[10px] text-red-400" role="alert">{inviteActionError}</p>}
+        </aside>
+      )}
+
       {/* ── RIGHT-CLICK CONTEXT MENU ── */}
       {contextMenu && (
         <div
@@ -818,6 +963,25 @@ export default function Sidebar() {
                   {member.role !== 'owner' && (
                     <button type="button" onClick={() => handleRemoveMember(member.uid)} className="p-1.5 rounded-lg text-red-400" aria-label={`Remove ${member.displayName || member.email}`} title="Remove collaborator"><X size={14} /></button>
                   )}
+                </div>
+              ))}
+              {outgoingInvitations.map((invitation) => (
+                <div key={`pending-${invitation.id}`} className="flex items-center gap-3 rounded-xl px-3 py-2" style={{ background: 'var(--glass-bg)', border: '1px solid var(--border)' }}>
+                  <UserAvatar profile={invitation.invitee} size={30} rounded="rounded-lg" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm" style={{ color: 'var(--text-primary)' }}>{invitation.invitee?.displayName || invitation.invitee?.email}</p>
+                    <p className="truncate text-[10px]" style={{ color: 'var(--text-tertiary)' }}>Invitation pending</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleCancelInvitation(invitation)}
+                    disabled={Boolean(inviteAction)}
+                    className="rounded-lg p-1.5 text-red-400 disabled:opacity-50"
+                    aria-label={`Cancel invitation for ${invitation.invitee?.displayName || invitation.invitee?.email}`}
+                    title="Cancel invitation"
+                  >
+                    <X size={14} />
+                  </button>
                 </div>
               ))}
             </div>

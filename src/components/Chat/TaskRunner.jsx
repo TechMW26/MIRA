@@ -2,7 +2,8 @@ import { useRef, useState } from 'react';
 import { X, Play, CheckCircle2, Circle, Loader, ChevronDown, ChevronRight, Zap, Square } from 'lucide-react';
 import { sendChatMessage, stopChatGeneration } from '../../services/api';
 
-const STATUS = { pending: 'pending', running: 'running', done: 'done', error: 'error', stopped: 'stopped' };
+const STATUS = { pending: 'pending', running: 'running', retrying: 'retrying', done: 'done', error: 'error', stopped: 'stopped' };
+const MAX_TASK_ATTEMPTS = 3;
 
 function extractJsonArray(text) {
   const trimmed = String(text || '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
@@ -75,11 +76,31 @@ export default function TaskRunner({
     return result;
   }
 
+  async function runReasonedPromptWithRetry(prompt, onProgress, onRetry) {
+    let lastError;
+    for (let attempt = 1; attempt <= MAX_TASK_ATTEMPTS; attempt += 1) {
+      try {
+        const result = await runReasonedPrompt(prompt, onProgress);
+        if (!String(result || '').trim()) throw new Error('The model returned an empty result.');
+        return result;
+      } catch (error) {
+        if (cancelledRef.current || error?.name === 'AbortError') throw error;
+        lastError = error;
+        if (attempt >= MAX_TASK_ATTEMPTS) break;
+        onRetry?.(attempt + 1, error);
+        await new Promise((resolve) => setTimeout(resolve, Math.min(1200, 250 * (2 ** (attempt - 1)))));
+      }
+    }
+    throw lastError || new Error('The task returned no result.');
+  }
+
   function stopRunner() {
     cancelledRef.current = true;
     stopChatGeneration();
     setTasks((prev) => prev.map((task) => (
-      task.status === STATUS.running ? { ...task, status: STATUS.stopped } : task
+      task.status === STATUS.running || task.status === STATUS.retrying
+        ? { ...task, status: STATUS.stopped }
+        : task
     )));
     setRunning(false);
     setPhase('Stopped');
@@ -95,7 +116,7 @@ export default function TaskRunner({
     const planPrompt = `You are MIRA's planning engine. Analyze the goal, identify dependencies, and create 3-6 concrete sequential tasks. Each task must be independently executable by an AI reasoning agent. Reply ONLY with valid JSON in this schema: [{"title":"Task name","prompt":"Complete execution instruction including expected output"}]. Goal: ${goal}`;
 
     try {
-      const planText = await runReasonedPrompt(planPrompt);
+      const planText = await runReasonedPromptWithRetry(planPrompt);
       if (cancelledRef.current) return;
       const parsed = extractJsonArray(planText);
       const taskList = parsed.map((task, index) => ({
@@ -130,8 +151,16 @@ export default function TaskRunner({
       try {
         const context = results.length ? `\nPrevious completed results:\n${results.map((result, index) => `Step ${index + 1}:\n${result.slice(0, 2500)}`).join('\n\n')}\n\n` : '';
         const fullPrompt = `You are executing step ${i + 1} of ${taskList.length} for this goal: "${goal}".\n${context}Current task: ${taskList[i].prompt}\n\nReason carefully, then provide the useful completed result for this step.`;
-        const result = await runReasonedPrompt(fullPrompt, (text) => {
+        const result = await runReasonedPromptWithRetry(fullPrompt, (text) => {
           setTasks(prev => prev.map((task, index) => index === i ? { ...task, result: text } : task));
+        }, (attempt, error) => {
+          setTasks(prev => prev.map((task, index) => index === i ? {
+            ...task,
+            status: STATUS.retrying,
+            attempt,
+            retryError: error?.message || 'The step returned no result.',
+            result: '',
+          } : task));
         });
         if (cancelledRef.current) return;
         if (!result.trim()) throw new Error('The model returned an empty result.');
@@ -152,7 +181,7 @@ export default function TaskRunner({
 
   const statusIcon = (status) => {
     if (status === STATUS.done) return <CheckCircle2 size={14} style={{ color: '#10b981' }} />;
-    if (status === STATUS.running) return <Loader size={14} className="animate-spin" style={{ color: 'var(--accent)' }} />;
+    if (status === STATUS.running || status === STATUS.retrying) return <Loader size={14} className="animate-spin" style={{ color: 'var(--accent)' }} />;
     if (status === STATUS.error) return <X size={14} style={{ color: '#ef4444' }} />;
     if (status === STATUS.stopped) return <Square size={12} style={{ color: 'var(--text-tertiary)' }} />;
     return <Circle size={14} style={{ color: 'var(--text-tertiary)' }} />;
@@ -217,6 +246,11 @@ export default function TaskRunner({
                 {statusIcon(task.status)}
                 <span className="text-xs font-medium flex-1" style={{ color: 'var(--text-primary)' }}>
                   Step {index + 1}: {task.title}
+                  {task.status === STATUS.retrying && (
+                    <span className="ml-2 text-[10px] font-normal" style={{ color: 'var(--accent)' }}>
+                      Retry {task.attempt || 2}/{MAX_TASK_ATTEMPTS}
+                    </span>
+                  )}
                 </span>
                 {(task.result || task.instruction) && (expanded[index] ? <ChevronDown size={11} /> : <ChevronRight size={11} />)}
               </button>

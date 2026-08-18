@@ -1726,11 +1726,104 @@ body.mira-hud-active {
   pointer-events: none;
   animation: hudBubbleShine 2.8s linear infinite;
 }
+.hud-chat-bubble-assistant.is-task-active {
+  isolation: isolate;
+  overflow: visible;
+  min-width: min(100%, 360px);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 18% 10%, rgba(94, 234, 212, 0.12), transparent 36%),
+    linear-gradient(145deg, rgba(2, 19, 25, 0.9), rgba(2, 9, 16, 0.82));
+  box-shadow:
+    0 0 30px -7px rgba(94, 234, 212, 0.55),
+    inset 0 0 30px rgba(34, 211, 238, 0.06);
+}
+.hud-chat-bubble-assistant.is-task-active::before {
+  animation: hudBubbleShine 2.2s linear infinite;
+}
+.hud-chat-bubble-assistant.is-task-active::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  inset: -5px;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 12% 45%, rgba(94, 234, 212, 0.42), transparent 18%),
+    radial-gradient(circle at 87% 28%, rgba(34, 211, 238, 0.34), transparent 20%),
+    radial-gradient(circle at 65% 92%, rgba(45, 212, 191, 0.3), transparent 20%);
+  filter: blur(9px);
+  opacity: 0.7;
+  pointer-events: none;
+  animation: taskLiquidGlow 6.2s ease-in-out infinite alternate;
+}
+.hud-chat-bubble-assistant.is-task-active > * {
+  position: relative;
+  z-index: 1;
+}
+.task-live-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  min-width: min(72vw, 330px);
+  padding: 10px 12px;
+  border: 1px solid rgba(94, 234, 212, 0.2);
+  border-radius: 22px;
+  background: rgba(1, 12, 19, 0.58);
+}
+.task-live-orb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--hud-cyan-bright);
+  box-shadow: 0 0 0 0 rgba(94, 234, 212, 0.45), 0 0 12px rgba(94, 234, 212, 0.85);
+  animation: taskLivePulse 1.8s ease-out infinite;
+}
+.task-live-copy {
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.task-live-goal {
+  margin-top: 2px;
+  color: var(--text-tertiary);
+  font-size: 0.67rem;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-live-dots { display: inline-flex; gap: 3px; align-items: center; }
+.task-live-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--hud-cyan-bright);
+  animation: taskDotFlow 1.2s ease-in-out infinite;
+}
+.task-live-dots i:nth-child(2) { animation-delay: 0.16s; }
+.task-live-dots i:nth-child(3) { animation-delay: 0.32s; }
 @keyframes hudBubbleShine {
   to { --hud-shine-angle: 360deg; }
 }
+@keyframes taskLiquidGlow {
+  from { transform: translate3d(-3px, 1px, 0) scale(0.99) rotate(-0.4deg); filter: blur(9px) hue-rotate(0deg); }
+  to { transform: translate3d(4px, -2px, 0) scale(1.015) rotate(0.5deg); filter: blur(12px) hue-rotate(22deg); }
+}
+@keyframes taskLivePulse {
+  70% { box-shadow: 0 0 0 8px rgba(94, 234, 212, 0), 0 0 16px rgba(94, 234, 212, 0.9); }
+  100% { box-shadow: 0 0 0 0 rgba(94, 234, 212, 0), 0 0 10px rgba(94, 234, 212, 0.7); }
+}
+@keyframes taskDotFlow {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
 @media (prefers-reduced-motion: reduce) {
-  .hud-chat-bubble-assistant.is-active::before { animation: none; }
+  .hud-chat-bubble-assistant.is-active::before,
+  .hud-chat-bubble-assistant.is-task-active::after,
+  .task-live-orb,
+  .task-live-dots i { animation: none; }
 }
 .hud-chat-bubble-label {
   display: inline-flex;

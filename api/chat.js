@@ -126,6 +126,19 @@ function normalizeMessages(messages = [], systemPrompt = '') {
   ];
 }
 
+function applyThinkingPreference(messages = [], think, supportsNativeThinking = false) {
+  if (typeof think !== 'boolean' || supportsNativeThinking) return messages;
+  const directive = think ? '/think' : '/no_think';
+  const target = [...messages].reverse().findIndex((message) => message.role === 'user');
+  if (target < 0) return messages;
+  const index = messages.length - 1 - target;
+  return messages.map((message, messageIndex) => (
+    messageIndex === index && !String(message.content || '').trimStart().startsWith(directive)
+      ? { ...message, content: `${directive}\n${message.content}` }
+      : message
+  ));
+}
+
 export function sanitizeTools(tools = []) {
   if (!Array.isArray(tools)) return [];
   return tools.slice(0, ALLOWED_TOOL_NAMES.size).flatMap((tool) => {
@@ -155,7 +168,12 @@ export function buildUpstreamPayload({
   tools = [],
 } = {}) {
   const safeMax = Math.max(1, Math.min(Number(maxTokens) || OLLAMA_MAX_TOKENS, MAX_TOKENS_CAP));
-  const normalized = normalizeMessages(messages, systemPrompt);
+  const supportsNativeThinking = registryModel?.capabilities?.includes('thinking');
+  const normalized = applyThinkingPreference(
+    normalizeMessages(messages, systemPrompt),
+    think,
+    supportsNativeThinking,
+  );
   const options = {
     num_predict: safeMax,
     num_ctx: getContextTokens(),
@@ -175,7 +193,7 @@ export function buildUpstreamPayload({
   // /api/tags may omit capabilities even when the selected model supports
   // reasoning. Preserve an explicit caller preference so simple requests do
   // not spend latency on unnecessary reasoning tokens.
-  if (typeof think === 'boolean') payload.think = think;
+  if (typeof think === 'boolean' && supportsNativeThinking) payload.think = think;
   return payload;
 }
 

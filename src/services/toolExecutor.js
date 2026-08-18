@@ -1,4 +1,5 @@
 import { TOOL_NAMES } from './toolControl.js';
+import { executeDesktopTool } from './desktopBridge.js';
 
 function evaluateExpression(expression = '') {
   const value = String(expression || '').trim();
@@ -98,6 +99,17 @@ export async function executeHostTool(call, { runTask } = {}) {
   if (call?.name === TOOL_NAMES.TASK) {
     if (typeof runTask !== 'function') throw new Error('The task agent is unavailable.');
     return await runTask(String(args.goal || '').trim());
+  }
+  if ([
+    TOOL_NAMES.FILE_READ,
+    TOOL_NAMES.FILE_WRITE,
+    TOOL_NAMES.FILE_SEARCH,
+    TOOL_NAMES.SHELL_RUN,
+    TOOL_NAMES.TEST_RUN,
+    TOOL_NAMES.GIT_STATUS,
+    TOOL_NAMES.GIT_DIFF,
+  ].includes(call?.name)) {
+    return await executeDesktopTool(call);
   }
   throw new Error(`Unsupported host tool: ${call?.name || 'unknown'}`);
 }

@@ -57,6 +57,27 @@ test('web search can be withheld for self-contained turns', () => {
   assert.equal(tools.some((tool) => tool.function.name === 'task.run'), true);
 });
 
+test('desktop command tools are exposed only through an advertised desktop runtime', () => {
+  const webTools = selectModelTools();
+  assert.equal(webTools.some((tool) => tool.function.name === 'shell.run'), false);
+
+  const desktopTools = selectModelTools({
+    runtime: {
+      runtime: 'desktop',
+      capabilities: [
+        'web.search',
+        'calculator.evaluate',
+        'task.run',
+        'shell.run',
+        'test.run',
+        'git.status',
+      ],
+    },
+  });
+  assert.equal(desktopTools.some((tool) => tool.function.name === 'shell.run'), true);
+  assert.equal(desktopTools.some((tool) => tool.function.name === 'filesystem.write'), false);
+});
+
 test('only the most recent assistant turn can anchor a refinement', () => {
   const latest = getMostRecentAssistantMessage([
     { role: 'assistant', content: '[IMAGE_GEN: an old scene]' },
