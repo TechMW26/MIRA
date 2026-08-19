@@ -93,28 +93,19 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, workspac
   if (workspaceMode) {
     return (
       <div
-        className="absolute top-0 right-0 bottom-0 z-[60] flex animate-fade-in desktop-right-panel"
-        style={{ width: `min(100%, ${width + 14}px)` }}
+        className="absolute z-[60] flex animate-fade-in desktop-right-panel desktop-right-panel-pip"
+        style={{ width: `min(calc(100% - 28px), ${width + 14}px)` }}
       >
-        <button
-          type="button"
-          onClick={onClose}
-          className="desktop-right-panel-close"
-          aria-label="Close side panel"
-          title="Close panel (Esc)"
-        >
-          <span aria-hidden="true">×</span>
-        </button>
         <div
           onMouseDown={onHandleMouseDown}
-          className="w-1 mr-2 my-2 rounded-full cursor-col-resize flex-shrink-0 transition-all"
+          className="desktop-right-panel-resizer rounded-full cursor-col-resize flex-shrink-0 transition-all"
           style={{
             background: resizing ? 'var(--accent)' : 'var(--border)',
             opacity: resizing ? 1 : 0.5,
           }}
           title="Drag to resize"
         />
-        <div className="flex-1 min-w-0 h-full overflow-hidden glass-strong desktop-right-panel-surface" style={{ borderLeft: '1px solid var(--hud-cyan-dim)' }}>
+        <div className="flex-1 min-w-0 h-full overflow-hidden glass-strong desktop-right-panel-surface">
           {children}
         </div>
       </div>

@@ -11,7 +11,11 @@ const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 40 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 const PRODUCTION_APP_URL = 'https://www.itsmira.cloud';
-const PERMISSION_BRIDGE_VERSION = 5;
+const PERMISSION_BRIDGE_VERSION = 6;
+const WORKSPACE_MEMORY_DIRECTORY = '.mira';
+const WORKSPACE_INSTRUCTIONS_FILE = 'MIRA.md';
+const WORKSPACE_HISTORY_FILE = 'history.jsonl';
+const MAX_WORKSPACE_MEMORY_BYTES = 2 * 1024 * 1024;
 const DESKTOP_CAPABILITIES = Object.freeze([
   'filesystem.read',
   'filesystem.list',
@@ -44,6 +48,26 @@ let workspaceVectorIndex = null;
 const appliedChanges = [];
 const undoneChanges = [];
 const runningProcesses = new Map();
+
+function workspaceStatePath() {
+  return path.join(app.getPath('userData'), 'workspace-state.json');
+}
+
+async function rememberWorkspace(root) {
+  await fs.mkdir(path.dirname(workspaceStatePath()), { recursive: true });
+  await fs.writeFile(workspaceStatePath(), JSON.stringify({ root }), 'utf8');
+}
+
+async function restoreWorkspace() {
+  try {
+    const stored = JSON.parse(await fs.readFile(workspaceStatePath(), 'utf8'));
+    const root = await fs.realpath(String(stored?.root || ''));
+    const stat = await fs.stat(root);
+    if (stat.isDirectory()) workspaceRoot = root;
+  } catch {
+    workspaceRoot = '';
+  }
+}
 
 function getSystemPermissionStatus() {
   if (process.platform === 'darwin') {
@@ -130,7 +154,108 @@ async function ensureWorkspace(window) {
   });
   if (result.canceled || !result.filePaths[0]) throw new Error('No workspace was selected.');
   workspaceRoot = await fs.realpath(result.filePaths[0]);
+  await rememberWorkspace(workspaceRoot);
   return workspaceRoot;
+}
+
+function workspaceMemoryPaths() {
+  const directory = path.join(workspaceRoot, WORKSPACE_MEMORY_DIRECTORY);
+  return {
+    directory,
+    instructions: path.join(directory, WORKSPACE_INSTRUCTIONS_FILE),
+    history: path.join(directory, WORKSPACE_HISTORY_FILE),
+    gitignore: path.join(directory, '.gitignore'),
+  };
+}
+
+async function ensureWorkspaceMemory() {
+  if (!workspaceRoot) return null;
+  const paths = workspaceMemoryPaths();
+  await fs.mkdir(paths.directory, { recursive: true });
+  try {
+    await fs.access(paths.instructions);
+  } catch {
+    await fs.writeFile(paths.instructions, [
+      '# MIRA workspace context',
+      '',
+      'Add durable project instructions, conventions, decisions, and constraints below.',
+      'MIRA reads this file whenever this workspace is opened.',
+      '',
+      '## Instructions',
+      '',
+      '- Preserve existing project conventions.',
+      '',
+    ].join('\n'), 'utf8');
+  }
+  try {
+    await fs.access(paths.gitignore);
+  } catch {
+    await fs.writeFile(paths.gitignore, `${WORKSPACE_HISTORY_FILE}\n`, 'utf8');
+  }
+  return paths;
+}
+
+async function readRecentWorkspaceEvents(historyPath) {
+  try {
+    const stat = await fs.stat(historyPath);
+    if (!stat.isFile() || stat.size === 0) return [];
+    const bytes = Math.min(stat.size, MAX_WORKSPACE_MEMORY_BYTES);
+    const handle = await fs.open(historyPath, 'r');
+    const buffer = Buffer.alloc(bytes);
+    try {
+      await handle.read(buffer, 0, bytes, stat.size - bytes);
+    } finally {
+      await handle.close();
+    }
+    const source = buffer.toString('utf8');
+    const lines = source.split('\n');
+    if (stat.size > bytes) lines.shift();
+    return lines
+      .filter(Boolean)
+      .slice(-120)
+      .map((line) => {
+        try { return JSON.parse(line); } catch { return null; }
+      })
+      .filter(Boolean);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function getWorkspaceMemory() {
+  const paths = await ensureWorkspaceMemory();
+  if (!paths) return null;
+  const [instructions, events] = await Promise.all([
+    fs.readFile(paths.instructions, 'utf8'),
+    readRecentWorkspaceEvents(paths.history),
+  ]);
+  return {
+    workspace: workspaceRoot,
+    instructions,
+    events,
+    files: {
+      instructions: `${WORKSPACE_MEMORY_DIRECTORY}/${WORKSPACE_INSTRUCTIONS_FILE}`,
+      history: `${WORKSPACE_MEMORY_DIRECTORY}/${WORKSPACE_HISTORY_FILE}`,
+    },
+  };
+}
+
+function cleanWorkspaceMemoryText(value, limit = 24_000) {
+  return String(value || '').replace(/\u0000/g, '').slice(0, limit);
+}
+
+async function appendWorkspaceEvent(event) {
+  const paths = await ensureWorkspaceMemory();
+  if (!paths) return;
+  const payload = {
+    ...event,
+    at: Number(event?.at) || Date.now(),
+  };
+  if (payload.user != null) payload.user = cleanWorkspaceMemoryText(payload.user);
+  if (payload.assistant != null) payload.assistant = cleanWorkspaceMemoryText(payload.assistant, 48_000);
+  if (payload.path != null) payload.path = cleanWorkspaceMemoryText(payload.path, 2_000);
+  await fs.appendFile(paths.history, `${JSON.stringify(payload)}\n`, 'utf8');
 }
 
 async function resolveWorkspacePath(window, input = '.') {
@@ -229,6 +354,98 @@ const EMBEDDING_DIMENSIONS = 384;
 const MAX_INDEX_FILES = 2500;
 const MAX_INDEX_CHUNKS = 6000;
 const MAX_INDEX_FILE_BYTES = 512 * 1024;
+const MAX_SEMANTIC_CHUNKS = 512;
+const SEMANTIC_BATCH_SIZE = 32;
+
+function codeAssistEndpoint() {
+  return process.argv.includes('--dev')
+    ? 'http://127.0.0.1:3002/api/code-assist'
+    : `${PRODUCTION_APP_URL}/api/code-assist`;
+}
+
+async function requestSemanticEmbeddings(input) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25_000);
+  try {
+    const response = await fetch(codeAssistEndpoint(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task: 'embedding', input }),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !Array.isArray(payload?.embeddings)) {
+      throw new Error(payload?.error || `Embedding request failed (${response.status}).`);
+    }
+    return { embeddings: payload.embeddings, model: String(payload.model || 'default') };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function encodeVector(vector) {
+  return Buffer.from(Int8Array.from(vector, (entry) => Math.max(-127, Math.min(127, Math.round(entry * 127))))).toString('base64');
+}
+
+function decodeVector(vector) {
+  return Array.from(Buffer.from(vector, 'base64'), (entry) => (entry > 127 ? entry - 256 : entry) / 127);
+}
+
+async function attachSemanticEmbeddings(index) {
+  if (!index?.chunks?.length) return index;
+  const count = Math.min(index.chunks.length, MAX_SEMANTIC_CHUNKS);
+  const selectedIndexes = Array.from({ length: count }, (_, position) => (
+    Math.min(index.chunks.length - 1, Math.floor((position * index.chunks.length) / count))
+  ));
+  const batches = [];
+  for (let start = 0; start < selectedIndexes.length; start += SEMANTIC_BATCH_SIZE) {
+    batches.push(selectedIndexes.slice(start, start + SEMANTIC_BATCH_SIZE));
+  }
+  let model = '';
+  let embedded = 0;
+  let nextBatch = 0;
+  let semanticUnavailable = false;
+  const worker = async () => {
+    while (!semanticUnavailable && nextBatch < batches.length) {
+      const batch = batches[nextBatch++];
+      try {
+        const result = await requestSemanticEmbeddings(batch.map((chunkIndex) => {
+          const chunk = index.chunks[chunkIndex];
+          return `${chunk.path}\n${chunk.text.slice(0, 6_000)}`;
+        }));
+        model ||= result.model;
+        result.embeddings.forEach((vector, position) => {
+          if (!Array.isArray(vector)) return;
+          index.chunks[batch[position]].semanticVector = vector;
+          embedded += 1;
+        });
+      } catch {
+        semanticUnavailable = true;
+        // The deterministic local vector remains available offline.
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, batches.length) }, () => worker()));
+  index.semanticModel = model;
+  index.semanticChunks = embedded;
+  index.embeddingMode = embedded ? (embedded === index.chunks.length ? 'semantic' : 'hybrid') : 'local';
+  return index;
+}
+
+async function persistWorkspaceIndex(cacheDirectory, cachePath, index) {
+  try {
+    await fs.mkdir(cacheDirectory, { recursive: true });
+    await fs.writeFile(cachePath, JSON.stringify({
+      ...index,
+      root: undefined,
+      chunks: index.chunks.map((chunk) => ({
+        ...chunk,
+        vector: encodeVector(chunk.vector),
+        semanticVector: chunk.semanticVector ? encodeVector(chunk.semanticVector) : undefined,
+      })),
+    }), 'utf8');
+  } catch {}
+}
 
 function hashToken(token) {
   let hash = 2166136261;
@@ -326,9 +543,14 @@ async function buildWorkspaceIndex(window, force = false) {
           root,
           chunks: cached.chunks.map((chunk) => ({
             ...chunk,
-            vector: Array.from(Buffer.from(chunk.vector, 'base64'), (entry) => (entry > 127 ? entry - 256 : entry) / 127),
+            vector: decodeVector(chunk.vector),
+            semanticVector: chunk.semanticVector ? decodeVector(chunk.semanticVector) : undefined,
           })),
         };
+        if (!workspaceVectorIndex.semanticChunks) {
+          await attachSemanticEmbeddings(workspaceVectorIndex);
+          await persistWorkspaceIndex(cacheDirectory, cachePath, workspaceVectorIndex);
+        }
         return workspaceVectorIndex;
       }
     } catch {}
@@ -361,17 +583,8 @@ async function buildWorkspaceIndex(window, force = false) {
     extensions,
     project,
   };
-  try {
-    await fs.mkdir(cacheDirectory, { recursive: true });
-    await fs.writeFile(cachePath, JSON.stringify({
-      ...workspaceVectorIndex,
-      root: undefined,
-      chunks: workspaceVectorIndex.chunks.map((chunk) => ({
-        ...chunk,
-        vector: Buffer.from(Int8Array.from(chunk.vector, (entry) => Math.max(-127, Math.min(127, Math.round(entry * 127))))).toString('base64'),
-      })),
-    }), 'utf8');
-  } catch {}
+  await attachSemanticEmbeddings(workspaceVectorIndex);
+  await persistWorkspaceIndex(cacheDirectory, cachePath, workspaceVectorIndex);
   return workspaceVectorIndex;
 }
 
@@ -383,7 +596,13 @@ function workspaceIndexSummary(index) {
   return {
     indexedFiles: index.files,
     indexedChunks: index.chunks.length,
-    embedding: `local-feature-vector-${EMBEDDING_DIMENSIONS}d`,
+    embedding: index.embeddingMode === 'semantic'
+      ? `semantic-${index.semanticModel || 'managed'}-${EMBEDDING_DIMENSIONS}d`
+      : index.embeddingMode === 'hybrid'
+        ? `hybrid-semantic-local-${EMBEDDING_DIMENSIONS}d`
+        : `local-feature-vector-${EMBEDDING_DIMENSIONS}d`,
+    semanticChunks: Number(index.semanticChunks || 0),
+    embeddingMode: index.embeddingMode || 'local',
     languages,
     project: index.project,
     createdAt: new Date(index.createdAt).toISOString(),
@@ -552,6 +771,30 @@ async function gitInfo(window) {
   });
 }
 
+async function saveWorkspaceFile(window, requestedPath, requestedContent, source = 'editor') {
+  const target = await resolveWorkspacePath(window, requestedPath);
+  const content = String(requestedContent ?? '');
+  if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error('Desktop writes are limited to 2 MB per file.');
+  const before = await readOptionalFile(target);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, content, 'utf8');
+  const relativePath = path.relative(workspaceRoot, target);
+  appliedChanges.push({
+    id: `${Date.now()}:${relativePath}`,
+    path: relativePath,
+    target,
+    before: before.content,
+    beforeExisted: before.existed,
+    after: content,
+    timestamp: Date.now(),
+  });
+  if (appliedChanges.length > 50) appliedChanges.shift();
+  undoneChanges.length = 0;
+  workspaceVectorIndex = null;
+  await appendWorkspaceEvent({ type: 'change', path: relativePath, source });
+  return JSON.stringify({ changed: true, path: relativePath, undoAvailable: true });
+}
+
 async function invokeDesktopTool(window, call = {}) {
   const name = String(call?.name || '');
   const args = call?.arguments && typeof call.arguments === 'object' ? call.arguments : {};
@@ -590,23 +833,7 @@ async function invokeDesktopTool(window, call = {}) {
     const content = String(args.content ?? '');
     if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error('Desktop writes are limited to 2 MB per file.');
     await approve(window, 'Allow file write?', `Write ${path.relative(workspaceRoot, target) || path.basename(target)}`);
-    const before = await readOptionalFile(target);
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, content, 'utf8');
-    const relativePath = path.relative(workspaceRoot, target);
-    appliedChanges.push({
-      id: `${Date.now()}:${relativePath}`,
-      path: relativePath,
-      target,
-      before: before.content,
-      beforeExisted: before.existed,
-      after: content,
-      timestamp: Date.now(),
-    });
-    if (appliedChanges.length > 50) appliedChanges.shift();
-    undoneChanges.length = 0;
-    workspaceVectorIndex = null;
-    return JSON.stringify({ changed: true, path: relativePath, undoAvailable: true });
+    return await saveWorkspaceFile(window, args.path, content, 'agent');
   }
 
   if (name === 'filesystem.search') {
@@ -633,9 +860,20 @@ async function invokeDesktopTool(window, call = {}) {
     if (!query || query.length > 2000) throw new Error('A valid workspace search query is required.');
     const index = await buildWorkspaceIndex(window, false);
     const queryVector = embedLocalText(query);
+    let semanticQueryVector = null;
+    if (index.semanticChunks) {
+      try {
+        semanticQueryVector = (await requestSemanticEmbeddings([query])).embeddings[0] || null;
+      } catch {}
+    }
     const limit = Math.max(1, Math.min(20, Number(args.limit) || 8));
     const results = index.chunks
-      .map((chunk) => ({ ...chunk, score: vectorSimilarity(queryVector, chunk.vector) }))
+      .map((chunk) => ({
+        ...chunk,
+        score: semanticQueryVector && chunk.semanticVector
+          ? vectorSimilarity(semanticQueryVector, chunk.semanticVector)
+          : vectorSimilarity(queryVector, chunk.vector),
+      }))
       .filter((chunk) => chunk.score > 0.01)
       .sort((left, right) => right.score - left.score)
       .slice(0, limit)
@@ -796,6 +1034,15 @@ function createWindow() {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
+  window.webContents.on('before-input-event', (event, input) => {
+    const saveShortcut = input.type === 'keyDown'
+      && String(input.key || '').toLowerCase() === 's'
+      && (input.meta || input.control)
+      && !input.alt;
+    if (!saveShortcut) return;
+    event.preventDefault();
+    window.webContents.send('mira:save-current-file');
+  });
   window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
     if (!isAllowedLocalPreviewUrl(params.src)) {
       event.preventDefault();
@@ -830,8 +1077,9 @@ function createWindow() {
   return window;
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   desktopEnvironment().catch(() => {});
+  await restoreWorkspace();
   const window = createWindow();
   ipcMain.handle('mira:runtime-info', () => ({
     appVersion: app.getVersion(),
@@ -845,12 +1093,44 @@ app.whenReady().then(() => {
     requestSystemPermission(String(permission || ''))
   ));
   ipcMain.handle('mira:choose-workspace', async () => {
+    const previousWorkspace = workspaceRoot;
     workspaceRoot = '';
     workspaceCommandTrust = false;
     workspaceVectorIndex = null;
     appliedChanges.length = 0;
     undoneChanges.length = 0;
-    return { workspace: await ensureWorkspace(window) };
+    try {
+      return { workspace: await ensureWorkspace(window) };
+    } catch (error) {
+      workspaceRoot = previousWorkspace;
+      throw error;
+    }
+  });
+  ipcMain.handle('mira:workspace-memory', async () => getWorkspaceMemory());
+  ipcMain.handle('mira:save-workspace-file', async (_event, payload) => {
+    try {
+      return {
+        ok: true,
+        output: await saveWorkspaceFile(window, payload?.path, payload?.content, 'editor'),
+      };
+    } catch (error) {
+      return { ok: false, error: error?.message || 'Could not save the workspace file.' };
+    }
+  });
+  ipcMain.handle('mira:append-workspace-turn', async (_event, turn) => {
+    if (!workspaceRoot) return { saved: false };
+    const value = turn && typeof turn === 'object' ? turn : {};
+    await appendWorkspaceEvent({
+      type: 'chat',
+      conversationId: cleanWorkspaceMemoryText(value.conversationId, 300),
+      turnId: cleanWorkspaceMemoryText(value.turnId, 300),
+      user: value.user,
+      assistant: value.assistant,
+      attachments: Array.isArray(value.attachments)
+        ? value.attachments.map((item) => cleanWorkspaceMemoryText(item, 500)).slice(0, 20)
+        : [],
+    });
+    return { saved: true };
   });
   ipcMain.handle('mira:invoke-tool', async (_event, call) => {
     try {

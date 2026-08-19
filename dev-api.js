@@ -5,6 +5,7 @@ import path from 'path';
 function loadDotEnv() {
   try {
     const externallyDefined = new Set(Object.keys(process.env));
+    const loadedKeys = new Set();
     for (const filename of ['.env', '.env.local']) {
       const envPath = path.resolve(process.cwd(), filename);
       if (!fs.existsSync(envPath)) continue;
@@ -19,7 +20,10 @@ function loadDotEnv() {
         if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
           value = value.slice(1, -1);
         }
-        if (!externallyDefined.has(key)) process.env[key] = value;
+        if (!externallyDefined.has(key) && !loadedKeys.has(key)) {
+          process.env[key] = value;
+          loadedKeys.add(key);
+        }
       }
     }
   } catch (error) {

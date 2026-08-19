@@ -2,11 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   chooseDesktopWorkspace,
+  appendDesktopWorkspaceTurn,
   executeDesktopTool,
   getDesktopBridge,
   getDesktopPermissionStatus,
   getDesktopRuntimeInfo,
   requestDesktopPermission,
+  saveDesktopWorkspaceFile,
+  subscribeDesktopSaveShortcut,
 } from './desktopBridge.js';
 
 test('desktop bridge is absent in the web runtime', async () => {
@@ -81,4 +84,40 @@ test('desktop tool calls cross only the trusted preload bridge', async () => {
   );
   assert.equal(output, 'clean');
   assert.deepEqual(calls, [{ name: 'git.status', arguments: {} }]);
+});
+
+test('desktop editor saves and workspace turns use dedicated native channels', async () => {
+  const calls = [];
+  const listeners = [];
+  const scope = {
+    window: {
+      miraDesktop: {
+        invokeTool: async () => ({ ok: true }),
+        saveWorkspaceFile: async (payload) => {
+          calls.push(['save', payload]);
+          return { ok: true, output: 'saved' };
+        },
+        appendWorkspaceTurn: async (turn) => {
+          calls.push(['turn', turn]);
+          return { saved: true };
+        },
+        onSaveShortcut: (listener) => {
+          listeners.push(listener);
+          return () => listeners.splice(0);
+        },
+      },
+    },
+  };
+
+  assert.equal(await saveDesktopWorkspaceFile('src/app.js', 'next', scope), 'saved');
+  assert.deepEqual(await appendDesktopWorkspaceTurn({ turnId: 'turn-1' }, scope), { saved: true });
+  let shortcuts = 0;
+  const unsubscribe = subscribeDesktopSaveShortcut(() => { shortcuts += 1; }, scope);
+  listeners[0]();
+  unsubscribe();
+  assert.equal(shortcuts, 1);
+  assert.deepEqual(calls, [
+    ['save', { path: 'src/app.js', content: 'next' }],
+    ['turn', { turnId: 'turn-1' }],
+  ]);
 });

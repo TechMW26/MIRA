@@ -608,6 +608,41 @@ export async function runChatCompletion({ messages, images = [], systemPrompt, m
   return { result: answer };
 }
 
+async function requestPollinationsFallback({ messages, systemPrompt, tools, maxTokens }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25_000);
+  activeChatAbortController = controller;
+  activeChatRequestId = `fallback:${createRequestId()}`;
+  try {
+    const response = await fetch('/api/code-assist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task: 'chat',
+        messages,
+        systemPrompt,
+        tools,
+        maxTokens,
+      }),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new ChatHttpError(response.status, payload?.error || 'Fallback completion failed.');
+    const control = toolCallsToControl(payload?.toolCalls);
+    const answer = control || String(payload?.suggestion || '').trim();
+    if (!answer) throw new Error('The fallback completion returned no result.');
+    diagnosticWarn('model', 'primary model unavailable; Pollinations completion fallback succeeded', {
+      toolCall: Boolean(control),
+      answerChars: answer.length,
+    });
+    return { answer, thinking: '' };
+  } finally {
+    clearTimeout(timeout);
+    if (activeChatAbortController === controller) activeChatAbortController = null;
+    if (String(activeChatRequestId || '').startsWith('fallback:')) activeChatRequestId = null;
+  }
+}
+
 export async function sendChatMessage(messages, onChunk, images = [], {
   onThinking,
   systemPrompt,
@@ -617,27 +652,38 @@ export async function sendChatMessage(messages, onChunk, images = [], {
 } = {}) {
   let latestAnswer = '';
   let latestThinking = '';
-  const streamed = await requestChat({
-    messages,
-    images,
-    systemPrompt,
-    tools,
-    think,
-    maxTokens,
-    onChunk: ({ answerFull, thinkingFull }) => {
-      const split = splitThinkingFromRaw(answerFull || '');
-      const mergedThinking = [thinkingFull || '', split.thinking || '']
-        .filter(Boolean)
-        .join('\n')
-        .trim();
+  let streamed;
+  try {
+    streamed = await requestChat({
+      messages,
+      images,
+      systemPrompt,
+      tools,
+      think,
+      maxTokens,
+      onChunk: ({ answerFull, thinkingFull }) => {
+        const split = splitThinkingFromRaw(answerFull || '');
+        const mergedThinking = [thinkingFull || '', split.thinking || '']
+          .filter(Boolean)
+          .join('\n')
+          .trim();
 
-      latestThinking = mergedThinking;
-      latestAnswer = split.answer || '';
+        latestThinking = mergedThinking;
+        latestAnswer = split.answer || '';
 
-      if (mergedThinking) onThinking?.(mergedThinking);
-      onChunk?.(latestAnswer, latestAnswer);
-    },
-  });
+        if (mergedThinking) onThinking?.(mergedThinking);
+        onChunk?.(latestAnswer, latestAnswer);
+      },
+    });
+  } catch (error) {
+    if (isAbortError(error) || images.length) throw error;
+    diagnosticWarn('model', 'primary model failed; trying Pollinations completion fallback', {
+      error: error?.message || 'Unknown model failure',
+    });
+    streamed = await requestPollinationsFallback({ messages, systemPrompt, tools, maxTokens });
+    latestAnswer = streamed.answer;
+    onChunk?.(latestAnswer, latestAnswer);
+  }
 
   const split = splitThinkingFromRaw(streamed?.answer || '');
   const finalThinking = [streamed?.thinking || '', split.thinking || '']

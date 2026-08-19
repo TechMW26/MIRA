@@ -47,6 +47,34 @@ export async function requestDesktopPermission(permission, scope = globalThis) {
   return await bridge.requestPermission(permission);
 }
 
+export async function getDesktopWorkspaceMemory(scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.getWorkspaceMemory !== 'function') return null;
+  return await bridge.getWorkspaceMemory();
+}
+
+export async function appendDesktopWorkspaceTurn(turn, scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.appendWorkspaceTurn !== 'function') return { saved: false };
+  return await bridge.appendWorkspaceTurn(turn);
+}
+
+export async function saveDesktopWorkspaceFile(path, content, scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.saveWorkspaceFile !== 'function') {
+    throw new Error('Workspace file saving is available only in the latest MIRA desktop application.');
+  }
+  const result = await bridge.saveWorkspaceFile({ path, content });
+  if (!result?.ok) throw new Error(result?.error || 'Could not save the workspace file.');
+  return String(result.output || '');
+}
+
+export function subscribeDesktopSaveShortcut(listener, scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.onSaveShortcut !== 'function') return () => {};
+  return bridge.onSaveShortcut(listener);
+}
+
 export async function executeDesktopTool(call, scope = globalThis) {
   const name = String(call?.name || '');
   if (!DESKTOP_AGENT_CAPABILITIES.includes(name)) {

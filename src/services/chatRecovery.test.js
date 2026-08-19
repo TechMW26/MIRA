@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runChatCompletion } from './api.js';
+import { runChatCompletion, sendChatMessage } from './api.js';
 
 test('diagnoses and retries one transient chat failure', async () => {
   const originalFetch = globalThis.fetch;
@@ -44,6 +44,45 @@ test('diagnoses and retries one transient chat failure', async () => {
     assert.equal(generationAttempts, 2);
     assert.equal(cancellationCalls, 1);
     assert.equal(healthCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('uses the managed completion fallback after primary retries fail', async () => {
+  const originalFetch = globalThis.fetch;
+  let generationAttempts = 0;
+  let fallbackCalls = 0;
+
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url) === '/api/health') {
+      return new Response(JSON.stringify({ ready: true, registryReachable: true }), { status: 200 });
+    }
+
+    const body = JSON.parse(options.body || '{}');
+    if (String(url) === '/api/code-assist') {
+      fallbackCalls += 1;
+      assert.equal(body.task, 'chat');
+      return new Response(JSON.stringify({ suggestion: 'Fallback response.' }), { status: 200 });
+    }
+    if (body.action === 'cancel') {
+      return new Response(JSON.stringify({ cancelled: true }), { status: 200 });
+    }
+
+    generationAttempts += 1;
+    return new Response(JSON.stringify({ error: 'Model temporarily unavailable.' }), { status: 503 });
+  };
+
+  try {
+    const response = await sendChatMessage(
+      [{ role: 'user', content: 'Summarise this workspace.' }],
+      () => {},
+      [],
+      { think: false },
+    );
+    assert.equal(response, 'Fallback response.');
+    assert.equal(generationAttempts, 2);
+    assert.equal(fallbackCalls, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

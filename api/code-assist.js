@@ -3,6 +3,8 @@ export const config = { maxDuration: 30 };
 const POLLINATIONS_ORIGIN = 'https://gen.pollinations.ai';
 let cachedModel = null;
 let modelCacheExpiresAt = 0;
+let cachedEmbeddingModel = null;
+let embeddingModelCacheExpiresAt = 0;
 
 function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -30,7 +32,22 @@ export function selectAssistModel(models = []) {
       if (/cod(e|ing)|developer|agentic/.test(description)) score += 5;
       if (/fast|flash|compact|small|low-cost|affordable/.test(description)) score += 4;
       if (model.tools) score += 1;
-      if (model.reasoning) score += 1;
+      if (model.reasoning) score -= 4;
+      return { model, score };
+    })
+    .sort((left, right) => right.score - left.score)[0]?.model?.name || '';
+}
+
+export function selectEmbeddingModel(models = []) {
+  const candidates = models.filter((model) => model?.name);
+  return candidates
+    .map((model) => {
+      const name = String(model.name || '').toLowerCase();
+      const description = String(model.description || '').toLowerCase();
+      let score = 0;
+      if (/qwen3[-_ ]?embedding/.test(name) || /qwen3[-_ ]?embedding/.test(description)) score += 10;
+      if (/code|retrieval|semantic/.test(description)) score += 4;
+      if (/small|fast|low-cost|affordable/.test(description)) score += 2;
       return { model, score };
     })
     .sort((left, right) => right.score - left.score)[0]?.model?.name || '';
@@ -51,6 +68,23 @@ async function assistModel(key, signal) {
   }
   modelCacheExpiresAt = Date.now() + 10 * 60 * 1000;
   return cachedModel;
+}
+
+async function embeddingModel(key, signal) {
+  if (Date.now() < embeddingModelCacheExpiresAt) return cachedEmbeddingModel;
+  try {
+    const response = await fetch(`${POLLINATIONS_ORIGIN}/embeddings/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal,
+      cache: 'no-store',
+    });
+    const models = response.ok ? await response.json() : [];
+    cachedEmbeddingModel = selectEmbeddingModel(Array.isArray(models) ? models : []);
+  } catch {
+    cachedEmbeddingModel = '';
+  }
+  embeddingModelCacheExpiresAt = Date.now() + 10 * 60 * 1000;
+  return cachedEmbeddingModel;
 }
 
 function cleanSuggestion(value, maxLength) {
@@ -85,6 +119,48 @@ function reviewPrompt({ diff, status, kind }) {
   return `${instruction}\n\nGit status:\n${status}\n\nDiff:\n${diff}`;
 }
 
+function workspacePrompt({ request, evidence }) {
+  return [
+    'Answer the workspace request from the supplied local evidence.',
+    'Be direct and factual. Never mention internal tools, model routing, fetch failures, or hidden control syntax.',
+    'For a codebase study, summarize architecture, important files, scripts, dependencies, and concrete findings.',
+    `User request: ${request}`,
+    '<LOCAL_WORKSPACE_EVIDENCE>',
+    evidence,
+    '</LOCAL_WORKSPACE_EVIDENCE>',
+  ].join('\n');
+}
+
+function sanitizeMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : [])
+    .slice(-24)
+    .map((message) => ({
+      role: ['system', 'assistant', 'user', 'tool'].includes(message?.role) ? message.role : 'user',
+      content: String(message?.content || '').slice(0, 30_000),
+    }))
+    .filter((message) => message.content);
+}
+
+async function pollinationsJson(url, options, attempts = 2) {
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      const result = await response.json().catch(() => ({}));
+      if (response.ok) return result;
+      const error = new Error(`Pollinations request failed (${response.status}).`);
+      error.status = response.status;
+      if (![408, 429, 500, 502, 503, 504].includes(response.status)) throw error;
+      lastError = error;
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      lastError = error;
+    }
+    if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+  }
+  throw lastError || new Error('Pollinations request failed.');
+}
+
 export async function POST(request) {
   const key = serverKey();
   if (!key) return json({ error: 'Code assistance is not configured.' }, 503);
@@ -92,7 +168,7 @@ export async function POST(request) {
   let body;
   try { body = await request.json(); } catch { return json({ error: 'Invalid JSON request.' }, 400); }
   const task = String(body?.task || 'completion');
-  if (!['completion', 'github-comment', 'commit'].includes(task)) {
+  if (!['completion', 'github-comment', 'commit', 'workspace-synthesis', 'chat', 'embedding'].includes(task)) {
     return json({ error: 'Unsupported code-assistance task.' }, 400);
   }
 
@@ -101,6 +177,32 @@ export async function POST(request) {
   const abort = () => controller.abort();
   request.signal?.addEventListener?.('abort', abort, { once: true });
   try {
+    if (task === 'embedding') {
+      const input = (Array.isArray(body?.input) ? body.input : [body?.input])
+        .slice(0, 32)
+        .map((value) => String(value || '').slice(0, 12_000))
+        .filter(Boolean);
+      if (!input.length || input.join('').length > 120_000) {
+        return json({ error: 'Embedding input is empty or too large.' }, 400);
+      }
+      const model = await embeddingModel(key, controller.signal);
+      const result = await pollinationsJson(`${POLLINATIONS_ORIGIN}/v1/embeddings`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ input, dimensions: 384, ...(model ? { model } : {}) }),
+        signal: controller.signal,
+      });
+      const embeddings = (Array.isArray(result?.data) ? result.data : [])
+        .sort((left, right) => Number(left.index || 0) - Number(right.index || 0))
+        .map((entry) => entry?.embedding)
+        .filter((entry) => Array.isArray(entry) && entry.length >= 128);
+      if (embeddings.length !== input.length) return json({ error: 'The embedding service returned incomplete vectors.' }, 502);
+      return json({ embeddings, model: model || 'default' });
+    }
+
     const model = await assistModel(key, controller.signal);
     const prompt = task === 'completion'
       ? completionPrompt({
@@ -109,21 +211,40 @@ export async function POST(request) {
         prefix: String(body.prefix || '').slice(-10_000),
         suffix: String(body.suffix || '').slice(0, 4_000),
       })
+      : task === 'workspace-synthesis'
+        ? workspacePrompt({
+          request: String(body.request || '').slice(0, 4_000),
+          evidence: String(body.evidence || '').slice(0, 90_000),
+        })
       : reviewPrompt({
         diff: String(body.diff || '').slice(0, 24_000),
         status: String(body.status || '').slice(0, 4_000),
         kind: task,
       });
-    const payload = {
-      messages: [
+    const chatMessages = task === 'chat'
+      ? [
+        ...(body.systemPrompt ? [{ role: 'system', content: String(body.systemPrompt).slice(0, 20_000) }] : []),
+        ...sanitizeMessages(body.messages),
+      ]
+      : [
         { role: 'system', content: 'You are a fast, precise coding copilot. Follow the output contract exactly and never expose credentials.' },
         { role: 'user', content: prompt },
-      ],
-      max_tokens: task === 'completion' ? 220 : 320,
+      ];
+    if (!chatMessages.length) return json({ error: 'Chat fallback requires messages.' }, 400);
+    const payload = {
+      messages: chatMessages,
+      max_tokens: task === 'completion'
+        ? 220
+        : task === 'commit'
+          ? 120
+          : task === 'github-comment'
+            ? 420
+            : Math.max(256, Math.min(2_000, Number(body.maxTokens) || 1_200)),
       temperature: 0.15,
+      ...(task === 'chat' && Array.isArray(body.tools) && body.tools.length ? { tools: body.tools.slice(0, 32), tool_choice: 'auto' } : {}),
       ...(model ? { model } : {}),
     };
-    const response = await fetch(`${POLLINATIONS_ORIGIN}/v1/chat/completions`, {
+    let result = await pollinationsJson(`${POLLINATIONS_ORIGIN}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${key}`,
@@ -132,8 +253,22 @@ export async function POST(request) {
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) return json({ error: 'The coding assistant is temporarily unavailable.' }, 502);
+    if (model && !result?.choices?.[0]?.message?.content && !result?.choices?.[0]?.message?.tool_calls?.length) {
+      const { model: _selectedModel, ...providerDefaultPayload } = payload;
+      result = await pollinationsJson(`${POLLINATIONS_ORIGIN}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(providerDefaultPayload),
+        signal: controller.signal,
+      });
+    }
+    const toolCalls = result?.choices?.[0]?.message?.tool_calls;
+    if (task === 'chat' && Array.isArray(toolCalls) && toolCalls.length) {
+      return json({ toolCalls });
+    }
     const suggestion = cleanSuggestion(result?.choices?.[0]?.message?.content, task === 'completion' ? 4_000 : 6_000);
     if (!suggestion) return json({ error: 'The coding assistant returned no suggestion.' }, 502);
     return json({ suggestion });

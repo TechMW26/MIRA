@@ -11,6 +11,7 @@ import {
   Globe2,
   History,
   Play,
+  Plus,
   RefreshCw,
   RotateCcw,
   RotateCw,
@@ -30,6 +31,8 @@ import {
   getDesktopPermissionStatus,
   getDesktopRuntimeInfo,
   requestDesktopPermission,
+  saveDesktopWorkspaceFile,
+  subscribeDesktopSaveShortcut,
 } from '../../services/desktopBridge.js';
 import { parseCommandLine } from '../../services/commandLine.js';
 import { extractTerminalLinks, normalizeLocalPreviewUrl } from '../../services/localPreview.js';
@@ -58,26 +61,30 @@ export default function DesktopWorkspace({ style }) {
   const [runtime, setRuntime] = useState(null);
   const [directory, setDirectory] = useState('');
   const [entries, setEntries] = useState([]);
+  const [fileTabs, setFileTabs] = useState([]);
   const [activeFile, setActiveFile] = useState('');
-  const [activePreview, setActivePreview] = useState(null);
-  const [content, setContent] = useState('');
-  const [savedContent, setSavedContent] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [command, setCommand] = useState('');
-  const [terminalOutput, setTerminalOutput] = useState('Ready. Commands execute directly. You can trust this workspace for the current app session.');
-  const [commandRunning, setCommandRunning] = useState(false);
-  const [activeTerminalRequestId, setActiveTerminalRequestId] = useState('');
+  const [terminals, setTerminals] = useState(() => [{
+    id: 'terminal-1',
+    name: 'Terminal 1',
+    command: '',
+    output: 'Ready. Commands execute directly. You can trust this workspace for the current app session.',
+    running: false,
+    requestId: '',
+    history: [],
+    historyIndex: 0,
+  }]);
+  const [activeTerminalId, setActiveTerminalId] = useState('terminal-1');
   const [terminalHeight, setTerminalHeight] = useState(() => Number(localStorage.getItem('mira_terminal_height')) || 210);
   const [explorerWidth, setExplorerWidth] = useState(() => Number(localStorage.getItem('mira_explorer_width')) || 220);
   const [workspaceCommandsTrusted, setWorkspaceCommandsTrusted] = useState(false);
   const [indexStatus, setIndexStatus] = useState(null);
   const [indexing, setIndexing] = useState(false);
   const indexInFlightRef = useRef(false);
-  const terminalRequestRef = useRef('');
+  const terminalRequestToSessionRef = useRef(new Map());
+  const activeTerminalIdRef = useRef(activeTerminalId);
   const terminalOutputRef = useRef(null);
-  const commandHistoryRef = useRef([]);
-  const commandHistoryIndexRef = useRef(0);
   const [permissionStatus, setPermissionStatus] = useState(null);
   const [showPermissions, setShowPermissions] = useState(false);
   const [permissionBusy, setPermissionBusy] = useState('');
@@ -95,9 +102,39 @@ export default function DesktopWorkspace({ style }) {
   const [aiReviewBusy, setAiReviewBusy] = useState('');
   const [showBrowser, setShowBrowser] = useState(false);
   const [browserUrl, setBrowserUrl] = useState('');
-  const [editorDiagnostics, setEditorDiagnostics] = useState([]);
-  const dirty = content !== savedContent;
+  const saveFileRef = useRef(() => {});
+  const fileTabsRef = useRef(fileTabs);
+  const activeTab = fileTabs.find((tab) => tab.path === activeFile) || null;
+  const activePreview = activeTab?.preview || null;
+  const content = activeTab?.content || '';
+  const savedContent = activeTab?.savedContent || '';
+  const editorDiagnostics = activeTab?.diagnostics || [];
+  const dirty = Boolean(activeTab && !activePreview && content !== savedContent);
+  fileTabsRef.current = fileTabs;
+  activeTerminalIdRef.current = activeTerminalId;
+  const activeTerminal = terminals.find((terminal) => terminal.id === activeTerminalId) || terminals[0];
+  const command = activeTerminal?.command || '';
+  const terminalOutput = activeTerminal?.output || '';
+  const commandRunning = Boolean(activeTerminal?.running);
+  const activeTerminalRequestId = activeTerminal?.requestId || '';
+  saveFileRef.current = saveFile;
   const hasCapability = useCallback((name) => runtime?.capabilities?.includes(name), [runtime?.capabilities]);
+
+  function updateFileTab(path, update) {
+    setFileTabs((current) => current.map((tab) => (
+      tab.path === path
+        ? { ...tab, ...(typeof update === 'function' ? update(tab) : update) }
+        : tab
+    )));
+  }
+
+  function updateTerminal(id, update) {
+    setTerminals((current) => current.map((terminal) => (
+      terminal.id === id
+        ? { ...terminal, ...(typeof update === 'function' ? update(terminal) : update) }
+        : terminal
+    )));
+  }
 
   const refreshWorkspaceIndex = useCallback(async (force = false) => {
     if (!runtime?.workspace || !hasCapability('workspace.index') || indexInFlightRef.current) return;
@@ -175,10 +212,14 @@ export default function DesktopWorkspace({ style }) {
 
   useEffect(() => {
     const unsubscribe = window.miraDesktop?.onTerminalOutput?.(({ requestId, chunk, reset, agent, done }) => {
-      const activeManualRequest = requestId && requestId === terminalRequestRef.current;
-      if (!activeManualRequest && !agent) return;
-      if (requestId) setActiveTerminalRequestId(done ? '' : requestId);
-      if (chunk) setTerminalOutput((current) => reset ? chunk : `${current}${chunk}`);
+      const terminalId = terminalRequestToSessionRef.current.get(requestId) || (agent ? activeTerminalIdRef.current : '');
+      if (!terminalId) return;
+      updateTerminal(terminalId, (terminal) => ({
+        requestId: done ? '' : (requestId || terminal.requestId),
+        running: done ? false : terminal.running,
+        output: chunk ? (reset ? chunk : `${terminal.output}${chunk}`) : terminal.output,
+      }));
+      if (done && requestId) terminalRequestToSessionRef.current.delete(requestId);
       const localUrl = extractTerminalLinks(chunk).map(normalizeLocalPreviewUrl).find(Boolean);
       if (localUrl) {
         setBrowserUrl(localUrl);
@@ -196,6 +237,16 @@ export default function DesktopWorkspace({ style }) {
     });
     return () => cancelAnimationFrame(frame);
   }, [terminalHeight, terminalOutput]);
+
+  useEffect(() => subscribeDesktopSaveShortcut(() => {
+    saveFileRef.current?.();
+  }), []);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.preview || activeTab.content === activeTab.savedContent || activeTab.saving) return undefined;
+    const timeout = setTimeout(() => saveFileRef.current?.(activeTab.path, { silent: true }), 700);
+    return () => clearTimeout(timeout);
+  }, [activeTab?.content, activeTab?.path, activeTab?.preview, activeTab?.savedContent, activeTab?.saving]);
 
   useEffect(() => {
     if (!runtime?.workspace) return;
@@ -236,9 +287,7 @@ export default function DesktopWorkspace({ style }) {
       const next = await chooseDesktopWorkspace();
       setRuntime((current) => ({ ...(current || {}), workspace: next.workspace }));
       setActiveFile('');
-      setActivePreview(null);
-      setContent('');
-      setSavedContent('');
+      setFileTabs([]);
       await loadDirectory('');
     } catch (chooseError) {
       if (!/No workspace was selected/i.test(chooseError?.message || '')) {
@@ -253,24 +302,42 @@ export default function DesktopWorkspace({ style }) {
       return;
     }
     if (entry.type !== 'file') return;
+    if (fileTabsRef.current.some((tab) => tab.path === entry.path)) {
+      setActiveFile(entry.path);
+      setShowBrowser(false);
+      return;
+    }
     setLoading(true);
     setError('');
-    setEditorDiagnostics([]);
     try {
       const extension = entry.path.split('.').pop()?.toLowerCase();
       if (PREVIEW_EXTENSIONS.has(extension) && hasCapability('filesystem.preview')) {
         const output = await executeDesktopTool({ name: 'filesystem.preview', arguments: { path: entry.path } });
+        setFileTabs((current) => [...current, {
+          path: entry.path,
+          preview: JSON.parse(output),
+          content: '',
+          savedContent: '',
+          diagnostics: [],
+          saving: false,
+          saveError: '',
+        }]);
         setActiveFile(entry.path);
-        setActivePreview(JSON.parse(output));
-        setContent('');
-        setSavedContent('');
+        setShowBrowser(false);
         return;
       }
       const next = await executeDesktopTool({ name: 'filesystem.read', arguments: { path: entry.path } });
+      setFileTabs((current) => [...current, {
+        path: entry.path,
+        preview: null,
+        content: next,
+        savedContent: next,
+        diagnostics: [],
+        saving: false,
+        saveError: '',
+      }]);
       setActiveFile(entry.path);
-      setActivePreview(null);
-      setContent(next);
-      setSavedContent(next);
+      setShowBrowser(false);
     } catch (openError) {
       setError(openError?.message || 'Could not open that file.');
     } finally {
@@ -278,19 +345,43 @@ export default function DesktopWorkspace({ style }) {
     }
   }
 
-  async function saveFile() {
-    if (!activeFile || activePreview || !dirty) return;
-    setLoading(true);
-    setError('');
+  async function saveFile(path = activeFile, { silent = false } = {}) {
+    const tab = fileTabsRef.current.find((entry) => entry.path === path);
+    if (!tab || tab.preview || tab.content === tab.savedContent || tab.saving) return;
+    updateFileTab(path, { saving: true, saveError: '' });
+    if (!silent) setError('');
     try {
-      await executeDesktopTool({ name: 'filesystem.write', arguments: { path: activeFile, content } });
-      setSavedContent(content);
+      await saveDesktopWorkspaceFile(path, tab.content);
+      updateFileTab(path, (current) => ({
+        savedContent: tab.content,
+        saving: false,
+        saveError: '',
+      }));
       if (showReview) await refreshReview();
     } catch (saveError) {
-      setError(saveError?.message || 'Could not save that file.');
-    } finally {
-      setLoading(false);
+      const message = saveError?.message || 'Could not save that file.';
+      updateFileTab(path, { saving: false, saveError: message });
+      setError(message);
     }
+  }
+
+  async function closeFileTab(path, event) {
+    event?.stopPropagation();
+    const tab = fileTabsRef.current.find((entry) => entry.path === path);
+    if (tab && !tab.preview && tab.content !== tab.savedContent) {
+      try {
+        await saveDesktopWorkspaceFile(path, tab.content);
+      } catch (closeError) {
+        setError(closeError?.message || 'Could not save that file before closing it.');
+        return;
+      }
+    }
+    setFileTabs((current) => {
+      const index = current.findIndex((entry) => entry.path === path);
+      const next = current.filter((entry) => entry.path !== path);
+      if (activeFile === path) setActiveFile(next[Math.min(index, next.length - 1)]?.path || '');
+      return next;
+    });
   }
 
   async function runWorkspaceAction(name, argumentsValue = {}) {
@@ -299,24 +390,23 @@ export default function DesktopWorkspace({ style }) {
     setError('');
     try {
       const output = await executeDesktopTool({ name, arguments: argumentsValue });
-      if (name === 'git.pull' || name === 'git.push' || name === 'git.commit') setTerminalOutput(output);
+      if (name === 'git.pull' || name === 'git.push' || name === 'git.commit') {
+        updateTerminal(activeTerminal.id, { output });
+      }
       if (name === 'change.undo' || name === 'change.redo') {
         await loadDirectory(directory);
         if (activeFile) {
           try {
             if (activePreview) {
               const nextPreview = await executeDesktopTool({ name: 'filesystem.preview', arguments: { path: activeFile } });
-              setActivePreview(JSON.parse(nextPreview));
+              updateFileTab(activeFile, { preview: JSON.parse(nextPreview) });
             } else {
               const nextContent = await executeDesktopTool({ name: 'filesystem.read', arguments: { path: activeFile } });
-              setContent(nextContent);
-              setSavedContent(nextContent);
+              updateFileTab(activeFile, { content: nextContent, savedContent: nextContent, diagnostics: [] });
             }
           } catch {
+            setFileTabs((current) => current.filter((tab) => tab.path !== activeFile));
             setActiveFile('');
-            setActivePreview(null);
-            setContent('');
-            setSavedContent('');
           }
         }
       }
@@ -338,28 +428,36 @@ export default function DesktopWorkspace({ style }) {
   async function runCommand(event) {
     event?.preventDefault();
     if (!command.trim() || commandRunning) return;
-    setCommandRunning(true);
+    const terminalId = activeTerminal.id;
+    const commandText = command.trim();
     setError('');
     const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}:${Math.random().toString(16).slice(2)}`;
-    terminalRequestRef.current = requestId;
-    setActiveTerminalRequestId(requestId);
-    commandHistoryRef.current = [...commandHistoryRef.current.filter((item) => item !== command.trim()), command.trim()].slice(-100);
-    commandHistoryIndexRef.current = commandHistoryRef.current.length;
-    setTerminalOutput(`$ ${command}\n`);
+    terminalRequestToSessionRef.current.set(requestId, terminalId);
+    updateTerminal(terminalId, (terminal) => {
+      const history = [...terminal.history.filter((item) => item !== commandText), commandText].slice(-100);
+      return {
+        command: '',
+        output: `$ ${commandText}\n`,
+        running: true,
+        requestId,
+        history,
+        historyIndex: history.length,
+      };
+    });
     try {
-      const [executable, ...args] = parseCommandLine(command);
+      const [executable, ...args] = parseCommandLine(commandText);
       const output = await executeDesktopTool({
         name: 'shell.run',
         arguments: { command: executable, args, cwd: directory || '.', requestId },
       });
-      setTerminalOutput((current) => current.trim() === `$ ${command}` ? `$ ${command}\n${output}` : current);
-      setCommand('');
+      updateTerminal(terminalId, (terminal) => ({
+        output: terminal.output.trim() === `$ ${commandText}` ? `$ ${commandText}\n${output}` : terminal.output,
+      }));
     } catch (commandError) {
-      setTerminalOutput(`$ ${command}\nError: ${commandError?.message || 'Command failed.'}`);
+      updateTerminal(terminalId, { output: `$ ${commandText}\nError: ${commandError?.message || 'Command failed.'}` });
     } finally {
-      terminalRequestRef.current = '';
-      setActiveTerminalRequestId('');
-      setCommandRunning(false);
+      terminalRequestToSessionRef.current.delete(requestId);
+      updateTerminal(terminalId, { requestId: '', running: false });
     }
   }
 
@@ -375,14 +473,47 @@ export default function DesktopWorkspace({ style }) {
   function handleTerminalKeyDown(event) {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') {
       event.preventDefault();
-      setTerminalOutput('');
+      updateTerminal(activeTerminal.id, { output: '' });
       return;
     }
-    if (!['ArrowUp', 'ArrowDown'].includes(event.key) || !commandHistoryRef.current.length) return;
+    if (!['ArrowUp', 'ArrowDown'].includes(event.key) || !activeTerminal.history.length) return;
     event.preventDefault();
     const delta = event.key === 'ArrowUp' ? -1 : 1;
-    commandHistoryIndexRef.current = Math.max(0, Math.min(commandHistoryRef.current.length, commandHistoryIndexRef.current + delta));
-    setCommand(commandHistoryRef.current[commandHistoryIndexRef.current] || '');
+    const historyIndex = Math.max(0, Math.min(activeTerminal.history.length, activeTerminal.historyIndex + delta));
+    updateTerminal(activeTerminal.id, {
+      historyIndex,
+      command: activeTerminal.history[historyIndex] || '',
+    });
+  }
+
+  function addTerminal() {
+    const id = `terminal-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`;
+    const nextNumber = Math.max(0, ...terminals.map((terminal) => Number(terminal.name.match(/\d+$/)?.[0] || 0))) + 1;
+    const name = `Terminal ${nextNumber}`;
+    setTerminals((current) => [...current, {
+      id,
+      name,
+      command: '',
+      output: 'Ready.',
+      running: false,
+      requestId: '',
+      history: [],
+      historyIndex: 0,
+    }]);
+    setActiveTerminalId(id);
+  }
+
+  function closeTerminal(id, event) {
+    event?.stopPropagation();
+    const terminal = terminals.find((entry) => entry.id === id);
+    if (terminal?.running) return;
+    setTerminals((current) => {
+      if (current.length === 1) return current;
+      const index = current.findIndex((entry) => entry.id === id);
+      const next = current.filter((entry) => entry.id !== id);
+      if (activeTerminalId === id) setActiveTerminalId(next[Math.min(index, next.length - 1)]?.id || next[0].id);
+      return next;
+    });
   }
 
   function openLocalPreview(value) {
@@ -499,8 +630,8 @@ export default function DesktopWorkspace({ style }) {
             </button>
           )}
           {hasCapability('workspace.index') && (
-            <button type="button" onClick={() => refreshWorkspaceIndex(true)} disabled={indexing} className="desktop-ide-button" aria-label="Refresh local code index">
-              <RefreshCw size={13} className={indexing ? 'animate-spin' : ''} /> {indexing ? 'Indexing' : indexStatus ? `${indexStatus.indexedFiles} indexed` : 'Index'}
+            <button type="button" onClick={() => refreshWorkspaceIndex(true)} disabled={indexing} className="desktop-ide-button" aria-label="Refresh local code index" title={indexStatus ? `${indexStatus.indexedChunks || 0} searchable sections · ${indexStatus.embeddingMode || 'local'} retrieval` : ''}>
+              <RefreshCw size={13} className={indexing ? 'animate-spin' : ''} /> {indexing ? 'Indexing' : indexStatus ? `${indexStatus.indexedFiles} indexed${indexStatus.embeddingMode === 'semantic' || indexStatus.embeddingMode === 'hybrid' ? ' · semantic' : ''}` : 'Index'}
             </button>
           )}
           <button type="button" onClick={() => setShowBrowser((current) => !current)} className="desktop-ide-button" aria-pressed={showBrowser} aria-label="Toggle localhost preview browser">
@@ -537,6 +668,31 @@ export default function DesktopWorkspace({ style }) {
         <div className="desktop-explorer-resizer" onMouseDown={startExplorerResize} onKeyDown={resizeExplorerWithKeyboard} role="separator" tabIndex={0} aria-orientation="vertical" aria-label="Resize file explorer" />
 
         <div className="desktop-editor-column">
+          <div className="desktop-editor-tabs" role="tablist" aria-label="Open files">
+            {fileTabs.map((tab) => {
+              const tabDirty = !tab.preview && tab.content !== tab.savedContent;
+              return (
+                <div
+                  key={tab.path}
+                  role="tab"
+                  aria-selected={activeFile === tab.path && !showBrowser}
+                  className={`desktop-tab-item ${activeFile === tab.path && !showBrowser ? 'active' : ''}`}
+                  title={tab.path}
+                >
+                  <button type="button" onClick={() => { setActiveFile(tab.path); setShowBrowser(false); }}>
+                    <span>{tab.path.split('/').pop()}</span>
+                  </button>
+                  {tab.saving ? <em>saving</em> : tabDirty ? <i aria-label="Unsaved changes">●</i> : null}
+                  <button
+                    type="button"
+                    aria-label={`Close ${tab.path}`}
+                    onClick={(event) => closeFileTab(tab.path, event)}
+                  ><X size={12} /></button>
+                </div>
+              );
+            })}
+            {!fileTabs.length && <span className="desktop-tab-empty">No files open</span>}
+          </div>
           <div className="desktop-editor-toolbar">
             <span>{showBrowser ? 'Local preview' : activePreview ? `${activePreview.kind} preview` : activeFile ? languageFor(activeFile) : 'Editor'}</span>
             {!showBrowser && activeFile && !activePreview && (
@@ -544,7 +700,10 @@ export default function DesktopWorkspace({ style }) {
                 {editorDiagnostics.length ? `${editorDiagnostics.length} syntax issue${editorDiagnostics.length === 1 ? '' : 's'}` : 'Syntax clean'}
               </span>
             )}
-            <button type="button" onClick={saveFile} disabled={Boolean(activePreview) || !dirty || loading} className="desktop-ide-button" aria-label="Save current file"><Save size={13} /> Save</button>
+            <span className="desktop-autosave-status">
+              {activeTab?.saveError ? 'Autosave failed' : activeTab?.saving ? 'Saving…' : dirty ? 'Autosave pending' : activeFile && !activePreview ? 'Autosaved' : ''}
+            </span>
+            <button type="button" onClick={() => saveFile()} disabled={Boolean(activePreview) || !dirty || activeTab?.saving} className="desktop-ide-button" aria-label="Save current file"><Save size={13} /> Save</button>
           </div>
           {showBrowser ? (
             <WorkspaceBrowser initialUrl={browserUrl} onClose={() => setShowBrowser(false)} />
@@ -552,11 +711,12 @@ export default function DesktopWorkspace({ style }) {
             <WorkspaceFilePreview file={activePreview} />
           ) : activeFile ? (
             <WorkspaceCodeEditor
+              key={activeFile}
               path={activeFile}
               value={content}
-              onChange={setContent}
+              onChange={(value) => updateFileTab(activeFile, { content: value })}
               onSave={saveFile}
-              onDiagnostics={setEditorDiagnostics}
+              onDiagnostics={(diagnostics) => updateFileTab(activeFile, { diagnostics })}
             />
           ) : (
             <div className="desktop-editor-empty"><Code2 size={28} /><p>Choose a file from Explorer to start editing.</p></div>
@@ -564,18 +724,38 @@ export default function DesktopWorkspace({ style }) {
 
           <div className="desktop-terminal" style={{ height: terminalHeight }}>
             <div className="desktop-terminal-resizer" onMouseDown={startTerminalResize} onKeyDown={resizeTerminalWithKeyboard} role="separator" tabIndex={0} aria-orientation="horizontal" aria-label="Resize terminal" />
+            <div className="desktop-terminal-tabs" role="tablist" aria-label="Terminal sessions">
+              {terminals.map((terminal) => (
+                <div
+                  key={terminal.id}
+                  role="tab"
+                  aria-selected={terminal.id === activeTerminal.id}
+                  className={`desktop-tab-item ${terminal.id === activeTerminal.id ? 'active' : ''}`}
+                >
+                  <button type="button" onClick={() => setActiveTerminalId(terminal.id)}>
+                    <TerminalSquare size={12} />
+                    <span>{terminal.name}</span>
+                  </button>
+                  {terminal.running && <i aria-label="Running">●</i>}
+                  {terminals.length > 1 && !terminal.running && (
+                    <button type="button" aria-label={`Close ${terminal.name}`} onClick={(event) => closeTerminal(terminal.id, event)}><X size={11} /></button>
+                  )}
+                </div>
+              ))}
+              <button type="button" onClick={addTerminal} aria-label="New terminal"><Plus size={13} /></button>
+            </div>
             <div className="desktop-pane-title">
               <span className="inline-flex items-center gap-2"><TerminalSquare size={14} />Terminal <em>{activeTerminalRequestId ? 'running' : 'ready'}</em></span>
               <span className="desktop-terminal-actions">
                 <span>{directory || '.'}</span>
                 {activeTerminalRequestId && <button type="button" onClick={stopCommand} aria-label="Stop running command"><Square size={12} /></button>}
-                <button type="button" onClick={() => setTerminalOutput('')} aria-label="Clear terminal"><Trash2 size={12} /></button>
+                <button type="button" onClick={() => updateTerminal(activeTerminal.id, { output: '' })} aria-label="Clear terminal"><Trash2 size={12} /></button>
               </span>
             </div>
             <pre ref={terminalOutputRef} aria-live="polite"><TerminalOutput value={terminalOutput} onOpenLocal={openLocalPreview} /></pre>
             <form onSubmit={runCommand} className="desktop-terminal-input">
               <span>$</span>
-              <input value={command} onChange={(event) => setCommand(event.target.value)} onKeyDown={handleTerminalKeyDown} placeholder="Run a command · ↑ history · Ctrl/⌘ L clear" disabled={!runtime?.workspace || commandRunning} aria-label="Terminal command" />
+              <input value={command} onChange={(event) => updateTerminal(activeTerminal.id, { command: event.target.value })} onKeyDown={handleTerminalKeyDown} placeholder="Run a command · ↑ history · Ctrl/⌘ L clear" disabled={!runtime?.workspace || commandRunning} aria-label="Terminal command" />
               <button type="submit" disabled={!command.trim() || commandRunning} aria-label="Run command"><Play size={13} /></button>
             </form>
           </div>

@@ -104,6 +104,15 @@ import {
 import { isChatTimeoutError } from '../services/chatRequestPolicy.js';
 import { buildProjectContextPrompt, buildProjectContextTurn } from '../services/projectContext.js';
 import { createThrottledRealtimeWriter } from '../services/realtimeSync.js';
+import {
+  appendDesktopWorkspaceTurn,
+  getDesktopWorkspaceMemory,
+} from '../services/desktopBridge.js';
+import { buildWorkspaceMemoryPrompt } from '../services/workspaceMemory.js';
+import {
+  buildLocalWorkspaceSummary,
+  requestWorkspaceSynthesis,
+} from '../services/workspaceSynthesis.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 const MAX_DESKTOP_AGENT_ROUNDS = 18;
@@ -1424,6 +1433,16 @@ export default function useChat() {
         });
         const agentRuntime = getAgentRuntimeCapabilities();
         const desktopWorkspaceRequest = classifyDesktopWorkspaceRequest(content, agentRuntime);
+        let workspaceMemoryBlock = '';
+        if (agentRuntime.runtime === 'desktop' && !simpleGreeting) {
+          try {
+            workspaceMemoryBlock = buildWorkspaceMemoryPrompt(await getDesktopWorkspaceMemory());
+          } catch (memoryError) {
+            diagnosticWarn('context', 'desktop workspace memory could not be loaded', {
+              error: memoryError?.message || 'Unknown workspace memory error',
+            });
+          }
+        }
         const allowedModelTools = selectModelTools({
           disableTools: simpleGreeting,
           allowWebSearch: retrievalPolicy.allowSearchTool,
@@ -1475,6 +1494,22 @@ export default function useChat() {
             });
           }
         };
+        const persistWorkspaceTurn = async (assistantText) => {
+          if (agentRuntime.runtime !== 'desktop' || !String(assistantText || '').trim()) return;
+          try {
+            await appendDesktopWorkspaceTurn({
+              conversationId: convId,
+              turnId: assistantMsgId,
+              user: content,
+              assistant: assistantText,
+              attachments: attachmentData.map((attachment) => attachment.name).filter(Boolean),
+            });
+          } catch (memoryError) {
+            diagnosticWarn('context', 'desktop workspace turn could not be saved', {
+              error: memoryError?.message || 'Unknown workspace memory error',
+            });
+          }
+        };
         const isFirstTurn = (historySource?.length || 0) === 0;
         const contextMode = decideContextMode(content, isFirstTurn);
         const adaptiveLearningEnabled = !isActingForAnotherUser && profile?.preferences?.adaptiveLearning !== false;
@@ -1504,6 +1539,7 @@ export default function useChat() {
             : '',
           buildSearchToolGuidance(retrievalPolicy),
           sharedProjectContextBlock,
+          workspaceMemoryBlock,
           responsePreferencesBlock,
           adaptiveContext,
         ]
@@ -1573,6 +1609,7 @@ export default function useChat() {
           setMessages((prev) => prev.map((message) => (
             message.id === assistantMsgId ? { ...message, content: greetingResponse } : message
           )));
+          await persistWorkspaceTurn(greetingResponse);
           return;
         }
 
@@ -1613,6 +1650,7 @@ export default function useChat() {
                   { role: 'user', content },
                   { role: 'assistant', content: decision.question },
                 ]).catch(() => {});
+                await persistWorkspaceTurn(decision.question);
                 return;
               }
               if (decision.action === 'enhance' && decision.prompt) {
@@ -2050,6 +2088,7 @@ export default function useChat() {
               { role: 'assistant', content: deterministicMediaReply },
             ]).catch(() => {});
             await persistProjectTurn(deterministicMediaReply);
+            await persistWorkspaceTurn(deterministicMediaReply);
             return;
           }
 
@@ -2410,6 +2449,7 @@ export default function useChat() {
             setThinkingContent('');
             const agentHistory = [...history];
             const executedCalls = [];
+            const desktopToolResults = [];
             const pendingDeterministicCalls = extractWorkspaceFileReferences(content).map((path) => ({
               name: AGENT_CAPABILITIES.FILE_READ,
               arguments: { path },
@@ -2440,6 +2480,7 @@ export default function useChat() {
 
                 const toolResult = await executeHostTool(currentCall);
                 executedCalls.push(currentCall.name);
+                desktopToolResults.push({ name: currentCall.name, result: String(toolResult || '') });
                 setTaskWorkflow((current) => current?.runId === runId ? {
                   ...current,
                   updatedAt: Date.now(),
@@ -2561,9 +2602,42 @@ export default function useChat() {
                 )),
               } : current);
               const completedSteps = executedCalls.length;
-              fullText = completedSteps
-                ? `I inspected the workspace locally, but the reasoning service did not finish the final synthesis: ${desktopError.message}. The completed local steps remain available in the task panel, so you can retry without reopening the project.`
-                : `I couldn't complete the workspace operation: ${desktopError.message}`;
+              if (completedSteps) {
+                try {
+                  fullText = await requestWorkspaceSynthesis({
+                    request: content,
+                    toolResults: desktopToolResults,
+                  });
+                  setTaskWorkflow((current) => current?.runId === runId ? {
+                    ...current,
+                    phase: 'completed',
+                    status: 'completed',
+                    error: '',
+                    updatedAt: Date.now(),
+                  } : current);
+                } catch (fallbackError) {
+                  diagnosticWarn('tool', 'remote workspace synthesis unavailable; using local evidence summary', {
+                    runId,
+                    primaryError: desktopError?.message || 'unknown error',
+                    fallbackError: fallbackError?.message || 'unknown error',
+                  });
+                  fullText = buildLocalWorkspaceSummary(content, desktopToolResults);
+                }
+                setTaskWorkflow((current) => current?.runId === runId ? {
+                  ...current,
+                  phase: 'completed',
+                  status: 'completed',
+                  error: '',
+                  updatedAt: Date.now(),
+                  steps: (current.steps || []).map((step) => (
+                    step.status === 'running' || step.status === 'error'
+                      ? { ...step, status: 'done', result: step.result || 'Completed locally' }
+                      : step
+                  )),
+                } : current);
+              } else {
+                fullText = 'I could not access the selected workspace. Reopen the folder and try again.';
+              }
             }
           }
 
@@ -3103,6 +3177,7 @@ export default function useChat() {
             ];
             refreshConversationTitle(convId, titleTranscript).catch(() => {});
             await persistProjectTurn(titleSource);
+            await persistWorkspaceTurn(titleSource);
           }
         }
       } catch (err) {
