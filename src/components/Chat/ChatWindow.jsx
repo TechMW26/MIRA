@@ -113,7 +113,7 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
 }
 
 export default function ChatWindow() {
-  const { currentConversationId, isGenerating, isSearching, activeProjectId } = useChatContext();
+  const { currentConversationId, isGenerating, isSearching, activeProjectId, showWorkspace } = useChatContext();
   const {
     messages,
     streamingContent,
@@ -157,6 +157,7 @@ export default function ChatWindow() {
       },
     ];
   }, [messages, streamingContent, thinkingContent, isGenerating]);
+  const latestVisibleContent = displayMessages[displayMessages.length - 1]?.content || '';
 
   const handleScroll = useCallback(() => {
     const el = scrollAreaRef.current;
@@ -171,7 +172,7 @@ export default function ChatWindow() {
       if (el) el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(frame);
-  }, [composerHeight, displayMessages.length, streamingContent, thinkingContent]);
+  }, [composerHeight, displayMessages.length, latestVisibleContent, streamingContent, thinkingContent]);
 
   const handleComposerHeightChange = useCallback((height) => {
     setComposerHeight((current) => (Math.abs(current - height) > 1 ? height : current));
@@ -320,12 +321,14 @@ export default function ChatWindow() {
   return (
     <div className="flex-1 flex min-h-0 relative">
       {/* Particle background — always rendered, scattered when messages appear */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        <ParticleGlobe 
-          iconAttractor={iconAttractor}
-          hasMessages={messages.length > 0}
-        />
-      </div>
+      {!showWorkspace && (
+        <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
+          <ParticleGlobe
+            iconAttractor={iconAttractor}
+            hasMessages={messages.length > 0}
+          />
+        </div>
+      )}
 
       {showShare && <ShareModal messages={messages} title={messages[0]?.content?.slice(0, 50)} onClose={() => setShowShare(false)} />}
 
@@ -335,7 +338,12 @@ export default function ChatWindow() {
             className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 gap-6 px-4 w-full min-w-0`}
             style={{ paddingBottom: `${Math.max(216, composerHeight + 40)}px` }}
           >
-            {showingWelcome ? (
+            {showingWelcome && showWorkspace ? (
+              <div className="desktop-workspace-chat-empty">
+                <strong>Workspace assistant</strong>
+                <span>Open a folder, then ask MIRA to inspect, edit, or test the project.</span>
+              </div>
+            ) : showingWelcome ? (
               <WelcomeScreen
                 onSend={(p, atts = []) => sendToChat(p, atts, webSearch)}
                 onIconHover={setIconAttractor}

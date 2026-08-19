@@ -16,5 +16,7 @@ contextBridge.exposeInMainWorld('miraDesktop', Object.freeze({
   capabilities,
   chooseWorkspace: () => ipcRenderer.invoke('mira:choose-workspace'),
   getRuntimeInfo: () => ipcRenderer.invoke('mira:runtime-info'),
+  getPermissionStatus: () => ipcRenderer.invoke('mira:permission-status'),
+  requestPermission: (permission) => ipcRenderer.invoke('mira:request-permission', permission),
   invokeTool: (call) => ipcRenderer.invoke('mira:invoke-tool', call),
 }));

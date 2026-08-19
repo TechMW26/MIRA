@@ -4,7 +4,9 @@ import {
   chooseDesktopWorkspace,
   executeDesktopTool,
   getDesktopBridge,
+  getDesktopPermissionStatus,
   getDesktopRuntimeInfo,
+  requestDesktopPermission,
 } from './desktopBridge.js';
 
 test('desktop bridge is absent in the web runtime', async () => {
@@ -17,7 +19,30 @@ test('desktop bridge is absent in the web runtime', async () => {
 
 test('desktop workspace helpers remain unavailable on the web', async () => {
   assert.equal(await getDesktopRuntimeInfo({ window: {} }), null);
+  assert.equal(await getDesktopPermissionStatus({ window: {} }), null);
   await assert.rejects(chooseDesktopWorkspace({ window: {} }), /desktop application/i);
+  await assert.rejects(requestDesktopPermission('accessibility', { window: {} }), /desktop application/i);
+});
+
+test('desktop permission requests use only the allowlisted native bridge', async () => {
+  const calls = [];
+  const scope = {
+    window: {
+      miraDesktop: {
+        invokeTool: async () => ({ ok: true }),
+        getPermissionStatus: async () => ({ platform: 'darwin', accessibility: false }),
+        requestPermission: async (permission) => {
+          calls.push(permission);
+          return { platform: 'darwin', accessibility: true };
+        },
+      },
+    },
+  };
+
+  assert.equal((await getDesktopPermissionStatus(scope)).accessibility, false);
+  assert.equal((await requestDesktopPermission('accessibility', scope)).accessibility, true);
+  assert.deepEqual(calls, ['accessibility']);
+  await assert.rejects(requestDesktopPermission('camera', scope), /unsupported/i);
 });
 
 test('desktop tool calls cross only the trusted preload bridge', async () => {

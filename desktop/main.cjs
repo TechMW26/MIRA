@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, systemPreferences } = require('electron');
 const { execFile } = require('node:child_process');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -21,6 +21,40 @@ const DESKTOP_CAPABILITIES = Object.freeze([
 ]);
 
 let workspaceRoot = '';
+
+function getSystemPermissionStatus() {
+  if (process.platform === 'darwin') {
+    return {
+      platform: 'darwin',
+      accessibility: systemPreferences.isTrustedAccessibilityClient(false),
+      fullDiskAccess: 'managed-in-system-settings',
+    };
+  }
+  return {
+    platform: process.platform,
+    accessibility: 'not-required',
+    fullDiskAccess: process.platform === 'win32' ? 'managed-in-system-settings' : 'not-required',
+  };
+}
+
+async function requestSystemPermission(permission) {
+  if (permission === 'accessibility') {
+    if (process.platform !== 'darwin') return getSystemPermissionStatus();
+    systemPreferences.isTrustedAccessibilityClient(true);
+    return getSystemPermissionStatus();
+  }
+
+  if (permission === 'full-disk-access') {
+    if (process.platform === 'darwin') {
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles');
+    } else if (process.platform === 'win32') {
+      await shell.openExternal('ms-settings:privacy-broadfilesystemaccess');
+    }
+    return getSystemPermissionStatus();
+  }
+
+  throw new Error('Unsupported system permission request.');
+}
 
 function safeEnvironment() {
   const allowed = {};
@@ -249,6 +283,10 @@ app.whenReady().then(() => {
     capabilities: DESKTOP_CAPABILITIES,
     workspace: workspaceRoot || null,
   }));
+  ipcMain.handle('mira:permission-status', () => getSystemPermissionStatus());
+  ipcMain.handle('mira:request-permission', async (_event, permission) => (
+    requestSystemPermission(String(permission || ''))
+  ));
   ipcMain.handle('mira:choose-workspace', async () => {
     workspaceRoot = '';
     return { workspace: await ensureWorkspace(window) };

@@ -20,6 +20,22 @@ export async function chooseDesktopWorkspace(scope = globalThis) {
   return await bridge.chooseWorkspace();
 }
 
+export async function getDesktopPermissionStatus(scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.getPermissionStatus !== 'function') return null;
+  return await bridge.getPermissionStatus();
+}
+
+export async function requestDesktopPermission(permission, scope = globalThis) {
+  const allowed = new Set(['accessibility', 'full-disk-access']);
+  if (!allowed.has(permission)) throw new Error('Unsupported desktop permission request.');
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.requestPermission !== 'function') {
+    throw new Error('System permissions are available only in the MIRA desktop application.');
+  }
+  return await bridge.requestPermission(permission);
+}
+
 export async function executeDesktopTool(call, scope = globalThis) {
   const name = String(call?.name || '');
   if (!DESKTOP_AGENT_CAPABILITIES.includes(name)) {

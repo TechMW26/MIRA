@@ -98,6 +98,7 @@ import {
 } from '../services/agentTask.js';
 import { isChatTimeoutError } from '../services/chatRequestPolicy.js';
 import { buildProjectContextPrompt, buildProjectContextTurn } from '../services/projectContext.js';
+import { createThrottledRealtimeWriter } from '../services/realtimeSync.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 
@@ -906,7 +907,14 @@ export default function useChat() {
     if (abortRef.current) return;
     const visibleValue = humanizeAssistantText(value);
     pendingStreamRef.current = visibleValue;
-    if (activeResponseRef.current) activeResponseRef.current.content = visibleValue;
+    if (activeResponseRef.current) {
+      activeResponseRef.current.content = visibleValue;
+      activeResponseRef.current.syncWriter?.push({
+        content: visibleValue,
+        isStreaming: true,
+        streamUpdatedAt: Date.now(),
+      });
+    }
     if (streamRafRef.current != null) return;
     const schedule = typeof requestAnimationFrame === 'function'
       ? requestAnimationFrame
@@ -948,6 +956,7 @@ export default function useChat() {
     if (!active?.conversationId || !active?.messageId) return;
 
     const partialContent = String(active.content || '').trim();
+    await active.syncWriter?.finish();
     if (partialContent) {
       setMessages((prev) => prev.map((message) => (
         message.id === active.messageId
@@ -957,6 +966,7 @@ export default function useChat() {
       await updateMessage(active.conversationId, active.messageId, {
         content: partialContent,
         interrupted: true,
+        isStreaming: false,
       });
       return;
     }
@@ -1450,6 +1460,8 @@ export default function useChat() {
           type: 'text',
           timestamp: assistantTimestamp,
           generatedBy: messageAuthor,
+          isStreaming: Boolean(activeProjectId),
+          ...(activeProjectId ? { streamStartedAt: assistantTimestamp } : {}),
         });
         if (replaceMessageId) {
           [, assistantMsgId] = await Promise.all([
@@ -1487,11 +1499,20 @@ export default function useChat() {
           conversationId: convId,
           messageId: assistantMsgId,
           content: '',
+          syncWriter: activeProjectId
+            ? createThrottledRealtimeWriter(
+              (payload) => updateMessage(convId, assistantMsgId, payload),
+              {
+                intervalMs: 250,
+                onError: (error) => console.warn('Project answer live sync failed:', error?.message || error),
+              },
+            )
+            : null,
         };
 
         if (simpleGreeting) {
           const greetingResponse = buildGreetingResponse(content);
-          await updateMessage(convId, assistantMsgId, { content: greetingResponse });
+          await updateMessage(convId, assistantMsgId, { content: greetingResponse, isStreaming: false });
           setMessages((prev) => prev.map((message) => (
             message.id === assistantMsgId ? { ...message, content: greetingResponse } : message
           )));
@@ -1523,6 +1544,7 @@ export default function useChat() {
                 await updateMessage(convId, assistantMsgId, {
                   content: decision.question,
                   isClarification: true,
+                  isStreaming: false,
                 });
                 if (isNewChat) {
                   generateSmartTitle(content, decision.question).then((title) => {
@@ -1957,6 +1979,7 @@ export default function useChat() {
             if (!isCurrentRun()) return;
             await updateMessage(convId, assistantMsgId, {
               content: deterministicMediaReply,
+              isStreaming: false,
               ...(mediaForMessage ? { media: mediaForMessage } : {}),
             });
             if (isNewChat) {
@@ -2796,6 +2819,7 @@ export default function useChat() {
               titleSource = documentContent;
               const documentUpdate = {
                 content: documentContent,
+                isStreaming: false,
                 ...(finalThinkingText ? { thinkingContent: finalThinkingText } : {}),
                 exportFormat: requestedFormat,
                 exportStatus: 'ready',
@@ -2807,6 +2831,7 @@ export default function useChat() {
                 documentUpdate.exportStatus = 'failed';
                 documentUpdate.exportError = exportErr?.message || 'Export failed';
               }
+              await activeResponseRef.current?.syncWriter?.finish();
               await updateMessage(convId, assistantMsgId, documentUpdate);
               setMessages((prev) => prev.map((msg) => (
                 msg.id === assistantMsgId ? { ...msg, ...documentUpdate } : msg
@@ -2814,10 +2839,12 @@ export default function useChat() {
             } else {
               const assistantUpdate = {
                 content: fullText,
+                isStreaming: false,
                 ...(finalThinkingText ? { thinkingContent: finalThinkingText } : {}),
                 ...(mediaForMessage ? { media: mediaForMessage } : {}),
                 ...(generatedMediaForMessage ? { generatedMedia: generatedMediaForMessage } : {}),
               };
+              await activeResponseRef.current?.syncWriter?.finish();
               await updateMessage(convId, assistantMsgId, assistantUpdate);
               setMessages((prev) => prev.map((msg) => (
                 msg.id === assistantMsgId ? { ...msg, ...assistantUpdate } : msg
@@ -2847,8 +2874,10 @@ export default function useChat() {
               ? { ...msg, content: failureText, isStreaming: false }
               : msg
           )));
+          await activeResponseRef.current?.syncWriter?.finish();
           updateMessage(convId, assistantMsgId, {
             content: failureText,
+            isStreaming: false,
           }).catch((persistErr) => {
             console.warn('Failed to persist terminal chat error:', persistErr?.message);
           });
@@ -2860,7 +2889,15 @@ export default function useChat() {
           });
         }
         if (generationRunRef.current !== runId) return;
-        if (activeResponseRef.current?.runId === runId) activeResponseRef.current = null;
+        if (activeResponseRef.current?.runId === runId) {
+          await activeResponseRef.current.syncWriter?.finish();
+          await updateMessage(
+            activeResponseRef.current.conversationId,
+            activeResponseRef.current.messageId,
+            { isStreaming: false, streamCompletedAt: Date.now() },
+          ).catch(() => {});
+          activeResponseRef.current = null;
+        }
         cancelPendingStreamFlushes();
         setIsGenerating(false);
         setIsSearching(false);

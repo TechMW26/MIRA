@@ -2,7 +2,7 @@ export default function MiraLogo({ size = 32, className = '', wordmark = false }
   return (
     <span className={`inline-flex items-center gap-3 ${className}`} aria-label="MIRA">
       <img
-        src="/mira-logo.png"
+        src="/icons/icon-512.png"
         width={size}
         height={size}
         alt=""

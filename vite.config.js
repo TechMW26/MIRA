@@ -10,7 +10,6 @@ export default defineConfig({
       registerType: 'autoUpdate',
       injectRegister: 'auto',
       includeAssets: [
-        'mira-logo.png',
         'icons/icon-192.png',
         'icons/icon-512.png',
         'icons/icon-512-maskable.png',
