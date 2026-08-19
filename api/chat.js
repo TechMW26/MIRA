@@ -30,6 +30,7 @@ const ALLOWED_TOOL_NAMES = new Set([
   'workspace.index',
   'workspace.search',
   'workspace.validate',
+  'workspace.start',
   'shell.run',
   'test.run',
   'git.status',

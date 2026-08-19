@@ -132,6 +132,7 @@ const DESKTOP_TOOL_NAMES = new Set([
   AGENT_CAPABILITIES.WORKSPACE_INDEX,
   AGENT_CAPABILITIES.WORKSPACE_SEARCH,
   AGENT_CAPABILITIES.WORKSPACE_VALIDATE,
+  AGENT_CAPABILITIES.WORKSPACE_START,
   AGENT_CAPABILITIES.SHELL_RUN,
   AGENT_CAPABILITIES.TEST_RUN,
   AGENT_CAPABILITIES.GIT_STATUS,
@@ -155,6 +156,7 @@ function desktopToolTitle(call = {}) {
     [AGENT_CAPABILITIES.WORKSPACE_INDEX]: 'Build local code index',
     [AGENT_CAPABILITIES.WORKSPACE_SEARCH]: 'Search local code index',
     [AGENT_CAPABILITIES.WORKSPACE_VALIDATE]: 'Run regression suite',
+    [AGENT_CAPABILITIES.WORKSPACE_START]: 'Start development server',
     [AGENT_CAPABILITIES.FILE_WRITE]: path ? `Apply ${path}` : 'Apply file change',
     [AGENT_CAPABILITIES.FILE_REPLACE]: path ? `Patch ${path}` : 'Patch source file',
     [AGENT_CAPABILITIES.SHELL_RUN]: 'Run workspace command',
@@ -1544,7 +1546,7 @@ export default function useChat() {
         const runtimeContextBlock = [
           modalityBoundary,
           desktopWorkspaceRequest.active
-            ? `DESKTOP WORKSPACE REQUEST: Work against the open workspace now. Begin by inspecting the actual files, continue calling the provided filesystem, command, test, change-review, and Git tools until the request is complete, then report only confirmed results. ${desktopWorkspaceRequest.mutation ? 'This is an implementation request: do not stop at recommendations; apply the requested changes, inspect the resulting diff, run regression validation, and fix failures before answering.' : 'This is an inspection request: read representative source and configuration files before summarizing.'} ${desktopWorkspaceRequest.execution ? 'The user requested execution: run the relevant command in the in-app terminal and use its actual result.' : ''}`
+            ? `DESKTOP WORKSPACE REQUEST: Work against the open workspace now. Begin by inspecting the actual files, continue calling the provided filesystem, command, test, change-review, and Git tools until the request is complete, then report only confirmed results. ${desktopWorkspaceRequest.mutation ? 'This is an implementation request: do not stop at recommendations; apply the requested changes, inspect the resulting diff, run regression validation, and fix failures before answering.' : 'This is an inspection request: read representative source and configuration files before summarizing.'} ${desktopWorkspaceRequest.execution ? 'The user requested execution: run the relevant command in the in-app terminal and use its actual result.' : ''} ${desktopWorkspaceRequest.serverStart ? 'This is a server-start request: launch the detected development server as a persistent terminal process; do not substitute a project summary.' : ''}`
             : '',
           buildSearchToolGuidance(retrievalPolicy),
           sharedProjectContextBlock,
@@ -2470,6 +2472,9 @@ export default function useChat() {
               { name: AGENT_CAPABILITIES.WORKSPACE_INDEX, arguments: {} },
               { name: AGENT_CAPABILITIES.WORKSPACE_SEARCH, arguments: { query: content, limit: 8 } },
             );
+            if (desktopWorkspaceRequest.serverStart) {
+              pendingDeterministicCalls.push({ name: AGENT_CAPABILITIES.WORKSPACE_START, arguments: {} });
+            }
             let currentCall = finalToolCall;
             let desktopAnswer = '';
             try {
@@ -2655,7 +2660,10 @@ export default function useChat() {
               } : current);
               const completedSteps = executedCalls.length;
               if (completedSteps) {
-                try {
+                if (desktopWorkspaceRequest.serverStart
+                  && successfulCalls.includes(AGENT_CAPABILITIES.WORKSPACE_START)) {
+                  fullText = 'The development server is running in the in-app terminal. Its live output and local preview link will appear there.';
+                } else try {
                   fullText = await requestWorkspaceSynthesis({
                     request: content,
                     toolResults: desktopToolResults,

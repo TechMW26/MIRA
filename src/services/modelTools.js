@@ -74,10 +74,12 @@ export const MODEL_TOOLS = [
     limit: { type: 'number', description: 'Maximum matching code chunks, from 1 to 20.' },
   }, ['query']),
   functionTool(AGENT_CAPABILITIES.WORKSPACE_VALIDATE, 'Detect and run the workspace regression suite in the in-app terminal. Use after code changes and fix failures before finishing.', {}, []),
+  functionTool(AGENT_CAPABILITIES.WORKSPACE_START, 'Detect and launch the workspace development server as a persistent process in the in-app terminal.', {}, []),
   functionTool(AGENT_CAPABILITIES.SHELL_RUN, 'Run one executable inside the open desktop workspace after user approval. Pass arguments separately; shell syntax is not supported.', {
     command: { type: 'string', description: 'Executable name, such as npm, node, git, or python.' },
     args: { type: 'array', items: { type: 'string' }, description: 'Arguments passed directly to the executable.' },
     cwd: { type: 'string', description: 'Optional workspace-relative working directory.' },
+    background: { type: 'boolean', description: 'Keep a server, watcher, or other long-running process alive in the terminal while the agent continues.' },
   }, ['command']),
   functionTool(AGENT_CAPABILITIES.TEST_RUN, 'Run a project test command inside the open desktop workspace and return its exit status and output.', {
     command: { type: 'string', description: 'Test executable, usually npm, pnpm, yarn, pytest, cargo, or go.' },

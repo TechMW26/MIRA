@@ -22,6 +22,7 @@ export function desktopGoalNeedsMoreWork({
     AGENT_CAPABILITIES.SHELL_RUN,
     AGENT_CAPABILITIES.TEST_RUN,
     AGENT_CAPABILITIES.WORKSPACE_VALIDATE,
+    AGENT_CAPABILITIES.WORKSPACE_START,
   ].includes(name));
   return {
     inspection: !inspected,

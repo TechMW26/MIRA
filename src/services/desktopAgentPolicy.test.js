@@ -34,3 +34,10 @@ test('keeps the desktop agent working until inspection, mutation, execution and 
     validation: false,
   });
 });
+
+test('counts a launched workspace server as completed execution', () => {
+  assert.equal(desktopGoalNeedsMoreWork({
+    request: { execution: true },
+    successfulCalls: ['filesystem.read', 'workspace.start'],
+  }).execution, false);
+});

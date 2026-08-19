@@ -11,7 +11,7 @@ const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 40 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 const PRODUCTION_APP_URL = 'https://www.itsmira.cloud';
-const PERMISSION_BRIDGE_VERSION = 7;
+const PERMISSION_BRIDGE_VERSION = 8;
 const WORKSPACE_MEMORY_DIRECTORY = '.mira';
 const WORKSPACE_INSTRUCTIONS_FILE = 'MIRA.md';
 const WORKSPACE_HISTORY_FILE = 'history.jsonl';
@@ -26,6 +26,7 @@ const DESKTOP_CAPABILITIES = Object.freeze([
   'workspace.index',
   'workspace.search',
   'workspace.validate',
+  'workspace.start',
   'shell.run',
   'shell.cancel',
   'test.run',
@@ -678,6 +679,7 @@ async function runExecutableStreaming({
   onOutput,
   requestId = '',
   environmentOverrides = {},
+  retainRecentOutput = false,
 }) {
   const executable = normalizeExecutable(command);
   const normalizedArgs = normalizeProcessArgs(args);
@@ -696,7 +698,7 @@ async function runExecutableStreaming({
     const finish = (error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (requestId) runningProcesses.delete(requestId);
       if (error) reject(error);
       else resolve(output.trim() || 'Command completed successfully.');
@@ -707,14 +709,17 @@ async function runExecutableStreaming({
       output += text;
       onOutput?.(text);
       if (Buffer.byteLength(output, 'utf8') > MAX_OUTPUT_BYTES) {
-        child.kill();
-        finish(new Error('Command output exceeded the 2 MB safety limit.'));
+        if (retainRecentOutput) output = output.slice(-Math.floor(MAX_OUTPUT_BYTES / 2));
+        else {
+          child.kill();
+          finish(new Error('Command output exceeded the 2 MB safety limit.'));
+        }
       }
     };
-    const timer = setTimeout(() => {
+    const timer = timeout > 0 ? setTimeout(() => {
       child.kill();
       finish(new Error(`Command timed out after ${Math.round(timeout / 1000)} seconds.`));
-    }, timeout);
+    }, timeout) : null;
     child.stdout.on('data', append);
     child.stderr.on('data', append);
     child.once('error', (error) => {
@@ -774,6 +779,87 @@ async function detectWorkspaceValidationCommands(root) {
     commands.push({ command: './gradlew', args: ['test'], label: 'Gradle tests' });
   }
   return commands.slice(0, 8);
+}
+
+async function detectWorkspaceStartCommand(root) {
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+    const scripts = new Set(Object.keys(manifest.scripts || {}));
+    const script = ['dev', 'start', 'serve', 'preview'].find((candidate) => scripts.has(candidate));
+    if (script) {
+      const packageManager = await pathExists(path.join(root, 'pnpm-lock.yaml')) ? 'pnpm'
+        : await pathExists(path.join(root, 'yarn.lock')) ? 'yarn'
+          : 'npm';
+      return { command: packageManager, args: ['run', script], label: `${packageManager} ${script}` };
+    }
+  } catch {}
+  if (await pathExists(path.join(root, 'manage.py'))) {
+    return { command: 'python3', args: ['manage.py', 'runserver'], label: 'Django development server' };
+  }
+  if (await pathExists(path.join(root, 'Cargo.toml'))) {
+    return { command: 'cargo', args: ['run'], label: 'Cargo application' };
+  }
+  if (await pathExists(path.join(root, 'go.mod'))) {
+    return { command: 'go', args: ['run', '.'], label: 'Go application' };
+  }
+  throw new Error('No development-server command was detected. Add a dev, start, serve, or preview script, or run an explicit terminal command.');
+}
+
+async function launchBackgroundCommand(window, {
+  command,
+  args,
+  cwd,
+  requestId,
+  environmentOverrides = {},
+}) {
+  const preview = commandPreview(command, args);
+  window.webContents.send('mira:terminal-output', {
+    requestId,
+    chunk: `$ ${preview}\n`,
+    reset: false,
+    agent: true,
+  });
+  let exited = false;
+  let earlyFailure = null;
+  const processPromise = runExecutableStreaming({
+    command,
+    args,
+    cwd,
+    requestId,
+    timeout: 0,
+    environmentOverrides,
+    retainRecentOutput: true,
+    onOutput: (chunk) => window.webContents.send('mira:terminal-output', {
+      requestId,
+      chunk,
+      agent: true,
+    }),
+  });
+  processPromise.then(() => {
+    exited = true;
+  }, (error) => {
+    exited = true;
+    earlyFailure = error;
+    window.webContents.send('mira:terminal-output', {
+      requestId,
+      chunk: `\nProcess stopped: ${error?.message || 'Unknown command error.'}\n`,
+      agent: true,
+    });
+  }).finally(() => {
+    window.webContents.send('mira:terminal-output', {
+      requestId,
+      chunk: '',
+      agent: true,
+      done: true,
+    });
+  });
+  await Promise.race([
+    processPromise.then(() => undefined, () => undefined),
+    new Promise((resolve) => setTimeout(resolve, 750)),
+  ]);
+  if (earlyFailure) throw earlyFailure;
+  if (exited) throw new Error(`The server command exited before becoming ready: ${preview}`);
+  return JSON.stringify({ started: true, requestId, command: preview, cwd: path.relative(workspaceRoot, cwd) || '.' });
 }
 
 async function readOptionalFile(target) {
@@ -959,6 +1045,30 @@ async function invokeDesktopTool(window, call = {}) {
     return JSON.stringify({ query, ...workspaceIndexSummary(index), results });
   }
 
+  if (name === 'workspace.start') {
+    const cwd = await ensureWorkspace(window);
+    const start = await detectWorkspaceStartCommand(cwd);
+    const preview = commandPreview(start.command, start.args);
+    if (!workspaceCommandTrust) {
+      const approval = await approve(
+        window,
+        'Start workspace server?',
+        `${preview}\n\nWorking directory: .`,
+        false,
+        true,
+      );
+      if (approval === 'workspace-session') workspaceCommandTrust = true;
+    }
+    const requestId = `agent:server:${Date.now()}`;
+    return await launchBackgroundCommand(window, {
+      command: start.command,
+      args: start.args,
+      cwd,
+      requestId,
+      environmentOverrides: { BROWSER: 'none', CI: '0' },
+    });
+  }
+
   if (name === 'workspace.validate') {
     const cwd = await ensureWorkspace(window);
     const commands = await detectWorkspaceValidationCommands(cwd);
@@ -1125,6 +1235,15 @@ async function invokeDesktopTool(window, call = {}) {
       ? String(args.requestId)
       : '';
     const requestId = requestedId || `agent:${Date.now()}`;
+    if (name === 'shell.run' && args.background) {
+      return await launchBackgroundCommand(window, {
+        command,
+        args: processArgs,
+        cwd,
+        requestId,
+        environmentOverrides: { BROWSER: 'none', CI: '0' },
+      });
+    }
     if (!requestedId) {
       window.webContents.send('mira:terminal-output', { requestId, chunk: `$ ${preview}\n`, reset: false, agent: true });
     }

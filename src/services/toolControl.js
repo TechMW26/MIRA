@@ -17,6 +17,7 @@ export const TOOL_NAMES = Object.freeze({
   WORKSPACE_INDEX: 'workspace.index',
   WORKSPACE_SEARCH: 'workspace.search',
   WORKSPACE_VALIDATE: 'workspace.validate',
+  WORKSPACE_START: 'workspace.start',
   SHELL_RUN: 'shell.run',
   SHELL_CANCEL: 'shell.cancel',
   TEST_RUN: 'test.run',
