@@ -64,7 +64,7 @@ export const DESKTOP_AGENT_CAPABILITIES = Object.freeze([
 ]);
 
 const WORKSPACE_REQUEST_PATTERN = /\b(codebase|repository|repo|workspace|project files?|source code|code structure|implementation|implement|edit|modify|refactor|optim(?:ize|ise)|debug|fix|build|test|lint|run|terminal|git|github|commit|push|pull|branch|dependency|dependencies|package\.json)\b/i;
-const WORKSPACE_MUTATION_PATTERN = /\b(implement|edit|modify|change|refactor|optim(?:ize|ise)|debug|fix|build|create|add|remove|rename|upgrade|migrate|install|write|apply|commit|push|pull)\b/i;
+const WORKSPACE_MUTATION_PATTERN = /\b(implement|edit|modify|change|refactor|refine|improve|polish|cleanup|clean up|optim(?:ize|ise|ization|isation)|debug|fix|repair|build|create|add|remove|rename|upgrade|migrate|install|write|apply|commit|push|pull)\b/i;
 const WORKSPACE_EXECUTION_PATTERN = /\b(run|execute|test|lint|typecheck|check|build|compile|install|start|serve|deploy)\b/i;
 const WORKSPACE_SERVER_START_PATTERN = /\b(?:run|start|launch|serve|boot)\b[^.\n]{0,40}\b(?:server|app|application|project|site|website|dev(?:elopment)?)\b|\b(?:server|app|application|project|site|website)\b[^.\n]{0,40}\b(?:run|start|launch|serve|boot)\b/i;
 const WORKSPACE_FILE_REFERENCE_PATTERN = /(?:^|[\s("'`])((?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+\.(?:cjs|mjs|js|jsx|ts|tsx|json|css|scss|html|md|py|rb|go|rs|java|kt|swift|php|vue|svelte|yml|yaml|toml|xml|sql|sh|ps1))(?![\w./-])/gi;

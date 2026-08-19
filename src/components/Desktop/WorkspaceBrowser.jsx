@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { ExternalLink, RefreshCw, X } from 'lucide-react';
 import { normalizeLocalPreviewUrl } from '../../services/localPreview.js';
 
-const EDGE_PARTICLE_COUNT = 52;
-const CENTER_PARTICLE_COUNT = 10;
+const EDGE_PARTICLE_COUNT = 64;
+const CENTER_PARTICLE_COUNT = 8;
 
 const ambientParticles = Array.from({ length: EDGE_PARTICLE_COUNT + CENTER_PARTICLE_COUNT }, (_, index) => {
   const onEdge = index < EDGE_PARTICLE_COUNT;
@@ -20,7 +20,9 @@ const ambientParticles = Array.from({ length: EDGE_PARTICLE_COUNT + CENTER_PARTI
     if (side === 3) { x = inset; y = along; }
   }
 
-  const opacity = onEdge ? 0.18 + (index % 5) * 0.055 : 0.08 + (index % 3) * 0.025;
+  const opacity = onEdge ? 0.28 + (index % 5) * 0.065 : 0.08 + (index % 3) * 0.025;
+  const driftX = ((index * 11) % 31) - 15;
+  const driftY = ((index * 7) % 27) - 13;
   return {
     '--browser-particle-x': `${x}%`,
     '--browser-particle-y': `${y}%`,
@@ -28,14 +30,18 @@ const ambientParticles = Array.from({ length: EDGE_PARTICLE_COUNT + CENTER_PARTI
     '--browser-particle-opacity': opacity,
     '--browser-particle-min-opacity': opacity * 0.62,
     '--browser-particle-end-opacity': opacity * 0.78,
-    '--browser-particle-delay': `${-((index * 0.47) % 8)}s`,
-    '--browser-particle-duration': `${7 + (index % 6) * 1.3}s`,
-    '--browser-particle-drift-x': `${((index * 11) % 9) - 4}px`,
-    '--browser-particle-drift-y': `${((index * 7) % 9) - 4}px`,
+    '--browser-particle-delay': `${-((index * 0.47) % 7)}s`,
+    '--browser-particle-duration': `${4.8 + (index % 6) * 0.8}s`,
+    '--browser-particle-drift-x': `${driftX}px`,
+    '--browser-particle-drift-y': `${driftY}px`,
+    '--browser-particle-drift-x-reverse': `${driftX * -0.38}px`,
+    '--browser-particle-drift-y-reverse': `${driftY * 0.35}px`,
+    '--browser-particle-drift-x-mid': `${driftX * 0.62}px`,
+    '--browser-particle-drift-y-mid': `${driftY * -0.45}px`,
   };
 });
 
-export default function WorkspaceBrowser({ initialUrl, onClose }) {
+export default function WorkspaceBrowser({ initialUrl, onClose, agentActive = false }) {
   const [input, setInput] = useState(initialUrl || 'http://localhost:3000');
   const [url, setUrl] = useState(normalizeLocalPreviewUrl(initialUrl) || '');
   const [frameKey, setFrameKey] = useState(0);
@@ -94,12 +100,14 @@ export default function WorkspaceBrowser({ initialUrl, onClose }) {
         ) : (
           <div className="desktop-preview-empty">Start a local development server, then open its terminal link here.</div>
         )}
-        <div className="desktop-browser-ambient" aria-hidden="true">
-          <span className="desktop-browser-edge-tint" />
-          {ambientParticles.map((style, index) => (
-            <span key={index} className="desktop-browser-particle" style={style} />
-          ))}
-        </div>
+        {agentActive && (
+          <div className="desktop-browser-ambient" aria-hidden="true">
+            <span className="desktop-browser-edge-tint" />
+            {ambientParticles.map((style, index) => (
+              <span key={index} className="desktop-browser-particle" style={style} />
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );

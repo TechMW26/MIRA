@@ -72,6 +72,8 @@ test('desktop codebase requests are routed to the workspace agent with mutation 
     execution: true,
     serverStart: false,
   });
+  assert.equal(classifyDesktopWorkspaceRequest('Refine the codebase and make it work in real', runtime).mutation, true);
+  assert.equal(classifyDesktopWorkspaceRequest('Improve repository performance', runtime).mutation, true);
   assert.equal(classifyDesktopWorkspaceRequest('Run the lint command', runtime).execution, true);
   assert.equal(classifyDesktopWorkspaceRequest('Run the server please', runtime).serverStart, true);
   assert.equal(classifyDesktopWorkspaceRequest('Explain photosynthesis', runtime).active, false);

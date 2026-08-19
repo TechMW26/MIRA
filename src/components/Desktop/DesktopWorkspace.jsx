@@ -10,7 +10,6 @@ import {
   Github,
   Globe2,
   History,
-  Play,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -85,6 +84,7 @@ export default function DesktopWorkspace({ style }) {
   const terminalRequestToSessionRef = useRef(new Map());
   const activeTerminalIdRef = useRef(activeTerminalId);
   const terminalOutputRef = useRef(null);
+  const terminalInputRef = useRef(null);
   const [permissionStatus, setPermissionStatus] = useState(null);
   const [showPermissions, setShowPermissions] = useState(false);
   const [permissionBusy, setPermissionBusy] = useState('');
@@ -101,7 +101,10 @@ export default function DesktopWorkspace({ style }) {
   const [reviewComment, setReviewComment] = useState('');
   const [aiReviewBusy, setAiReviewBusy] = useState('');
   const [showBrowser, setShowBrowser] = useState(false);
+  const [browserTabOpen, setBrowserTabOpen] = useState(false);
+  const [browserAgentActive, setBrowserAgentActive] = useState(false);
   const [browserUrl, setBrowserUrl] = useState('');
+  const agentBrowserRequestsRef = useRef(new Set());
   const saveFileRef = useRef(() => {});
   const fileTabsRef = useRef(fileTabs);
   const activeTab = fileTabs.find((tab) => tab.path === activeFile) || null;
@@ -221,8 +224,14 @@ export default function DesktopWorkspace({ style }) {
       }));
       if (done && requestId) terminalRequestToSessionRef.current.delete(requestId);
       const localUrl = extractTerminalLinks(chunk).map(normalizeLocalPreviewUrl).find(Boolean);
+      if (agent && requestId) {
+        if (done) agentBrowserRequestsRef.current.delete(requestId);
+        else if (localUrl) agentBrowserRequestsRef.current.add(requestId);
+        setBrowserAgentActive(agentBrowserRequestsRef.current.size > 0);
+      }
       if (localUrl) {
         setBrowserUrl(localUrl);
+        setBrowserTabOpen(true);
         setShowBrowser(true);
       }
     });
@@ -237,6 +246,10 @@ export default function DesktopWorkspace({ style }) {
     });
     return () => cancelAnimationFrame(frame);
   }, [terminalHeight, terminalOutput]);
+
+  useEffect(() => {
+    terminalInputRef.current?.focus();
+  }, [activeTerminalId]);
 
   useEffect(() => subscribeDesktopSaveShortcut(() => {
     saveFileRef.current?.();
@@ -288,6 +301,10 @@ export default function DesktopWorkspace({ style }) {
       setRuntime((current) => ({ ...(current || {}), workspace: next.workspace }));
       setActiveFile('');
       setFileTabs([]);
+      setBrowserTabOpen(false);
+      setShowBrowser(false);
+      setBrowserAgentActive(false);
+      agentBrowserRequestsRef.current.clear();
       await loadDirectory('');
     } catch (chooseError) {
       if (!/No workspace was selected/i.test(chooseError?.message || '')) {
@@ -431,13 +448,35 @@ export default function DesktopWorkspace({ style }) {
     const terminalId = activeTerminal.id;
     const commandText = command.trim();
     setError('');
+    const normalizedCommand = commandText.toLowerCase();
+    if (normalizedCommand === 'clear' || normalizedCommand === 'cls') {
+      updateTerminal(terminalId, (terminal) => {
+        const history = [...terminal.history.filter((item) => item !== commandText), commandText].slice(-100);
+        return { command: '', output: '', history, historyIndex: history.length };
+      });
+      return;
+    }
+    if (normalizedCommand === 'history') {
+      updateTerminal(terminalId, (terminal) => {
+        const history = [...terminal.history.filter((item) => item !== commandText), commandText].slice(-100);
+        const prefix = terminal.output ? `${terminal.output.replace(/\s+$/, '')}\n` : '';
+        return {
+          command: '',
+          output: `${prefix}$ ${commandText}\n${history.map((item, index) => `${index + 1}  ${item}`).join('\n')}\n`,
+          history,
+          historyIndex: history.length,
+        };
+      });
+      return;
+    }
     const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}:${Math.random().toString(16).slice(2)}`;
     terminalRequestToSessionRef.current.set(requestId, terminalId);
     updateTerminal(terminalId, (terminal) => {
       const history = [...terminal.history.filter((item) => item !== commandText), commandText].slice(-100);
+      const prefix = terminal.output ? `${terminal.output.replace(/\s+$/, '')}\n` : '';
       return {
         command: '',
-        output: `$ ${commandText}\n`,
+        output: `${prefix}$ ${commandText}\n`,
         running: true,
         requestId,
         history,
@@ -451,10 +490,12 @@ export default function DesktopWorkspace({ style }) {
         arguments: { command: executable, args, cwd: directory || '.', requestId },
       });
       updateTerminal(terminalId, (terminal) => ({
-        output: terminal.output.trim() === `$ ${commandText}` ? `$ ${commandText}\n${output}` : terminal.output,
+        output: terminal.output.endsWith(`$ ${commandText}\n`) ? `${terminal.output}${output}` : terminal.output,
       }));
     } catch (commandError) {
-      updateTerminal(terminalId, { output: `$ ${commandText}\nError: ${commandError?.message || 'Command failed.'}` });
+      updateTerminal(terminalId, (terminal) => ({
+        output: `${terminal.output}${terminal.output.endsWith('\n') ? '' : '\n'}Error: ${commandError?.message || 'Command failed.'}\n`,
+      }));
     } finally {
       terminalRequestToSessionRef.current.delete(requestId);
       updateTerminal(terminalId, { requestId: '', running: false });
@@ -471,9 +512,37 @@ export default function DesktopWorkspace({ style }) {
   }
 
   function handleTerminalKeyDown(event) {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') {
+    const shortcut = event.metaKey || event.ctrlKey;
+    const key = event.key.toLowerCase();
+    if (shortcut && (key === 'l' || key === 'k')) {
       event.preventDefault();
       updateTerminal(activeTerminal.id, { output: '' });
+      return;
+    }
+    if (shortcut && key === 'c' && commandRunning && !globalThis.getSelection?.()?.toString()) {
+      event.preventDefault();
+      stopCommand();
+      return;
+    }
+    if (shortcut && key === 'c' && command && !globalThis.getSelection?.()?.toString()) {
+      event.preventDefault();
+      updateTerminal(activeTerminal.id, (terminal) => ({
+        command: '',
+        output: `${terminal.output}${terminal.output.endsWith('\n') || !terminal.output ? '' : '\n'}$ ${terminal.command}^C\n`,
+      }));
+      return;
+    }
+    if (shortcut && key === 'u') {
+      event.preventDefault();
+      updateTerminal(activeTerminal.id, { command: '' });
+      return;
+    }
+    if (shortcut && key === 'r' && activeTerminal.history.length) {
+      event.preventDefault();
+      updateTerminal(activeTerminal.id, {
+        historyIndex: Math.max(0, activeTerminal.history.length - 1),
+        command: activeTerminal.history.at(-1) || '',
+      });
       return;
     }
     if (!['ArrowUp', 'ArrowDown'].includes(event.key) || !activeTerminal.history.length) return;
@@ -520,7 +589,19 @@ export default function DesktopWorkspace({ style }) {
     const next = normalizeLocalPreviewUrl(value);
     if (!next) return;
     setBrowserUrl(next);
+    setBrowserTabOpen(true);
     setShowBrowser(true);
+  }
+
+  function openBrowserTab() {
+    setBrowserTabOpen(true);
+    setShowBrowser(true);
+  }
+
+  function closeBrowserTab(event) {
+    event?.stopPropagation();
+    setBrowserTabOpen(false);
+    setShowBrowser(false);
   }
 
   async function generateGitText(task) {
@@ -621,7 +702,9 @@ export default function DesktopWorkspace({ style }) {
         <div className="flex min-w-0 items-center gap-2">
           <Code2 size={16} />
           <strong className="truncate">{workspaceName}</strong>
-          {activeFile && <span className="truncate text-[11px] opacity-60">/ {activeFile}{dirty ? ' •' : ''}</span>}
+          {showBrowser
+            ? <span className="truncate text-[11px] opacity-60">/ Local preview</span>
+            : activeFile && <span className="truncate text-[11px] opacity-60">/ {activeFile}{dirty ? ' •' : ''}</span>}
         </div>
         <div className="flex items-center gap-2">
           {hasCapability('git.info') && (
@@ -634,7 +717,7 @@ export default function DesktopWorkspace({ style }) {
               <RefreshCw size={13} className={indexing ? 'animate-spin' : ''} /> {indexing ? 'Indexing' : indexStatus ? `${indexStatus.indexedFiles} indexed${indexStatus.embeddingMode === 'semantic' || indexStatus.embeddingMode === 'hybrid' ? ' · semantic' : ''}` : 'Index'}
             </button>
           )}
-          <button type="button" onClick={() => setShowBrowser((current) => !current)} className="desktop-ide-button" aria-pressed={showBrowser} aria-label="Toggle localhost preview browser">
+          <button type="button" onClick={openBrowserTab} className="desktop-ide-button" aria-pressed={showBrowser} aria-label="Open localhost preview browser tab">
             <Globe2 size={13} /> Preview
           </button>
           <button type="button" onClick={() => setShowPermissions(true)} className="desktop-ide-button" aria-label="Configure system access">
@@ -691,7 +774,22 @@ export default function DesktopWorkspace({ style }) {
                 </div>
               );
             })}
-            {!fileTabs.length && <span className="desktop-tab-empty">No files open</span>}
+            {browserTabOpen && (
+              <div
+                role="tab"
+                aria-selected={showBrowser}
+                className={`desktop-tab-item desktop-browser-tab ${showBrowser ? 'active' : ''}`}
+                title={browserUrl || 'Local preview'}
+              >
+                <button type="button" onClick={() => setShowBrowser(true)}>
+                  <Globe2 size={12} />
+                  <span>Local Preview</span>
+                </button>
+                {browserAgentActive && <em className="desktop-browser-agent-badge">Agent</em>}
+                <button type="button" aria-label="Close local preview" onClick={closeBrowserTab}><X size={12} /></button>
+              </div>
+            )}
+            {!fileTabs.length && !browserTabOpen && <span className="desktop-tab-empty">No files or previews open</span>}
           </div>
           <div className="desktop-editor-toolbar">
             <span>{showBrowser ? 'Local preview' : activePreview ? `${activePreview.kind} preview` : activeFile ? languageFor(activeFile) : 'Editor'}</span>
@@ -706,7 +804,7 @@ export default function DesktopWorkspace({ style }) {
             <button type="button" onClick={() => saveFile()} disabled={Boolean(activePreview) || !dirty || activeTab?.saving} className="desktop-ide-button" aria-label="Save current file"><Save size={13} /> Save</button>
           </div>
           {showBrowser ? (
-            <WorkspaceBrowser initialUrl={browserUrl} onClose={() => setShowBrowser(false)} />
+            <WorkspaceBrowser initialUrl={browserUrl} onClose={closeBrowserTab} agentActive={browserAgentActive} />
           ) : activePreview ? (
             <WorkspaceFilePreview file={activePreview} />
           ) : activeFile ? (
@@ -752,12 +850,31 @@ export default function DesktopWorkspace({ style }) {
                 <button type="button" onClick={() => updateTerminal(activeTerminal.id, { output: '' })} aria-label="Clear terminal"><Trash2 size={12} /></button>
               </span>
             </div>
-            <pre ref={terminalOutputRef} aria-live="polite"><TerminalOutput value={terminalOutput} onOpenLocal={openLocalPreview} /></pre>
-            <form onSubmit={runCommand} className="desktop-terminal-input">
-              <span>$</span>
-              <input value={command} onChange={(event) => updateTerminal(activeTerminal.id, { command: event.target.value })} onKeyDown={handleTerminalKeyDown} placeholder="Run a command · ↑ history · Ctrl/⌘ L clear" disabled={!runtime?.workspace || commandRunning} aria-label="Terminal command" />
-              <button type="submit" disabled={!command.trim() || commandRunning} aria-label="Run command"><Play size={13} /></button>
-            </form>
+            <div
+              ref={terminalOutputRef}
+              className="desktop-terminal-screen"
+              onMouseDown={(event) => {
+                if (!event.target.closest('a, input, button')) terminalInputRef.current?.focus();
+              }}
+            >
+              <pre aria-live="polite"><TerminalOutput value={terminalOutput} onOpenLocal={openLocalPreview} /></pre>
+              <form onSubmit={runCommand} className="desktop-terminal-prompt">
+                <span aria-hidden="true">$</span>
+                <input
+                  ref={terminalInputRef}
+                  value={command}
+                  onChange={(event) => updateTerminal(activeTerminal.id, { command: event.target.value })}
+                  onKeyDown={handleTerminalKeyDown}
+                  placeholder={commandRunning ? 'Command running · Ctrl/⌘ C to stop' : 'Type a command…'}
+                  disabled={!runtime?.workspace}
+                  readOnly={commandRunning}
+                  autoCapitalize="none"
+                  autoComplete="off"
+                  spellCheck="false"
+                  aria-label="Terminal prompt"
+                />
+              </form>
+            </div>
           </div>
         </div>
       </div>

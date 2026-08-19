@@ -114,8 +114,10 @@ import {
   requestWorkspaceSynthesis,
 } from '../services/workspaceSynthesis.js';
 import {
+  buildDesktopWorkflowSteps,
   buildRegressionValidationCalls,
   desktopGoalNeedsMoreWork,
+  desktopWorkflowStageForTool,
 } from '../services/desktopAgentPolicy.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
@@ -2148,13 +2150,15 @@ export default function useChat() {
           });
           const cached = cacheKey ? getCachedResponse(cacheKey) : null;
           if (desktopWorkspaceRequest.active && isCurrentRun()) {
+            const workflowSteps = buildDesktopWorkflowSteps(content, desktopWorkspaceRequest);
             setTaskWorkflow({
               id: `${convId || 'conversation'}:${runId}`,
               runId,
               goal: content.trim(),
               phase: 'executing',
               status: 'running',
-              steps: [],
+              currentStep: 0,
+              steps: workflowSteps,
               startedAt: Date.now(),
               updatedAt: Date.now(),
             });
@@ -2481,18 +2485,18 @@ export default function useChat() {
               for (let round = 0; round < MAX_DESKTOP_AGENT_ROUNDS && currentCall; round += 1) {
                 if (!isCurrentRun()) return;
                 const stepTitle = desktopToolTitle(currentCall);
-                const stepId = `desktop:${round}:${currentCall.name}`;
+                const workflowStage = desktopWorkflowStageForTool(currentCall.name);
                 setTaskWorkflow((current) => current?.runId === runId ? {
                   ...current,
                   phase: 'executing',
                   status: 'running',
                   updatedAt: Date.now(),
-                  steps: [
-                    ...(current.steps || []).map((step) => (
-                      step.status === 'running' ? { ...step, status: 'done' } : step
-                    )),
-                    { id: stepId, title: stepTitle, instruction: '', status: 'running', result: '' },
-                  ],
+                  currentStep: Math.max(0, (current.steps || []).findIndex((step) => step.stage === workflowStage)),
+                  steps: (current.steps || []).map((step) => (
+                    step.stage === workflowStage
+                      ? { ...step, instruction: stepTitle, status: 'running', result: '' }
+                      : step.status === 'running' ? { ...step, status: 'done' } : step
+                  )),
                 } : current);
 
                 const completedCall = currentCall;
@@ -2515,7 +2519,7 @@ export default function useChat() {
                   ...current,
                   updatedAt: Date.now(),
                   steps: (current.steps || []).map((step) => (
-                    step.id === stepId
+                    step.stage === workflowStage
                       ? { ...step, status: toolError ? 'error' : 'done', result: toolError ? toolResult : 'Completed' }
                       : step
                   )),
@@ -2644,7 +2648,9 @@ export default function useChat() {
                 status: 'completed',
                 updatedAt: Date.now(),
                 steps: (current.steps || []).map((step) => (
-                  step.status === 'running' ? { ...step, status: 'done' } : step
+                  step.status === 'running' || step.status === 'pending'
+                    ? { ...step, status: 'done' }
+                    : step
                 )),
               } : current);
             } catch (desktopError) {
@@ -2690,7 +2696,7 @@ export default function useChat() {
                   error: '',
                   updatedAt: Date.now(),
                   steps: (current.steps || []).map((step) => (
-                    step.status === 'running' || step.status === 'error'
+                    step.status === 'running' || step.status === 'pending' || step.status === 'error'
                       ? { ...step, status: 'done', result: step.result || 'Completed locally' }
                       : step
                   )),
