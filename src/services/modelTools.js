@@ -60,6 +60,13 @@ export const MODEL_TOOLS = [
     query: { type: 'string', description: 'Literal text or regular expression to search for.' },
     glob: { type: 'string', description: 'Optional ripgrep file glob such as *.js.' },
   }, ['query']),
+  functionTool(AGENT_CAPABILITIES.WORKSPACE_INDEX, 'Build or refresh the local vector index for the open code workspace before broad codebase analysis.', {
+    force: { type: 'boolean', description: 'Rebuild the index even if a current in-memory index exists.' },
+  }, []),
+  functionTool(AGENT_CAPABILITIES.WORKSPACE_SEARCH, 'Semantically search the local vector index for code relevant to a goal or question.', {
+    query: { type: 'string', description: 'The implementation concept, behavior, error, or code question to find.' },
+    limit: { type: 'number', description: 'Maximum matching code chunks, from 1 to 20.' },
+  }, ['query']),
   functionTool(AGENT_CAPABILITIES.SHELL_RUN, 'Run one executable inside the open desktop workspace after user approval. Pass arguments separately; shell syntax is not supported.', {
     command: { type: 'string', description: 'Executable name, such as npm, node, git, or python.' },
     args: { type: 'array', items: { type: 'string' }, description: 'Arguments passed directly to the executable.' },
@@ -74,6 +81,18 @@ export const MODEL_TOOLS = [
   functionTool(AGENT_CAPABILITIES.GIT_DIFF, 'Read a Git diff from the open desktop workspace.', {
     staged: { type: 'boolean', description: 'Return the staged diff when true.' },
   }, []),
+  functionTool(AGENT_CAPABILITIES.GIT_INFO, 'Read the current branch, upstream, origin URL, and working-tree status.', {}, []),
+  functionTool(AGENT_CAPABILITIES.GIT_PULL, 'Pull the tracked Git branch with fast-forward-only safety after user approval.', {}, []),
+  functionTool(AGENT_CAPABILITIES.GIT_PUSH, 'Push the current Git branch through the configured credential helper after user approval.', {}, []),
+  functionTool(AGENT_CAPABILITIES.GIT_COMMIT, 'Stage all current workspace changes and create a Git commit after user approval.', {
+    message: { type: 'string', description: 'Concise one-line commit message.' },
+  }, ['message']),
+  functionTool(AGENT_CAPABILITIES.GIT_REMOTE_SET, 'Connect the workspace to a GitHub repository by setting its origin URL after user approval.', {
+    url: { type: 'string', description: 'GitHub HTTPS or SSH repository URL.' },
+  }, ['url']),
+  functionTool(AGENT_CAPABILITIES.CHANGE_LIST, 'List file changes applied by MIRA in this desktop session.', {}, []),
+  functionTool(AGENT_CAPABILITIES.CHANGE_UNDO, 'Undo the most recent file change applied by MIRA after user approval.', {}, []),
+  functionTool(AGENT_CAPABILITIES.CHANGE_REDO, 'Redo the most recently undone MIRA file change after user approval.', {}, []),
 ];
 
 export function selectModelTools({

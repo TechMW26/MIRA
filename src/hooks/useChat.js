@@ -89,7 +89,12 @@ import {
   isSimpleGreeting,
 } from '../services/contextPolicy.js';
 import { selectModelTools } from '../services/modelTools.js';
-import { getAgentRuntimeCapabilities } from '../services/agentCapabilities.js';
+import {
+  AGENT_CAPABILITIES,
+  classifyDesktopWorkspaceRequest,
+  extractWorkspaceFileReferences,
+  getAgentRuntimeCapabilities,
+} from '../services/agentCapabilities.js';
 import {
   agentTaskRequiresResearch,
   extractAgentTaskFallback,
@@ -101,6 +106,53 @@ import { buildProjectContextPrompt, buildProjectContextTurn } from '../services/
 import { createThrottledRealtimeWriter } from '../services/realtimeSync.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
+const MAX_DESKTOP_AGENT_ROUNDS = 18;
+const MAX_DESKTOP_TOOL_RESULT_CHARS = 30000;
+
+const DESKTOP_TOOL_NAMES = new Set([
+  AGENT_CAPABILITIES.FILE_READ,
+  AGENT_CAPABILITIES.FILE_LIST,
+  AGENT_CAPABILITIES.FILE_WRITE,
+  AGENT_CAPABILITIES.FILE_SEARCH,
+  AGENT_CAPABILITIES.WORKSPACE_INDEX,
+  AGENT_CAPABILITIES.WORKSPACE_SEARCH,
+  AGENT_CAPABILITIES.SHELL_RUN,
+  AGENT_CAPABILITIES.TEST_RUN,
+  AGENT_CAPABILITIES.GIT_STATUS,
+  AGENT_CAPABILITIES.GIT_DIFF,
+  AGENT_CAPABILITIES.GIT_INFO,
+  AGENT_CAPABILITIES.GIT_PULL,
+  AGENT_CAPABILITIES.GIT_PUSH,
+  AGENT_CAPABILITIES.GIT_COMMIT,
+  AGENT_CAPABILITIES.GIT_REMOTE_SET,
+  AGENT_CAPABILITIES.CHANGE_LIST,
+  AGENT_CAPABILITIES.CHANGE_UNDO,
+  AGENT_CAPABILITIES.CHANGE_REDO,
+]);
+
+function desktopToolTitle(call = {}) {
+  const path = String(call.arguments?.path || '').trim();
+  return ({
+    [AGENT_CAPABILITIES.FILE_LIST]: path ? `Inspect ${path}` : 'Inspect workspace',
+    [AGENT_CAPABILITIES.FILE_READ]: path ? `Read ${path}` : 'Read source file',
+    [AGENT_CAPABILITIES.FILE_SEARCH]: 'Search source code',
+    [AGENT_CAPABILITIES.WORKSPACE_INDEX]: 'Build local code index',
+    [AGENT_CAPABILITIES.WORKSPACE_SEARCH]: 'Search local code index',
+    [AGENT_CAPABILITIES.FILE_WRITE]: path ? `Apply ${path}` : 'Apply file change',
+    [AGENT_CAPABILITIES.SHELL_RUN]: 'Run workspace command',
+    [AGENT_CAPABILITIES.TEST_RUN]: 'Run validation',
+    [AGENT_CAPABILITIES.GIT_STATUS]: 'Check working tree',
+    [AGENT_CAPABILITIES.GIT_DIFF]: 'Review applied diff',
+    [AGENT_CAPABILITIES.GIT_INFO]: 'Inspect Git connection',
+    [AGENT_CAPABILITIES.GIT_PULL]: 'Pull Git changes',
+    [AGENT_CAPABILITIES.GIT_PUSH]: 'Push Git changes',
+    [AGENT_CAPABILITIES.GIT_COMMIT]: 'Commit workspace changes',
+    [AGENT_CAPABILITIES.GIT_REMOTE_SET]: 'Connect GitHub repository',
+    [AGENT_CAPABILITIES.CHANGE_LIST]: 'Review MIRA changes',
+    [AGENT_CAPABILITIES.CHANGE_UNDO]: 'Undo MIRA change',
+    [AGENT_CAPABILITIES.CHANGE_REDO]: 'Redo MIRA change',
+  })[call.name] || 'Work on workspace';
+}
 
 function stripAllControlText(text = '') {
   return stripToolControl(stripBrowserControl(stripWebSearchControl(text)));
@@ -1370,12 +1422,14 @@ export default function useChat() {
           contextualMedia: shouldAttachContextualMedia || Boolean(textResearchMediaScope),
           hasAuthoritativeContext,
         });
+        const agentRuntime = getAgentRuntimeCapabilities();
+        const desktopWorkspaceRequest = classifyDesktopWorkspaceRequest(content, agentRuntime);
         const allowedModelTools = selectModelTools({
           disableTools: simpleGreeting,
           allowWebSearch: retrievalPolicy.allowSearchTool,
           allowImageGeneration: wantsImageGeneration,
           allowVideoGeneration: wantsVideoGeneration,
-          runtime: getAgentRuntimeCapabilities(),
+          runtime: agentRuntime,
         });
 
         const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: simpleGreeting });
@@ -1445,6 +1499,9 @@ export default function useChat() {
         // model. Only small request-specific context crosses the network.
         const runtimeContextBlock = [
           modalityBoundary,
+          desktopWorkspaceRequest.active
+            ? `DESKTOP WORKSPACE REQUEST: Work against the open workspace now. Begin by inspecting the actual files, continue calling the provided filesystem, command, test, change-review, and Git tools until the request is complete, then report only confirmed results. ${desktopWorkspaceRequest.mutation ? 'This is an implementation request: do not stop at recommendations; apply the requested changes, inspect the resulting diff, and run relevant validation.' : 'This is an inspection request: read representative source and configuration files before summarizing.'}`
+            : '',
           buildSearchToolGuidance(retrievalPolicy),
           sharedProjectContextBlock,
           responsePreferencesBlock,
@@ -2006,7 +2063,7 @@ export default function useChat() {
             || needsFreshInformation(content)
           ));
 
-          const autoTaskCall = shouldRunAgentTask({
+          const autoTaskCall = !desktopWorkspaceRequest.active && shouldRunAgentTask({
             text: content,
             complexity: engineResult.classification?.complexity || 'low',
             requiresResearch: taskRequiresResearch,
@@ -2029,7 +2086,10 @@ export default function useChat() {
           let requestAborted = false;
           let requestedWebSearchQuery = '';
           let requestedBrowserInspection = null;
-          let requestedToolCall = websiteInspectionRequest || autoTaskCall;
+          let requestedToolCall = websiteInspectionRequest
+            || (desktopWorkspaceRequest.active
+              ? { name: AGENT_CAPABILITIES.FILE_LIST, arguments: { path: '' } }
+              : autoTaskCall);
 
           // ── Response cache check ──
           const cacheKey = makeCacheKey({
@@ -2037,7 +2097,18 @@ export default function useChat() {
             images,
           });
           const cached = cacheKey ? getCachedResponse(cacheKey) : null;
-          if (autoTaskCall && isCurrentRun()) {
+          if (desktopWorkspaceRequest.active && isCurrentRun()) {
+            setTaskWorkflow({
+              id: `${convId || 'conversation'}:${runId}`,
+              runId,
+              goal: content.trim(),
+              phase: 'executing',
+              status: 'running',
+              steps: [],
+              startedAt: Date.now(),
+              updatedAt: Date.now(),
+            });
+          } else if (autoTaskCall && isCurrentRun()) {
             setTaskWorkflow({
               id: `${convId || 'conversation'}:${runId}`,
               runId,
@@ -2053,6 +2124,12 @@ export default function useChat() {
               complexity: engineResult.classification?.complexity || 'low',
               research: taskRequiresResearch,
             });
+          } else if (desktopWorkspaceRequest.active) {
+            // Desktop work starts with deterministic local inspection. Waiting
+            // for the model before the first tool made a busy server prevent
+            // the agent from touching the workspace at all.
+            fullText = '';
+            setIsSearching(false);
           } else if (cached && isCurrentRun()) {
             fullText = humanizeAssistantText(cached);
             setStreamingContent(fullText);
@@ -2327,6 +2404,169 @@ export default function useChat() {
             }
           }
 
+          if (finalToolCall && DESKTOP_TOOL_NAMES.has(finalToolCall.name) && !requestFailed && isCurrentRun()) {
+            cancelPendingStreamFlushes();
+            setStreamingContent('');
+            setThinkingContent('');
+            const agentHistory = [...history];
+            const executedCalls = [];
+            const pendingDeterministicCalls = extractWorkspaceFileReferences(content).map((path) => ({
+              name: AGENT_CAPABILITIES.FILE_READ,
+              arguments: { path },
+            }));
+            pendingDeterministicCalls.unshift(
+              { name: AGENT_CAPABILITIES.WORKSPACE_INDEX, arguments: {} },
+              { name: AGENT_CAPABILITIES.WORKSPACE_SEARCH, arguments: { query: content, limit: 8 } },
+            );
+            let currentCall = finalToolCall;
+            let desktopAnswer = '';
+            try {
+              for (let round = 0; round < MAX_DESKTOP_AGENT_ROUNDS && currentCall; round += 1) {
+                if (!isCurrentRun()) return;
+                const stepTitle = desktopToolTitle(currentCall);
+                const stepId = `desktop:${round}:${currentCall.name}`;
+                setTaskWorkflow((current) => current?.runId === runId ? {
+                  ...current,
+                  phase: 'executing',
+                  status: 'running',
+                  updatedAt: Date.now(),
+                  steps: [
+                    ...(current.steps || []).map((step) => (
+                      step.status === 'running' ? { ...step, status: 'done' } : step
+                    )),
+                    { id: stepId, title: stepTitle, instruction: '', status: 'running', result: '' },
+                  ],
+                } : current);
+
+                const toolResult = await executeHostTool(currentCall);
+                executedCalls.push(currentCall.name);
+                setTaskWorkflow((current) => current?.runId === runId ? {
+                  ...current,
+                  updatedAt: Date.now(),
+                  steps: (current.steps || []).map((step) => (
+                    step.id === stepId ? { ...step, status: 'done', result: 'Completed' } : step
+                  )),
+                } : current);
+
+                agentHistory.push({
+                  role: 'user',
+                  content: [
+                    `=== DESKTOP TOOL RESULT: ${currentCall.name} ===`,
+                    String(toolResult || '').slice(0, MAX_DESKTOP_TOOL_RESULT_CHARS),
+                    '=== END DESKTOP TOOL RESULT ===',
+                    'Continue the original workspace request now. Call the next required desktop tool, or give the final answer only when the requested work and validation are complete.',
+                  ].join('\n'),
+                });
+
+                if (currentCall.name === AGENT_CAPABILITIES.FILE_WRITE
+                  && !executedCalls.includes(AGENT_CAPABILITIES.GIT_DIFF)) {
+                  pendingDeterministicCalls.push({ name: AGENT_CAPABILITIES.GIT_DIFF, arguments: {} });
+                }
+
+                if (pendingDeterministicCalls.length) {
+                  currentCall = pendingDeterministicCalls.shift();
+                  desktopAnswer = '';
+                  continue;
+                }
+
+                currentCall = null;
+                for (let reminder = 0; reminder < 2; reminder += 1) {
+                  let nextToolCall = null;
+                  let continuation = '';
+                  let continuationError = null;
+                  for (let attempt = 0; attempt < 3; attempt += 1) {
+                    nextToolCall = null;
+                    continuation = '';
+                    try {
+                      await sendChatMessage(
+                        agentHistory,
+                        (accumulated) => {
+                          if (!isCurrentRun()) return;
+                          nextToolCall = extractToolCall(accumulated) || nextToolCall;
+                          continuation = stripAllControlText(accumulated);
+                          flushStreamingContent(continuation);
+                        },
+                        images,
+                        {
+                          think: shouldThink,
+                          tools: responseModelTools,
+                          onThinking: (accumulated) => {
+                            if (!isCurrentRun()) return;
+                            finalThinkingText = stripAllControlText(accumulated);
+                            flushThinkingContent(finalThinkingText);
+                          },
+                        },
+                      );
+                      continuationError = null;
+                      break;
+                    } catch (error) {
+                      continuationError = error;
+                      if (error?.name === 'AbortError' || attempt === 2 || !isCurrentRun()) throw error;
+                      diagnosticWarn('tool', 'desktop agent continuation failed; retrying', {
+                        runId,
+                        attempt: attempt + 1,
+                        error: error?.message || 'unknown error',
+                      });
+                      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+                    }
+                  }
+                  if (continuationError) throw continuationError;
+
+                  if (nextToolCall && DESKTOP_TOOL_NAMES.has(nextToolCall.name)) {
+                    currentCall = nextToolCall;
+                    desktopAnswer = '';
+                    break;
+                  }
+
+                  const inspectedSource = executedCalls.some((name) => (
+                    name === AGENT_CAPABILITIES.FILE_READ
+                    || name === AGENT_CAPABILITIES.FILE_SEARCH
+                    || name === AGENT_CAPABILITIES.WORKSPACE_SEARCH
+                  ));
+                  const appliedChange = executedCalls.includes(AGENT_CAPABILITIES.FILE_WRITE);
+                  const incompleteInspection = !inspectedSource;
+                  const incompleteMutation = desktopWorkspaceRequest.mutation && !appliedChange;
+                  desktopAnswer = continuation.trim();
+                  if ((!incompleteInspection && !incompleteMutation) || reminder === 1) break;
+                  agentHistory.push({
+                    role: 'user',
+                    content: incompleteMutation
+                      ? 'You have not implemented the requested change yet. Continue with the appropriate filesystem inspection and write tools. Do not answer with intentions or recommendations.'
+                      : 'You have only listed filenames. Read or search representative source and configuration files before answering. Respond with the next desktop tool call.',
+                  });
+                }
+              }
+
+              if (currentCall) throw new Error('The desktop agent reached its operation limit before finishing.');
+              if (!desktopAnswer.trim()) throw new Error('The desktop agent completed tools but returned no final response.');
+              fullText = desktopAnswer;
+              setTaskWorkflow((current) => current?.runId === runId ? {
+                ...current,
+                phase: 'completed',
+                status: 'completed',
+                updatedAt: Date.now(),
+                steps: (current.steps || []).map((step) => (
+                  step.status === 'running' ? { ...step, status: 'done' } : step
+                )),
+              } : current);
+            } catch (desktopError) {
+              setTaskWorkflow((current) => current?.runId === runId ? {
+                ...current,
+                phase: 'error',
+                status: 'error',
+                error: desktopError.message,
+                updatedAt: Date.now(),
+                steps: (current.steps || []).map((step) => (
+                  step.status === 'running' ? { ...step, status: 'error', result: desktopError.message } : step
+                )),
+              } : current);
+              const completedSteps = executedCalls.length;
+              fullText = completedSteps
+                ? `I inspected the workspace locally, but the reasoning service did not finish the final synthesis: ${desktopError.message}. The completed local steps remain available in the task panel, so you can retry without reopening the project.`
+                : `I couldn't complete the workspace operation: ${desktopError.message}`;
+            }
+          }
+
           const inlineToolNames = new Set([
             TOOL_NAMES.CALCULATOR,
             TOOL_NAMES.WEATHER,
@@ -2341,7 +2581,7 @@ export default function useChat() {
             TOOL_NAMES.GIT_STATUS,
             TOOL_NAMES.GIT_DIFF,
           ]);
-          if (finalToolCall && inlineToolNames.has(finalToolCall.name) && !requestFailed && isCurrentRun()) {
+          if (finalToolCall && !DESKTOP_TOOL_NAMES.has(finalToolCall.name) && inlineToolNames.has(finalToolCall.name) && !requestFailed && isCurrentRun()) {
             cancelPendingStreamFlushes();
             setStreamingContent('');
             setThinkingContent('');

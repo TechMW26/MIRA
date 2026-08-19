@@ -12,10 +12,24 @@ export const AGENT_CAPABILITIES = Object.freeze({
   FILE_LIST: 'filesystem.list',
   FILE_WRITE: 'filesystem.write',
   FILE_SEARCH: 'filesystem.search',
+  FILE_PREVIEW: 'filesystem.preview',
+  WORKSPACE_INDEX: 'workspace.index',
+  WORKSPACE_SEARCH: 'workspace.search',
   SHELL_RUN: 'shell.run',
+  SHELL_CANCEL: 'shell.cancel',
   TEST_RUN: 'test.run',
   GIT_STATUS: 'git.status',
   GIT_DIFF: 'git.diff',
+  GIT_INFO: 'git.info',
+  GIT_PULL: 'git.pull',
+  GIT_PUSH: 'git.push',
+  GIT_COMMIT: 'git.commit',
+  GIT_REMOTE_SET: 'git.remote.set',
+  CHANGE_LIST: 'change.list',
+  CHANGE_UNDO: 'change.undo',
+  CHANGE_REDO: 'change.redo',
+  APPROVAL_STATUS: 'approval.status',
+  APPROVAL_SET: 'approval.set',
 });
 
 export const DESKTOP_AGENT_CAPABILITIES = Object.freeze([
@@ -23,11 +37,50 @@ export const DESKTOP_AGENT_CAPABILITIES = Object.freeze([
   AGENT_CAPABILITIES.FILE_LIST,
   AGENT_CAPABILITIES.FILE_WRITE,
   AGENT_CAPABILITIES.FILE_SEARCH,
+  AGENT_CAPABILITIES.FILE_PREVIEW,
+  AGENT_CAPABILITIES.WORKSPACE_INDEX,
+  AGENT_CAPABILITIES.WORKSPACE_SEARCH,
   AGENT_CAPABILITIES.SHELL_RUN,
+  AGENT_CAPABILITIES.SHELL_CANCEL,
   AGENT_CAPABILITIES.TEST_RUN,
   AGENT_CAPABILITIES.GIT_STATUS,
   AGENT_CAPABILITIES.GIT_DIFF,
+  AGENT_CAPABILITIES.GIT_INFO,
+  AGENT_CAPABILITIES.GIT_PULL,
+  AGENT_CAPABILITIES.GIT_PUSH,
+  AGENT_CAPABILITIES.GIT_COMMIT,
+  AGENT_CAPABILITIES.GIT_REMOTE_SET,
+  AGENT_CAPABILITIES.CHANGE_LIST,
+  AGENT_CAPABILITIES.CHANGE_UNDO,
+  AGENT_CAPABILITIES.CHANGE_REDO,
+  AGENT_CAPABILITIES.APPROVAL_STATUS,
+  AGENT_CAPABILITIES.APPROVAL_SET,
 ]);
+
+const WORKSPACE_REQUEST_PATTERN = /\b(codebase|repository|repo|workspace|project files?|source code|code structure|implementation|implement|edit|modify|refactor|optim(?:ize|ise)|debug|fix|build|test|lint|run|terminal|git|github|commit|push|pull|branch|dependency|dependencies|package\.json)\b/i;
+const WORKSPACE_MUTATION_PATTERN = /\b(implement|edit|modify|change|refactor|optim(?:ize|ise)|debug|fix|build|create|add|remove|rename|upgrade|migrate|install|write|apply|commit|push|pull)\b/i;
+const WORKSPACE_FILE_REFERENCE_PATTERN = /(?:^|[\s("'`])((?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+\.(?:cjs|mjs|js|jsx|ts|tsx|json|css|scss|html|md|py|rb|go|rs|java|kt|swift|php|vue|svelte|yml|yaml|toml|xml|sql|sh|ps1))(?![\w./-])/gi;
+
+export function extractWorkspaceFileReferences(text = '') {
+  const references = [];
+  for (const match of String(text || '').matchAll(WORKSPACE_FILE_REFERENCE_PATTERN)) {
+    const value = String(match[1] || '').replace(/\\/g, '/');
+    if (value && !references.includes(value)) references.push(value);
+    if (references.length >= 12) break;
+  }
+  return references;
+}
+
+export function classifyDesktopWorkspaceRequest(text = '', runtime = getAgentRuntimeCapabilities()) {
+  const value = String(text || '').trim();
+  const desktop = runtime?.runtime === 'desktop'
+    && hasAgentCapability(runtime, AGENT_CAPABILITIES.FILE_LIST);
+  const active = Boolean(desktop && value && WORKSPACE_REQUEST_PATTERN.test(value));
+  return Object.freeze({
+    active,
+    mutation: active && WORKSPACE_MUTATION_PATTERN.test(value),
+  });
+}
 
 const WEB_CAPABILITIES = Object.freeze([
   AGENT_CAPABILITIES.WEB_SEARCH,

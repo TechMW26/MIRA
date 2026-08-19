@@ -33,7 +33,7 @@ function getStoredFontSize() {
   catch { return '14px'; }
 }
 
-function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children }) {
+function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, workspaceMode = false, onClose, children }) {
   const storageKey = `mira_panel_w_${id}`;
   const [width, setWidth] = useState(() => {
     const stored = Number(localStorage.getItem(storageKey));
@@ -57,6 +57,15 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
     localStorage.setItem(storageKey, String(width));
   }, [storageKey, width]);
 
+  useEffect(() => {
+    if (!onClose) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
   function onHandleMouseDown(e) {
     e.preventDefault();
     const startX = e.clientX;
@@ -79,6 +88,37 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
+  }
+
+  if (workspaceMode) {
+    return (
+      <div
+        className="absolute top-0 right-0 bottom-0 z-[60] flex animate-fade-in desktop-right-panel"
+        style={{ width: `min(100%, ${width + 14}px)` }}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          className="desktop-right-panel-close"
+          aria-label="Close side panel"
+          title="Close panel (Esc)"
+        >
+          <span aria-hidden="true">×</span>
+        </button>
+        <div
+          onMouseDown={onHandleMouseDown}
+          className="w-1 mr-2 my-2 rounded-full cursor-col-resize flex-shrink-0 transition-all"
+          style={{
+            background: resizing ? 'var(--accent)' : 'var(--border)',
+            opacity: resizing ? 1 : 0.5,
+          }}
+          title="Drag to resize"
+        />
+        <div className="flex-1 min-w-0 h-full overflow-hidden glass-strong desktop-right-panel-surface" style={{ borderLeft: '1px solid var(--hud-cyan-dim)' }}>
+          {children}
+        </div>
+      </div>
+    );
   }
 
   if (isNarrowViewport) {
@@ -393,12 +433,12 @@ export default function ChatWindow() {
       </div>
 
       {panel === 'canvas' && (
-        <RightPanel id="canvas" defaultWidth={480} minWidth={320} maxWidth={1000}>
+        <RightPanel id="canvas" defaultWidth={480} minWidth={320} maxWidth={1000} workspaceMode={showWorkspace} onClose={() => setPanel(null)}>
           <CanvasPanel messages={messages} onClose={() => setPanel(null)} onRequestCanvas={requestCanvas} />
         </RightPanel>
       )}
       {panel === 'tasks' && (
-        <RightPanel id="tasks" defaultWidth={360} minWidth={280} maxWidth={720}>
+        <RightPanel id="tasks" defaultWidth={360} minWidth={280} maxWidth={720} workspaceMode={showWorkspace} onClose={() => setPanel(null)}>
           <TaskRunner
             workflow={taskWorkflow}
             onStop={stopGenerating}
@@ -415,7 +455,7 @@ export default function ChatWindow() {
         </RightPanel>
       )}
       {panel === 'tools' && (
-        <RightPanel id="tools" defaultWidth={320} minWidth={260} maxWidth={620}>
+        <RightPanel id="tools" defaultWidth={320} minWidth={260} maxWidth={620} workspaceMode={showWorkspace} onClose={() => setPanel(null)}>
           <ToolsPanel
             onPublish={(toolName, result) => {
               setPanel(null);
@@ -429,7 +469,7 @@ export default function ChatWindow() {
         </RightPanel>
       )}
       {panel === 'prompts' && (
-        <RightPanel id="prompts" defaultWidth={340} minWidth={280} maxWidth={680}>
+        <RightPanel id="prompts" defaultWidth={340} minWidth={280} maxWidth={680} workspaceMode={showWorkspace} onClose={() => setPanel(null)}>
           <PromptLibrary onUsePrompt={(p) => { sendToChat(p, [], webSearch); setPanel(null); }} onClose={() => setPanel(null)} />
         </RightPanel>
       )}

@@ -62,6 +62,7 @@ export default defineConfig({
       '/api/search': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search-query': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/browser-mcp': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/code-assist': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/image': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/generate-image': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/generate-video': { target: 'http://localhost:3002', changeOrigin: true },

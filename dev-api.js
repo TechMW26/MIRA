@@ -38,6 +38,7 @@ const ROUTES = new Map([
   ['/api/search', './api/search.js'],
   ['/api/search-query', './api/search-query.js'],
   ['/api/browser-mcp', './api/browser-mcp.js'],
+  ['/api/code-assist', './api/code-assist.js'],
   ['/api/image', './api/image.js'],
   ['/api/generate-image', './api/generate-image.js'],
   ['/api/generate-video', './api/generate-video.js'],

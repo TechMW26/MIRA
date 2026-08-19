@@ -25,10 +25,20 @@ const ALLOWED_TOOL_NAMES = new Set([
   'filesystem.list',
   'filesystem.write',
   'filesystem.search',
+  'workspace.index',
+  'workspace.search',
   'shell.run',
   'test.run',
   'git.status',
   'git.diff',
+  'git.info',
+  'git.pull',
+  'git.push',
+  'git.commit',
+  'git.remote.set',
+  'change.list',
+  'change.undo',
+  'change.redo',
 ]);
 const ACTIVE_CHAT_REQUESTS = new Map();
 const MODEL_REGISTRY_CACHE = { expiresAt: 0, selected: null };

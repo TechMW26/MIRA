@@ -22,8 +22,17 @@ export async function chooseDesktopWorkspace(scope = globalThis) {
 
 export async function getDesktopPermissionStatus(scope = globalThis) {
   const bridge = getDesktopBridge(scope);
-  if (!bridge || typeof bridge.getPermissionStatus !== 'function') return null;
-  return await bridge.getPermissionStatus();
+  if (!bridge) return null;
+  if (typeof bridge.getPermissionStatus !== 'function') {
+    return {
+      available: false,
+      updateRequired: true,
+      platform: bridge.platform || null,
+      bridgeVersion: Number(bridge.bridgeVersion || 0),
+    };
+  }
+  const status = await bridge.getPermissionStatus();
+  return { available: true, ...status };
 }
 
 export async function requestDesktopPermission(permission, scope = globalThis) {
@@ -31,7 +40,9 @@ export async function requestDesktopPermission(permission, scope = globalThis) {
   if (!allowed.has(permission)) throw new Error('Unsupported desktop permission request.');
   const bridge = getDesktopBridge(scope);
   if (!bridge || typeof bridge.requestPermission !== 'function') {
-    throw new Error('System permissions are available only in the MIRA desktop application.');
+    throw new Error(bridge
+      ? 'Update the installed MIRA desktop app before requesting system permissions.'
+      : 'System permissions are available only in the MIRA desktop application.');
   }
   return await bridge.requestPermission(permission);
 }

@@ -3,6 +3,7 @@
   "functions": {
     "api/chat.js": { "maxDuration": 300, "regions": ["iad1"] },
     "api/analyze.js": { "maxDuration": 60, "regions": ["iad1"] },
+    "api/code-assist.js": { "maxDuration": 30, "regions": ["iad1"] },
     "api/media.js": { "maxDuration": 120 },
     "api/cleanup-media.js": { "maxDuration": 300 }
   },

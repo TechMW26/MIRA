@@ -45,6 +45,25 @@ test('desktop permission requests use only the allowlisted native bridge', async
   await assert.rejects(requestDesktopPermission('camera', scope), /unsupported/i);
 });
 
+test('outdated desktop shells report an update instead of claiming permissions are unnecessary', async () => {
+  const scope = {
+    window: {
+      miraDesktop: {
+        platform: 'darwin',
+        invokeTool: async () => ({ ok: true }),
+      },
+    },
+  };
+
+  assert.deepEqual(await getDesktopPermissionStatus(scope), {
+    available: false,
+    updateRequired: true,
+    platform: 'darwin',
+    bridgeVersion: 0,
+  });
+  await assert.rejects(requestDesktopPermission('accessibility', scope), /update the installed/i);
+});
+
 test('desktop tool calls cross only the trusted preload bridge', async () => {
   const calls = [];
   const output = await executeDesktopTool(
