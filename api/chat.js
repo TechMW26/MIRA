@@ -1,4 +1,5 @@
 import { parseOllamaKeepAlive } from './ollamaConfig.js';
+import { requestManagedChat } from './code-assist.js';
 
 export const config = { maxDuration: 300 };
 
@@ -221,12 +222,53 @@ export function buildUpstreamPayload({
 
 async function fetchUpstream(payload, signal) {
   if (!OLLAMA_CHAT_API_URL) throw new Error('OLLAMA_API_URL is not configured.');
-  return fetch(OLLAMA_CHAT_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal,
-  });
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await fetch(OLLAMA_CHAT_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal,
+      });
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error;
+      lastError = error;
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw lastError || new Error('The model server is unreachable.');
+}
+
+export async function managedFallbackResponse(body, signal) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) abort();
+  else signal?.addEventListener?.('abort', abort, { once: true });
+  const timeout = setTimeout(() => controller.abort(), 25_000);
+  try {
+    const result = await requestManagedChat({
+      messages: body?.messages,
+      systemPrompt: body?.systemPrompt,
+      tools: sanitizeTools(body?.tools),
+      maxTokens: body?.max_tokens,
+      signal: controller.signal,
+    });
+    const message = result.toolCalls?.length
+      ? { tool_calls: result.toolCalls }
+      : { content: result.suggestion || '' };
+    return new Response(`${JSON.stringify({ message, done: true })}\n`, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/x-ndjson',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Mira-Recovery': 'managed',
+      },
+    });
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener?.('abort', abort);
+  }
 }
 
 export async function POST(req) {
@@ -277,13 +319,30 @@ export async function POST(req) {
       maxTokens: body.max_tokens,
       tools: body.tools,
     });
-    const upstream = await fetchUpstream(upstreamPayload, controller.signal);
+    let upstream;
+    try {
+      upstream = await fetchUpstream(upstreamPayload, controller.signal);
+    } catch (error) {
+      clearTimeout(upstreamStartTimer);
+      upstreamStartTimer = null;
+      req.signal?.removeEventListener?.('abort', onClientAbort);
+      if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+      if (controller.signal.aborted || req.signal?.aborted) throw error;
+      return await managedFallbackResponse(body, req.signal);
+    }
     clearTimeout(upstreamStartTimer);
     upstreamStartTimer = null;
     if (!upstream.ok) {
       const detail = await upstream.text().catch(() => '');
       req.signal?.removeEventListener?.('abort', onClientAbort);
       if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+      if ([500, 502, 503, 504].includes(upstream.status)) {
+        try {
+          return await managedFallbackResponse(body, req.signal);
+        } catch {
+          // Return the original upstream error when both providers are unavailable.
+        }
+      }
       return jsonResponse({ error: detail || `Upstream request failed (${upstream.status}).` }, 502);
     }
 

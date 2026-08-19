@@ -161,6 +161,50 @@ async function pollinationsJson(url, options, attempts = 2) {
   throw lastError || new Error('Pollinations request failed.');
 }
 
+export async function requestManagedChat({
+  messages = [],
+  systemPrompt = '',
+  tools = [],
+  maxTokens,
+  signal,
+} = {}) {
+  const key = serverKey();
+  if (!key) throw new Error('Managed chat fallback is not configured.');
+  const chatMessages = [
+    ...(systemPrompt ? [{ role: 'system', content: String(systemPrompt).slice(0, 20_000) }] : []),
+    ...sanitizeMessages(messages),
+  ];
+  if (!chatMessages.length) throw new Error('Managed chat fallback requires messages.');
+
+  const model = await assistModel(key, signal);
+  const payload = {
+    messages: chatMessages,
+    max_tokens: Math.max(256, Math.min(2_000, Number(maxTokens) || 1_200)),
+    temperature: 0.15,
+    ...(Array.isArray(tools) && tools.length ? { tools: tools.slice(0, 32), tool_choice: 'auto' } : {}),
+    ...(model ? { model } : {}),
+  };
+  const request = (requestPayload) => pollinationsJson(`${POLLINATIONS_ORIGIN}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(requestPayload),
+    signal,
+  });
+  let result = await request(payload);
+  if (model && !result?.choices?.[0]?.message?.content && !result?.choices?.[0]?.message?.tool_calls?.length) {
+    const { model: _selectedModel, ...providerDefaultPayload } = payload;
+    result = await request(providerDefaultPayload);
+  }
+  const toolCalls = result?.choices?.[0]?.message?.tool_calls;
+  if (Array.isArray(toolCalls) && toolCalls.length) return { toolCalls };
+  const suggestion = cleanSuggestion(result?.choices?.[0]?.message?.content, 6_000);
+  if (!suggestion) throw new Error('Managed chat fallback returned no response.');
+  return { suggestion };
+}
+
 export async function POST(request) {
   const key = serverKey();
   if (!key) return json({ error: 'Code assistance is not configured.' }, 503);
@@ -203,6 +247,17 @@ export async function POST(request) {
       return json({ embeddings, model: model || 'default' });
     }
 
+    if (task === 'chat') {
+      const result = await requestManagedChat({
+        messages: body.messages,
+        systemPrompt: body.systemPrompt,
+        tools: body.tools,
+        maxTokens: body.maxTokens,
+        signal: controller.signal,
+      });
+      return json(result);
+    }
+
     const model = await assistModel(key, controller.signal);
     const prompt = task === 'completion'
       ? completionPrompt({
@@ -221,16 +276,10 @@ export async function POST(request) {
         status: String(body.status || '').slice(0, 4_000),
         kind: task,
       });
-    const chatMessages = task === 'chat'
-      ? [
-        ...(body.systemPrompt ? [{ role: 'system', content: String(body.systemPrompt).slice(0, 20_000) }] : []),
-        ...sanitizeMessages(body.messages),
-      ]
-      : [
-        { role: 'system', content: 'You are a fast, precise coding copilot. Follow the output contract exactly and never expose credentials.' },
-        { role: 'user', content: prompt },
-      ];
-    if (!chatMessages.length) return json({ error: 'Chat fallback requires messages.' }, 400);
+    const chatMessages = [
+      { role: 'system', content: 'You are a fast, precise coding copilot. Follow the output contract exactly and never expose credentials.' },
+      { role: 'user', content: prompt },
+    ];
     const payload = {
       messages: chatMessages,
       max_tokens: task === 'completion'
@@ -239,9 +288,8 @@ export async function POST(request) {
           ? 120
           : task === 'github-comment'
             ? 420
-            : Math.max(256, Math.min(2_000, Number(body.maxTokens) || 1_200)),
+            : 1_200,
       temperature: 0.15,
-      ...(task === 'chat' && Array.isArray(body.tools) && body.tools.length ? { tools: body.tools.slice(0, 32), tool_choice: 'auto' } : {}),
       ...(model ? { model } : {}),
     };
     let result = await pollinationsJson(`${POLLINATIONS_ORIGIN}/v1/chat/completions`, {
@@ -264,10 +312,6 @@ export async function POST(request) {
         body: JSON.stringify(providerDefaultPayload),
         signal: controller.signal,
       });
-    }
-    const toolCalls = result?.choices?.[0]?.message?.tool_calls;
-    if (task === 'chat' && Array.isArray(toolCalls) && toolCalls.length) {
-      return json({ toolCalls });
     }
     const suggestion = cleanSuggestion(result?.choices?.[0]?.message?.content, task === 'completion' ? 4_000 : 6_000);
     if (!suggestion) return json({ error: 'The coding assistant returned no suggestion.' }, 502);
