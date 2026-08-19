@@ -3,11 +3,39 @@ import assert from 'node:assert/strict';
 import {
   buildUpstreamPayload,
   getContextTokens,
+  getUpstreamConnectTimeoutMs,
   getUpstreamStartTimeoutMs,
+  managedFallbackResponse,
   POST,
   sanitizeTools,
   selectRegistryModel,
 } from './chat.js';
+
+test('returns a stream-compatible managed response when the model server is unavailable', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.POLLINATIONS_API_KEY;
+  process.env.POLLINATIONS_API_KEY = 'server-secret';
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/text/models')) return new Response(JSON.stringify([]), { status: 200 });
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'Recovered answer.' } }] }), { status: 200 });
+  };
+  try {
+    const response = await managedFallbackResponse({
+      messages: [{ role: 'user', content: 'Hello' }],
+      tools: [{ type: 'function', function: { name: 'not.allowed', parameters: { type: 'object' } } }],
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-mira-recovery'), 'managed');
+    assert.deepEqual(JSON.parse((await response.text()).trim()), {
+      message: { content: 'Recovered answer.' },
+      done: true,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.POLLINATIONS_API_KEY;
+    else process.env.POLLINATIONS_API_KEY = originalKey;
+  }
+});
 
 test('prefers a thinking-capable non-vision model for chat', () => {
   const selected = selectRegistryModel([
@@ -42,6 +70,12 @@ test('bounds the upstream model-start timeout below the browser timeout', () => 
   assert.equal(getUpstreamStartTimeoutMs(), 50000);
   assert.equal(getUpstreamStartTimeoutMs(1000), 15000);
   assert.equal(getUpstreamStartTimeoutMs(90000), 55000);
+});
+
+test('fails over quickly when an upstream connection stalls', () => {
+  assert.equal(getUpstreamConnectTimeoutMs(), 8000);
+  assert.equal(getUpstreamConnectTimeoutMs(1000), 3000);
+  assert.equal(getUpstreamConnectTimeoutMs(90000), 20000);
 });
 
 test('uses a concurrency-friendly default while allowing any configured context', () => {

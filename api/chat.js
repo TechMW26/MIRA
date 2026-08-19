@@ -57,6 +57,12 @@ export function getUpstreamStartTimeoutMs(value = process.env.OLLAMA_START_TIMEO
   return Math.max(15000, Math.min(55000, Math.round(parsed)));
 }
 
+export function getUpstreamConnectTimeoutMs(value = process.env.OLLAMA_CONNECT_TIMEOUT_MS) {
+  const parsed = Number(value || 8000);
+  if (!Number.isFinite(parsed)) return 8000;
+  return Math.max(3000, Math.min(20000, Math.round(parsed)));
+}
+
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -224,17 +230,35 @@ async function fetchUpstream(payload, signal) {
   if (!OLLAMA_CHAT_API_URL) throw new Error('OLLAMA_API_URL is not configured.');
   let lastError;
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const attemptController = new AbortController();
+    let connectTimedOut = false;
+    const abortAttempt = () => attemptController.abort();
+    if (signal?.aborted) abortAttempt();
+    else signal?.addEventListener?.('abort', abortAttempt, { once: true });
+    const connectTimer = setTimeout(() => {
+      connectTimedOut = true;
+      attemptController.abort();
+    }, getUpstreamConnectTimeoutMs());
     try {
       return await fetch(OLLAMA_CHAT_API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-        signal,
+        signal: attemptController.signal,
       });
     } catch (error) {
-      if (signal?.aborted || error?.name === 'AbortError') throw error;
+      if (signal?.aborted) throw error;
+      if (connectTimedOut) {
+        const timeoutError = new Error('The model server did not accept the request in time.');
+        timeoutError.code = 'upstream_connect_timeout';
+        throw timeoutError;
+      }
+      if (error?.name === 'AbortError') throw error;
       lastError = error;
       if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 250));
+    } finally {
+      clearTimeout(connectTimer);
+      signal?.removeEventListener?.('abort', abortAttempt);
     }
   }
   throw lastError || new Error('The model server is unreachable.');
