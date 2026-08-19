@@ -11,10 +11,12 @@ export const AGENT_CAPABILITIES = Object.freeze({
   FILE_READ: 'filesystem.read',
   FILE_LIST: 'filesystem.list',
   FILE_WRITE: 'filesystem.write',
+  FILE_REPLACE: 'filesystem.replace',
   FILE_SEARCH: 'filesystem.search',
   FILE_PREVIEW: 'filesystem.preview',
   WORKSPACE_INDEX: 'workspace.index',
   WORKSPACE_SEARCH: 'workspace.search',
+  WORKSPACE_VALIDATE: 'workspace.validate',
   SHELL_RUN: 'shell.run',
   SHELL_CANCEL: 'shell.cancel',
   TEST_RUN: 'test.run',
@@ -36,10 +38,12 @@ export const DESKTOP_AGENT_CAPABILITIES = Object.freeze([
   AGENT_CAPABILITIES.FILE_READ,
   AGENT_CAPABILITIES.FILE_LIST,
   AGENT_CAPABILITIES.FILE_WRITE,
+  AGENT_CAPABILITIES.FILE_REPLACE,
   AGENT_CAPABILITIES.FILE_SEARCH,
   AGENT_CAPABILITIES.FILE_PREVIEW,
   AGENT_CAPABILITIES.WORKSPACE_INDEX,
   AGENT_CAPABILITIES.WORKSPACE_SEARCH,
+  AGENT_CAPABILITIES.WORKSPACE_VALIDATE,
   AGENT_CAPABILITIES.SHELL_RUN,
   AGENT_CAPABILITIES.SHELL_CANCEL,
   AGENT_CAPABILITIES.TEST_RUN,
@@ -59,6 +63,7 @@ export const DESKTOP_AGENT_CAPABILITIES = Object.freeze([
 
 const WORKSPACE_REQUEST_PATTERN = /\b(codebase|repository|repo|workspace|project files?|source code|code structure|implementation|implement|edit|modify|refactor|optim(?:ize|ise)|debug|fix|build|test|lint|run|terminal|git|github|commit|push|pull|branch|dependency|dependencies|package\.json)\b/i;
 const WORKSPACE_MUTATION_PATTERN = /\b(implement|edit|modify|change|refactor|optim(?:ize|ise)|debug|fix|build|create|add|remove|rename|upgrade|migrate|install|write|apply|commit|push|pull)\b/i;
+const WORKSPACE_EXECUTION_PATTERN = /\b(run|execute|test|lint|typecheck|check|build|compile|install|start|serve|deploy)\b/i;
 const WORKSPACE_FILE_REFERENCE_PATTERN = /(?:^|[\s("'`])((?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+\.(?:cjs|mjs|js|jsx|ts|tsx|json|css|scss|html|md|py|rb|go|rs|java|kt|swift|php|vue|svelte|yml|yaml|toml|xml|sql|sh|ps1))(?![\w./-])/gi;
 
 export function extractWorkspaceFileReferences(text = '') {
@@ -79,6 +84,7 @@ export function classifyDesktopWorkspaceRequest(text = '', runtime = getAgentRun
   return Object.freeze({
     active,
     mutation: active && WORKSPACE_MUTATION_PATTERN.test(value),
+    execution: active && WORKSPACE_EXECUTION_PATTERN.test(value),
   });
 }
 

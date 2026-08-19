@@ -113,18 +113,25 @@ import {
   buildLocalWorkspaceSummary,
   requestWorkspaceSynthesis,
 } from '../services/workspaceSynthesis.js';
+import {
+  buildRegressionValidationCalls,
+  desktopGoalNeedsMoreWork,
+} from '../services/desktopAgentPolicy.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
-const MAX_DESKTOP_AGENT_ROUNDS = 18;
-const MAX_DESKTOP_TOOL_RESULT_CHARS = 30000;
+const MAX_DESKTOP_AGENT_ROUNDS = 32;
+const MAX_DESKTOP_AGENT_REMINDERS = 4;
+const MAX_DESKTOP_TOOL_RESULT_CHARS = 16000;
 
 const DESKTOP_TOOL_NAMES = new Set([
   AGENT_CAPABILITIES.FILE_READ,
   AGENT_CAPABILITIES.FILE_LIST,
   AGENT_CAPABILITIES.FILE_WRITE,
+  AGENT_CAPABILITIES.FILE_REPLACE,
   AGENT_CAPABILITIES.FILE_SEARCH,
   AGENT_CAPABILITIES.WORKSPACE_INDEX,
   AGENT_CAPABILITIES.WORKSPACE_SEARCH,
+  AGENT_CAPABILITIES.WORKSPACE_VALIDATE,
   AGENT_CAPABILITIES.SHELL_RUN,
   AGENT_CAPABILITIES.TEST_RUN,
   AGENT_CAPABILITIES.GIT_STATUS,
@@ -147,7 +154,9 @@ function desktopToolTitle(call = {}) {
     [AGENT_CAPABILITIES.FILE_SEARCH]: 'Search source code',
     [AGENT_CAPABILITIES.WORKSPACE_INDEX]: 'Build local code index',
     [AGENT_CAPABILITIES.WORKSPACE_SEARCH]: 'Search local code index',
+    [AGENT_CAPABILITIES.WORKSPACE_VALIDATE]: 'Run regression suite',
     [AGENT_CAPABILITIES.FILE_WRITE]: path ? `Apply ${path}` : 'Apply file change',
+    [AGENT_CAPABILITIES.FILE_REPLACE]: path ? `Patch ${path}` : 'Patch source file',
     [AGENT_CAPABILITIES.SHELL_RUN]: 'Run workspace command',
     [AGENT_CAPABILITIES.TEST_RUN]: 'Run validation',
     [AGENT_CAPABILITIES.GIT_STATUS]: 'Check working tree',
@@ -1535,7 +1544,7 @@ export default function useChat() {
         const runtimeContextBlock = [
           modalityBoundary,
           desktopWorkspaceRequest.active
-            ? `DESKTOP WORKSPACE REQUEST: Work against the open workspace now. Begin by inspecting the actual files, continue calling the provided filesystem, command, test, change-review, and Git tools until the request is complete, then report only confirmed results. ${desktopWorkspaceRequest.mutation ? 'This is an implementation request: do not stop at recommendations; apply the requested changes, inspect the resulting diff, and run relevant validation.' : 'This is an inspection request: read representative source and configuration files before summarizing.'}`
+            ? `DESKTOP WORKSPACE REQUEST: Work against the open workspace now. Begin by inspecting the actual files, continue calling the provided filesystem, command, test, change-review, and Git tools until the request is complete, then report only confirmed results. ${desktopWorkspaceRequest.mutation ? 'This is an implementation request: do not stop at recommendations; apply the requested changes, inspect the resulting diff, run regression validation, and fix failures before answering.' : 'This is an inspection request: read representative source and configuration files before summarizing.'} ${desktopWorkspaceRequest.execution ? 'The user requested execution: run the relevant command in the in-app terminal and use its actual result.' : ''}`
             : '',
           buildSearchToolGuidance(retrievalPolicy),
           sharedProjectContextBlock,
@@ -2449,7 +2458,10 @@ export default function useChat() {
             setThinkingContent('');
             const agentHistory = [...history];
             const executedCalls = [];
+            const successfulCalls = [];
             const desktopToolResults = [];
+            let changesSinceValidation = false;
+            let validationFailures = [];
             const pendingDeterministicCalls = extractWorkspaceFileReferences(content).map((path) => ({
               name: AGENT_CAPABILITIES.FILE_READ,
               arguments: { path },
@@ -2478,29 +2490,55 @@ export default function useChat() {
                   ],
                 } : current);
 
-                const toolResult = await executeHostTool(currentCall);
-                executedCalls.push(currentCall.name);
-                desktopToolResults.push({ name: currentCall.name, result: String(toolResult || '') });
+                const completedCall = currentCall;
+                let toolResult = '';
+                let toolError = null;
+                try {
+                  toolResult = await executeHostTool(completedCall);
+                  successfulCalls.push(completedCall.name);
+                } catch (error) {
+                  toolError = error;
+                  toolResult = `ERROR: ${error?.message || 'The desktop operation failed.'}`;
+                }
+                executedCalls.push(completedCall.name);
+                desktopToolResults.push({
+                  name: completedCall.name,
+                  result: String(toolResult || ''),
+                  ok: !toolError,
+                });
                 setTaskWorkflow((current) => current?.runId === runId ? {
                   ...current,
                   updatedAt: Date.now(),
                   steps: (current.steps || []).map((step) => (
-                    step.id === stepId ? { ...step, status: 'done', result: 'Completed' } : step
+                    step.id === stepId
+                      ? { ...step, status: toolError ? 'error' : 'done', result: toolError ? toolResult : 'Completed' }
+                      : step
                   )),
                 } : current);
+
+                if ([AGENT_CAPABILITIES.FILE_WRITE, AGENT_CAPABILITIES.FILE_REPLACE].includes(completedCall.name) && !toolError) {
+                  changesSinceValidation = true;
+                  validationFailures = [];
+                }
+                if ([AGENT_CAPABILITIES.TEST_RUN, AGENT_CAPABILITIES.WORKSPACE_VALIDATE].includes(completedCall.name) && toolError) {
+                  validationFailures.push(toolResult);
+                }
 
                 agentHistory.push({
                   role: 'user',
                   content: [
-                    `=== DESKTOP TOOL RESULT: ${currentCall.name} ===`,
+                    `=== DESKTOP TOOL RESULT: ${completedCall.name} ===`,
                     String(toolResult || '').slice(0, MAX_DESKTOP_TOOL_RESULT_CHARS),
                     '=== END DESKTOP TOOL RESULT ===',
-                    'Continue the original workspace request now. Call the next required desktop tool, or give the final answer only when the requested work and validation are complete.',
+                    toolError
+                      ? 'The operation failed. Diagnose the actual error, make any necessary correction, and retry or choose a better tool. Do not claim success.'
+                      : 'Continue the original workspace request now. Call the next required desktop tool, or give the final answer only when the requested work and validation are complete.',
                   ].join('\n'),
                 });
 
-                if (currentCall.name === AGENT_CAPABILITIES.FILE_WRITE
-                  && !executedCalls.includes(AGENT_CAPABILITIES.GIT_DIFF)) {
+                if ([AGENT_CAPABILITIES.FILE_WRITE, AGENT_CAPABILITIES.FILE_REPLACE].includes(completedCall.name)
+                  && !toolError
+                  && !pendingDeterministicCalls.some((call) => call.name === AGENT_CAPABILITIES.GIT_DIFF)) {
                   pendingDeterministicCalls.push({ name: AGENT_CAPABILITIES.GIT_DIFF, arguments: {} });
                 }
 
@@ -2511,7 +2549,7 @@ export default function useChat() {
                 }
 
                 currentCall = null;
-                for (let reminder = 0; reminder < 2; reminder += 1) {
+                for (let reminder = 0; reminder < MAX_DESKTOP_AGENT_REMINDERS; reminder += 1) {
                   let nextToolCall = null;
                   let continuation = '';
                   let continuationError = null;
@@ -2559,21 +2597,35 @@ export default function useChat() {
                     break;
                   }
 
-                  const inspectedSource = executedCalls.some((name) => (
-                    name === AGENT_CAPABILITIES.FILE_READ
-                    || name === AGENT_CAPABILITIES.FILE_SEARCH
-                    || name === AGENT_CAPABILITIES.WORKSPACE_SEARCH
-                  ));
-                  const appliedChange = executedCalls.includes(AGENT_CAPABILITIES.FILE_WRITE);
-                  const incompleteInspection = !inspectedSource;
-                  const incompleteMutation = desktopWorkspaceRequest.mutation && !appliedChange;
+                  if (desktopWorkspaceRequest.mutation && changesSinceValidation) {
+                    cancelPendingStreamFlushes();
+                    setStreamingContent('');
+                    setThinkingContent('');
+                    pendingDeterministicCalls.push(...buildRegressionValidationCalls());
+                    changesSinceValidation = false;
+                    validationFailures = [];
+                    currentCall = pendingDeterministicCalls.shift();
+                    desktopAnswer = '';
+                    break;
+                  }
+
+                  const incomplete = desktopGoalNeedsMoreWork({
+                    request: desktopWorkspaceRequest,
+                    successfulCalls,
+                    validationFailures,
+                  });
                   desktopAnswer = continuation.trim();
-                  if ((!incompleteInspection && !incompleteMutation) || reminder === 1) break;
+                  if ((!incomplete.inspection && !incomplete.mutation && !incomplete.execution && !incomplete.validation)
+                    || reminder === MAX_DESKTOP_AGENT_REMINDERS - 1) break;
                   agentHistory.push({
                     role: 'user',
-                    content: incompleteMutation
+                    content: incomplete.validation
+                      ? 'Regression validation failed. Inspect the failure, fix the code, and rerun the relevant validation before answering.'
+                      : incomplete.mutation
                       ? 'You have not implemented the requested change yet. Continue with the appropriate filesystem inspection and write tools. Do not answer with intentions or recommendations.'
-                      : 'You have only listed filenames. Read or search representative source and configuration files before answering. Respond with the next desktop tool call.',
+                      : incomplete.execution
+                        ? 'The user asked you to execute work, but no workspace command has run. Call shell.run or test.run now and use the actual terminal result.'
+                        : 'You have only listed filenames. Read or search representative source and configuration files before answering. Respond with the next desktop tool call.',
                   });
                 }
               }

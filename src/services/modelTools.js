@@ -56,6 +56,12 @@ export const MODEL_TOOLS = [
     path: { type: 'string', description: 'Workspace-relative file path.' },
     content: { type: 'string', description: 'Complete replacement content.' },
   }, ['path', 'content']),
+  functionTool(AGENT_CAPABILITIES.FILE_REPLACE, 'Apply a precise text replacement inside an existing workspace file after user approval. Prefer this over rewriting a large file.', {
+    path: { type: 'string', description: 'Workspace-relative file path.' },
+    oldText: { type: 'string', description: 'Exact existing text to replace. It must match exactly once unless replaceAll is true.' },
+    newText: { type: 'string', description: 'Replacement text.' },
+    replaceAll: { type: 'boolean', description: 'Replace every exact occurrence when true.' },
+  }, ['path', 'oldText', 'newText']),
   functionTool(AGENT_CAPABILITIES.FILE_SEARCH, 'Search text inside the open desktop workspace with ripgrep.', {
     query: { type: 'string', description: 'Literal text or regular expression to search for.' },
     glob: { type: 'string', description: 'Optional ripgrep file glob such as *.js.' },
@@ -67,6 +73,7 @@ export const MODEL_TOOLS = [
     query: { type: 'string', description: 'The implementation concept, behavior, error, or code question to find.' },
     limit: { type: 'number', description: 'Maximum matching code chunks, from 1 to 20.' },
   }, ['query']),
+  functionTool(AGENT_CAPABILITIES.WORKSPACE_VALIDATE, 'Detect and run the workspace regression suite in the in-app terminal. Use after code changes and fix failures before finishing.', {}, []),
   functionTool(AGENT_CAPABILITIES.SHELL_RUN, 'Run one executable inside the open desktop workspace after user approval. Pass arguments separately; shell syntax is not supported.', {
     command: { type: 'string', description: 'Executable name, such as npm, node, git, or python.' },
     args: { type: 'array', items: { type: 'string' }, description: 'Arguments passed directly to the executable.' },

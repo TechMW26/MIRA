@@ -4,10 +4,12 @@ const capabilities = Object.freeze([
   'filesystem.read',
   'filesystem.list',
   'filesystem.write',
+  'filesystem.replace',
   'filesystem.search',
   'filesystem.preview',
   'workspace.index',
   'workspace.search',
+  'workspace.validate',
   'shell.run',
   'shell.cancel',
   'test.run',
@@ -26,7 +28,7 @@ const capabilities = Object.freeze([
 ]);
 
 contextBridge.exposeInMainWorld('miraDesktop', Object.freeze({
-  bridgeVersion: 6,
+  bridgeVersion: 7,
   platform: process.platform,
   capabilities,
   chooseWorkspace: () => ipcRenderer.invoke('mira:choose-workspace'),

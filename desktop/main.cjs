@@ -11,7 +11,7 @@ const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 40 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 const PRODUCTION_APP_URL = 'https://www.itsmira.cloud';
-const PERMISSION_BRIDGE_VERSION = 6;
+const PERMISSION_BRIDGE_VERSION = 7;
 const WORKSPACE_MEMORY_DIRECTORY = '.mira';
 const WORKSPACE_INSTRUCTIONS_FILE = 'MIRA.md';
 const WORKSPACE_HISTORY_FILE = 'history.jsonl';
@@ -20,10 +20,12 @@ const DESKTOP_CAPABILITIES = Object.freeze([
   'filesystem.read',
   'filesystem.list',
   'filesystem.write',
+  'filesystem.replace',
   'filesystem.search',
   'filesystem.preview',
   'workspace.index',
   'workspace.search',
+  'workspace.validate',
   'shell.run',
   'shell.cancel',
   'test.run',
@@ -668,14 +670,22 @@ async function runExecutable({ command, args = [], cwd = '.', timeout = PROCESS_
   }
 }
 
-async function runExecutableStreaming({ command, args = [], cwd = '.', timeout = PROCESS_TIMEOUT_MS, onOutput, requestId = '' }) {
+async function runExecutableStreaming({
+  command,
+  args = [],
+  cwd = '.',
+  timeout = PROCESS_TIMEOUT_MS,
+  onOutput,
+  requestId = '',
+  environmentOverrides = {},
+}) {
   const executable = normalizeExecutable(command);
   const normalizedArgs = normalizeProcessArgs(args);
   const environment = await desktopEnvironment();
   return await new Promise((resolve, reject) => {
     const child = spawn(executable, normalizedArgs, {
       cwd,
-      env: environment,
+      env: { ...environment, ...environmentOverrides },
       windowsHide: true,
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -721,6 +731,49 @@ async function runExecutableStreaming({ command, args = [], cwd = '.', timeout =
       }
     });
   });
+}
+
+async function pathExists(target) {
+  try { await fs.access(target); return true; } catch { return false; }
+}
+
+async function detectWorkspaceValidationCommands(root) {
+  const commands = [];
+  if (await pathExists(path.join(root, '.git'))) {
+    commands.push({ command: 'git', args: ['diff', '--check'], label: 'Git whitespace validation' });
+  }
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+    const scripts = new Set(Object.keys(manifest.scripts || {}));
+    const packageManager = await pathExists(path.join(root, 'pnpm-lock.yaml')) ? 'pnpm'
+      : await pathExists(path.join(root, 'yarn.lock')) ? 'yarn'
+        : 'npm';
+    for (const script of ['typecheck', 'lint', 'test', 'build']) {
+      if (scripts.has(script)) commands.push({
+        command: packageManager,
+        args: ['run', script],
+        label: `${packageManager} ${script}`,
+      });
+    }
+  } catch {}
+  if (await pathExists(path.join(root, 'pyproject.toml'))
+    || await pathExists(path.join(root, 'pytest.ini'))
+    || await pathExists(path.join(root, 'setup.cfg'))) {
+    commands.push({ command: 'python3', args: ['-m', 'pytest'], label: 'Python tests' });
+  }
+  if (await pathExists(path.join(root, 'Cargo.toml'))) {
+    commands.push({ command: 'cargo', args: ['test'], label: 'Rust tests' });
+  }
+  if (await pathExists(path.join(root, 'go.mod'))) {
+    commands.push({ command: 'go', args: ['test', './...'], label: 'Go tests' });
+  }
+  if (await pathExists(path.join(root, 'pom.xml'))) {
+    commands.push({ command: 'mvn', args: ['test'], label: 'Maven tests' });
+  }
+  if (await pathExists(path.join(root, 'gradlew'))) {
+    commands.push({ command: './gradlew', args: ['test'], label: 'Gradle tests' });
+  }
+  return commands.slice(0, 8);
 }
 
 async function readOptionalFile(target) {
@@ -836,6 +889,27 @@ async function invokeDesktopTool(window, call = {}) {
     return await saveWorkspaceFile(window, args.path, content, 'agent');
   }
 
+  if (name === 'filesystem.replace') {
+    const target = await resolveWorkspacePath(window, args.path);
+    const oldText = String(args.oldText ?? '');
+    const newText = String(args.newText ?? '');
+    if (!oldText || Buffer.byteLength(oldText, 'utf8') > MAX_FILE_BYTES) {
+      throw new Error('A non-empty exact text match under 2 MB is required.');
+    }
+    const source = await fs.readFile(target, 'utf8');
+    const occurrences = source.split(oldText).length - 1;
+    if (occurrences === 0) throw new Error('The exact text to replace was not found. Read the latest file and try again.');
+    if (!args.replaceAll && occurrences !== 1) {
+      throw new Error(`The exact text occurs ${occurrences} times. Provide a more specific match or set replaceAll.`);
+    }
+    const content = args.replaceAll
+      ? source.split(oldText).join(newText)
+      : source.replace(oldText, newText);
+    if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error('Desktop writes are limited to 2 MB per file.');
+    await approve(window, 'Allow precise file edit?', `Edit ${path.relative(workspaceRoot, target) || path.basename(target)}`);
+    return await saveWorkspaceFile(window, args.path, content, 'agent');
+  }
+
   if (name === 'filesystem.search') {
     const query = String(args.query || '').trim();
     if (!query || query.length > 1000) throw new Error('A valid search query is required.');
@@ -883,6 +957,64 @@ async function invokeDesktopTool(window, call = {}) {
         excerpt: text.slice(0, 2400),
       }));
     return JSON.stringify({ query, ...workspaceIndexSummary(index), results });
+  }
+
+  if (name === 'workspace.validate') {
+    const cwd = await ensureWorkspace(window);
+    const commands = await detectWorkspaceValidationCommands(cwd);
+    if (!commands.length) return JSON.stringify({ passed: true, commands: [], note: 'No automatic validation commands were detected.' });
+    const previews = commands.map(({ command, args: commandArgs }) => commandPreview(command, commandArgs));
+    if (!workspaceCommandTrust) {
+      const approval = await approve(
+        window,
+        'Run workspace regression suite?',
+        `${previews.join('\n')}\n\nWorking directory: .`,
+        false,
+        true,
+      );
+      if (approval === 'workspace-session') workspaceCommandTrust = true;
+    }
+    const requestId = `agent:validate:${Date.now()}`;
+    const results = [];
+    try {
+      for (const validation of commands) {
+        const preview = commandPreview(validation.command, validation.args);
+        window.webContents.send('mira:terminal-output', {
+          requestId,
+          chunk: `$ ${preview}\n`,
+          reset: false,
+          agent: true,
+        });
+        try {
+          const output = await runExecutableStreaming({
+            command: validation.command,
+            args: validation.args,
+            cwd,
+            requestId,
+            environmentOverrides: { CI: '1' },
+            onOutput: (chunk) => window.webContents.send('mira:terminal-output', {
+              requestId,
+              chunk,
+              agent: true,
+            }),
+          });
+          results.push({ command: preview, passed: true, output: output.slice(-8000) });
+        } catch (error) {
+          results.push({ command: preview, passed: false, output: String(error?.message || 'Validation failed.').slice(-8000) });
+          const failure = new Error(`Regression command failed: ${preview}\n${error?.message || ''}`.trim());
+          failure.results = results;
+          throw failure;
+        }
+      }
+      return JSON.stringify({ passed: true, commands: results });
+    } finally {
+      window.webContents.send('mira:terminal-output', {
+        requestId,
+        chunk: '',
+        agent: true,
+        done: true,
+      });
+    }
   }
 
   if (name === 'git.status') {
@@ -994,7 +1126,7 @@ async function invokeDesktopTool(window, call = {}) {
       : '';
     const requestId = requestedId || `agent:${Date.now()}`;
     if (!requestedId) {
-      window.webContents.send('mira:terminal-output', { requestId, chunk: `$ ${preview}\n`, reset: true, agent: true });
+      window.webContents.send('mira:terminal-output', { requestId, chunk: `$ ${preview}\n`, reset: false, agent: true });
     }
     try {
       return await runExecutableStreaming({
@@ -1002,6 +1134,7 @@ async function invokeDesktopTool(window, call = {}) {
         args: processArgs,
         cwd,
         requestId,
+        environmentOverrides: name === 'test.run' ? { CI: '1' } : {},
         onOutput: (chunk) => window.webContents.send('mira:terminal-output', { requestId, chunk, agent: !requestedId }),
       });
     } finally {

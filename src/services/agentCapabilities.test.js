@@ -63,11 +63,14 @@ test('desktop codebase requests are routed to the workspace agent with mutation 
   assert.deepEqual(classifyDesktopWorkspaceRequest('Study this codebase please', runtime), {
     active: true,
     mutation: false,
+    execution: false,
   });
   assert.deepEqual(classifyDesktopWorkspaceRequest('Optimize and test this repository', runtime), {
     active: true,
     mutation: true,
+    execution: true,
   });
+  assert.equal(classifyDesktopWorkspaceRequest('Run the lint command', runtime).execution, true);
   assert.equal(classifyDesktopWorkspaceRequest('Explain photosynthesis', runtime).active, false);
   assert.equal(classifyDesktopWorkspaceRequest('Study this codebase', { runtime: 'web', capabilities: [] }).active, false);
 });

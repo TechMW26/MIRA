@@ -216,7 +216,7 @@ export default function DesktopWorkspace({ style }) {
       if (!terminalId) return;
       updateTerminal(terminalId, (terminal) => ({
         requestId: done ? '' : (requestId || terminal.requestId),
-        running: done ? false : terminal.running,
+        running: done ? false : true,
         output: chunk ? (reset ? chunk : `${terminal.output}${chunk}`) : terminal.output,
       }));
       if (done && requestId) terminalRequestToSessionRef.current.delete(requestId);
