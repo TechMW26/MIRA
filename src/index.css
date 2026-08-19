@@ -317,9 +317,10 @@
   font: 0.76rem/1.65 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   tab-size: 2;
 }
-.desktop-code-editor-shell { position: relative; flex: 1; min-height: 180px; overflow: hidden; background: #000508; }
-.desktop-code-editor-shell .cm-editor { height: 100%; background: #000508; color: #d9edf0; font-size: 0.76rem; }
-.desktop-code-editor-shell .cm-scroller { overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; line-height: 1.65; }
+.desktop-code-editor-shell { position: relative; flex: 1 1 0; min-height: 180px; overflow: hidden; background: #000508; }
+.desktop-code-editor-instance { position: absolute; inset: 0; min-width: 0; min-height: 0; overflow: hidden; }
+.desktop-code-editor-shell .cm-editor { height: 100%; min-height: 0; background: #000508; color: #d9edf0; font-size: 0.76rem; }
+.desktop-code-editor-shell .cm-scroller { min-height: 0; overflow: auto !important; overscroll-behavior: contain; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; line-height: 1.65; }
 .desktop-code-editor-shell .cm-gutters { border-right-color: rgba(94, 234, 212, 0.08); background: #01090d; color: #46666b; }
 .desktop-code-editor-shell .cm-activeLine,
 .desktop-code-editor-shell .cm-activeLineGutter { background: rgba(94, 234, 212, 0.045); }

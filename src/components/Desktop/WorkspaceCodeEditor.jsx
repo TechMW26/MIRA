@@ -101,6 +101,7 @@ export default function WorkspaceCodeEditor({ path, value, onChange, onSave, onD
     <div className="desktop-code-editor-shell">
       <CodeMirror
         ref={editorRef}
+        className="desktop-code-editor-instance"
         value={value}
         height="100%"
         theme={oneDark}
