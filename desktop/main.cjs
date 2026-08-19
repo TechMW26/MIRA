@@ -1,9 +1,15 @@
-const { app, BrowserWindow, dialog, ipcMain, shell, systemPreferences } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, systemPreferences } = require('electron');
 const { execFile, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { promisify } = require('node:util');
+const { sendToWindow } = require('./windowMessaging.cjs');
+const {
+  requestDeepSeekChat,
+  requestDeepSeekCompletion,
+  validateDeepSeekKey,
+} = require('./aiProviders.cjs');
 
 const execFileAsync = promisify(execFile);
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -11,7 +17,7 @@ const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 40 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 const PRODUCTION_APP_URL = 'https://www.itsmira.cloud';
-const PERMISSION_BRIDGE_VERSION = 8;
+const PERMISSION_BRIDGE_VERSION = 9;
 const WORKSPACE_MEMORY_DIRECTORY = '.mira';
 const WORKSPACE_INSTRUCTIONS_FILE = 'MIRA.md';
 const WORKSPACE_HISTORY_FILE = 'history.jsonl';
@@ -54,6 +60,120 @@ const runningProcesses = new Map();
 
 function workspaceStatePath() {
   return path.join(app.getPath('userData'), 'workspace-state.json');
+}
+
+function providerSecretsPath() {
+  return path.join(app.getPath('userData'), 'provider-secrets.json');
+}
+
+function normalizeProviderKey(value) {
+  return String(value || '').trim().replace(/^['"]|['"]$/g, '').replace(/\s+/g, '');
+}
+
+async function readDevelopmentProviderKey() {
+  if (app.isPackaged) return '';
+  for (const filename of ['.env.local', '.env']) {
+    try {
+      const source = await fs.readFile(path.join(__dirname, '..', filename), 'utf8');
+      const line = source.split(/\r?\n/).find((entry) => /^\s*DEEPSEEK_API_KEY\s*=/.test(entry));
+      if (line) return normalizeProviderKey(line.slice(line.indexOf('=') + 1));
+    } catch {
+      // Local environment files are optional.
+    }
+  }
+  return '';
+}
+
+async function readStoredDeepSeekKey() {
+  if (!safeStorage.isEncryptionAvailable()) return '';
+  try {
+    const stored = JSON.parse(await fs.readFile(providerSecretsPath(), 'utf8'));
+    if (!stored?.deepseek) return '';
+    return normalizeProviderKey(safeStorage.decryptString(Buffer.from(stored.deepseek, 'base64')));
+  } catch {
+    return '';
+  }
+}
+
+async function getDeepSeekKey() {
+  return normalizeProviderKey(process.env.DEEPSEEK_API_KEY)
+    || await readDevelopmentProviderKey()
+    || await readStoredDeepSeekKey();
+}
+
+async function writeStoredDeepSeekKey(key) {
+  await fs.mkdir(path.dirname(providerSecretsPath()), { recursive: true });
+  await fs.writeFile(providerSecretsPath(), JSON.stringify({
+    deepseek: safeStorage.encryptString(key).toString('base64'),
+  }), { encoding: 'utf8', mode: 0o600 });
+}
+
+async function saveDeepSeekKey(value) {
+  const key = normalizeProviderKey(value);
+  if (!key) throw new Error('Enter a DeepSeek API key.');
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure credential storage is unavailable on this system.');
+  }
+  await validateDeepSeekKey(key);
+  await writeStoredDeepSeekKey(key);
+}
+
+async function persistEnvironmentProviderKey() {
+  if (!safeStorage.isEncryptionAvailable() || await readStoredDeepSeekKey()) return;
+  const environmentKey = normalizeProviderKey(process.env.DEEPSEEK_API_KEY);
+  const key = environmentKey || (!app.isPackaged ? await readDevelopmentProviderKey() : '');
+  if (!key) return;
+  await validateDeepSeekKey(key);
+  await writeStoredDeepSeekKey(key);
+}
+
+async function getProviderStatus() {
+  const environmentKey = normalizeProviderKey(process.env.DEEPSEEK_API_KEY) || await readDevelopmentProviderKey();
+  const storedKey = environmentKey ? '' : await readStoredDeepSeekKey();
+  return {
+    deepseekConfigured: Boolean(environmentKey || storedKey),
+    deepseekModel: process.env.DEEPSEEK_AGENT_MODEL || 'deepseek-v4-pro',
+    source: environmentKey ? 'environment' : storedKey ? 'secure-storage' : 'none',
+  };
+}
+
+function desktopAssistPrompt(task, body = {}) {
+  if (task === 'commit') {
+    return `Write one conventional, imperative Git commit subject under 72 characters. Return only the subject.\n\nGit status:\n${String(body.status || '').slice(0, 4_000)}\n\nDiff:\n${String(body.diff || '').slice(0, 24_000)}`;
+  }
+  if (task === 'github-comment') {
+    return `Write a concise GitHub pull-request or review summary with a short heading, key changes, and validation. Return markdown only.\n\nGit status:\n${String(body.status || '').slice(0, 4_000)}\n\nDiff:\n${String(body.diff || '').slice(0, 24_000)}`;
+  }
+  if (task === 'workspace-synthesis') {
+    return `Answer the workspace request from the supplied local evidence. Be direct and factual. Never mention internal tools, routing, or provider failures.\n\nUser request:\n${String(body.request || '').slice(0, 4_000)}\n\nLocal workspace evidence:\n${String(body.evidence || '').slice(0, 90_000)}`;
+  }
+  throw new Error('Unsupported desktop code-assistance task.');
+}
+
+async function runDesktopCodeAssist(body = {}) {
+  const key = await getDeepSeekKey();
+  if (!key) throw new Error('Configure the DeepSeek coding provider under System access.');
+  const task = String(body.task || 'completion');
+  if (task === 'completion') {
+    const suggestion = await requestDeepSeekCompletion({
+      apiKey: key,
+      prefix: String(body.prefix || '').slice(-80_000),
+      suffix: String(body.suffix || '').slice(0, 30_000),
+      maxTokens: 320,
+    });
+    if (!suggestion) throw new Error('The coding provider returned no completion.');
+    return { suggestion };
+  }
+  const result = await requestDeepSeekChat({
+    apiKey: key,
+    systemPrompt: 'You are MIRA’s desktop coding assistant. Return only the requested result and never expose credentials.',
+    messages: [{ role: 'user', content: desktopAssistPrompt(task, body) }],
+    maxTokens: task === 'commit' ? 120 : task === 'github-comment' ? 600 : 2_000,
+    think: task === 'workspace-synthesis',
+    tools: [],
+  });
+  if (!result.answer) throw new Error('The coding provider returned no result.');
+  return { suggestion: result.answer };
 }
 
 async function rememberWorkspace(root) {
@@ -813,7 +933,7 @@ async function launchBackgroundCommand(window, {
   environmentOverrides = {},
 }) {
   const preview = commandPreview(command, args);
-  window.webContents.send('mira:terminal-output', {
+  sendToWindow(window, 'mira:terminal-output', {
     requestId,
     chunk: `$ ${preview}\n`,
     reset: false,
@@ -829,7 +949,7 @@ async function launchBackgroundCommand(window, {
     timeout: 0,
     environmentOverrides,
     retainRecentOutput: true,
-    onOutput: (chunk) => window.webContents.send('mira:terminal-output', {
+    onOutput: (chunk) => sendToWindow(window, 'mira:terminal-output', {
       requestId,
       chunk,
       agent: true,
@@ -840,13 +960,13 @@ async function launchBackgroundCommand(window, {
   }, (error) => {
     exited = true;
     earlyFailure = error;
-    window.webContents.send('mira:terminal-output', {
+    sendToWindow(window, 'mira:terminal-output', {
       requestId,
       chunk: `\nProcess stopped: ${error?.message || 'Unknown command error.'}\n`,
       agent: true,
     });
   }).finally(() => {
-    window.webContents.send('mira:terminal-output', {
+    sendToWindow(window, 'mira:terminal-output', {
       requestId,
       chunk: '',
       agent: true,
@@ -1089,7 +1209,7 @@ async function invokeDesktopTool(window, call = {}) {
     try {
       for (const validation of commands) {
         const preview = commandPreview(validation.command, validation.args);
-        window.webContents.send('mira:terminal-output', {
+        sendToWindow(window, 'mira:terminal-output', {
           requestId,
           chunk: `$ ${preview}\n`,
           reset: false,
@@ -1102,7 +1222,7 @@ async function invokeDesktopTool(window, call = {}) {
             cwd,
             requestId,
             environmentOverrides: { CI: '1' },
-            onOutput: (chunk) => window.webContents.send('mira:terminal-output', {
+            onOutput: (chunk) => sendToWindow(window, 'mira:terminal-output', {
               requestId,
               chunk,
               agent: true,
@@ -1118,7 +1238,7 @@ async function invokeDesktopTool(window, call = {}) {
       }
       return JSON.stringify({ passed: true, commands: results });
     } finally {
-      window.webContents.send('mira:terminal-output', {
+      sendToWindow(window, 'mira:terminal-output', {
         requestId,
         chunk: '',
         agent: true,
@@ -1245,7 +1365,7 @@ async function invokeDesktopTool(window, call = {}) {
       });
     }
     if (!requestedId) {
-      window.webContents.send('mira:terminal-output', { requestId, chunk: `$ ${preview}\n`, reset: false, agent: true });
+      sendToWindow(window, 'mira:terminal-output', { requestId, chunk: `$ ${preview}\n`, reset: false, agent: true });
     }
     try {
       return await runExecutableStreaming({
@@ -1254,10 +1374,10 @@ async function invokeDesktopTool(window, call = {}) {
         cwd,
         requestId,
         environmentOverrides: name === 'test.run' ? { CI: '1' } : {},
-        onOutput: (chunk) => window.webContents.send('mira:terminal-output', { requestId, chunk, agent: !requestedId }),
+        onOutput: (chunk) => sendToWindow(window, 'mira:terminal-output', { requestId, chunk, agent: !requestedId }),
       });
     } finally {
-      if (!requestedId) window.webContents.send('mira:terminal-output', { requestId, chunk: '', agent: true, done: true });
+      if (!requestedId) sendToWindow(window, 'mira:terminal-output', { requestId, chunk: '', agent: true, done: true });
     }
   }
 
@@ -1293,7 +1413,7 @@ function createWindow() {
       && !input.alt;
     if (!saveShortcut) return;
     event.preventDefault();
-    window.webContents.send('mira:save-current-file');
+    sendToWindow(window, 'mira:save-current-file');
   });
   window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
     if (!isAllowedLocalPreviewUrl(params.src)) {
@@ -1325,12 +1445,21 @@ function createWindow() {
 
   if (process.argv.includes('--dev')) window.loadURL('http://127.0.0.1:3000');
   else window.loadURL(PRODUCTION_APP_URL);
-  window.once('ready-to-show', () => window.show());
+  window.once('ready-to-show', () => {
+    if (!window.isDestroyed()) window.show();
+  });
+  window.once('closed', () => {
+    for (const child of runningProcesses.values()) {
+      if (!child.killed) child.kill();
+    }
+    runningProcesses.clear();
+  });
   return window;
 }
 
 app.whenReady().then(async () => {
   desktopEnvironment().catch(() => {});
+  await persistEnvironmentProviderKey().catch(() => {});
   await restoreWorkspace();
   const window = createWindow();
   ipcMain.handle('mira:runtime-info', () => ({
@@ -1344,6 +1473,39 @@ app.whenReady().then(async () => {
   ipcMain.handle('mira:request-permission', async (_event, permission) => (
     requestSystemPermission(String(permission || ''))
   ));
+  ipcMain.handle('mira:provider-status', async () => getProviderStatus());
+  ipcMain.handle('mira:configure-deepseek', async (_event, value) => {
+    try {
+      await saveDeepSeekKey(value);
+      return { ok: true, status: await getProviderStatus() };
+    } catch (error) {
+      return { ok: false, error: error?.message || 'Could not configure the coding provider.' };
+    }
+  });
+  ipcMain.handle('mira:agent-chat', async (_event, body) => {
+    try {
+      const key = await getDeepSeekKey();
+      if (!key) throw new Error('Configure the DeepSeek coding provider under System access.');
+      const result = await requestDeepSeekChat({
+        apiKey: key,
+        messages: body?.messages,
+        systemPrompt: body?.systemPrompt,
+        tools: body?.tools,
+        maxTokens: body?.maxTokens,
+        think: body?.think,
+      });
+      return { ok: true, ...result };
+    } catch (error) {
+      return { ok: false, error: error?.message || 'The desktop coding provider is unavailable.' };
+    }
+  });
+  ipcMain.handle('mira:code-assist', async (_event, body) => {
+    try {
+      return { ok: true, ...await runDesktopCodeAssist(body) };
+    } catch (error) {
+      return { ok: false, error: error?.message || 'The desktop coding assistant is unavailable.' };
+    }
+  });
   ipcMain.handle('mira:choose-workspace', async () => {
     const previousWorkspace = workspaceRoot;
     workspaceRoot = '';

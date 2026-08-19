@@ -29,13 +29,17 @@ const capabilities = Object.freeze([
 ]);
 
 contextBridge.exposeInMainWorld('miraDesktop', Object.freeze({
-  bridgeVersion: 8,
+  bridgeVersion: 9,
   platform: process.platform,
   capabilities,
   chooseWorkspace: () => ipcRenderer.invoke('mira:choose-workspace'),
   getRuntimeInfo: () => ipcRenderer.invoke('mira:runtime-info'),
   getPermissionStatus: () => ipcRenderer.invoke('mira:permission-status'),
   requestPermission: (permission) => ipcRenderer.invoke('mira:request-permission', permission),
+  getProviderStatus: () => ipcRenderer.invoke('mira:provider-status'),
+  configureDeepSeek: (key) => ipcRenderer.invoke('mira:configure-deepseek', key),
+  requestAgentChat: (payload) => ipcRenderer.invoke('mira:agent-chat', payload),
+  requestCodeAssist: (payload) => ipcRenderer.invoke('mira:code-assist', payload),
   getWorkspaceMemory: () => ipcRenderer.invoke('mira:workspace-memory'),
   appendWorkspaceTurn: (turn) => ipcRenderer.invoke('mira:append-workspace-turn', turn),
   saveWorkspaceFile: (payload) => ipcRenderer.invoke('mira:save-workspace-file', payload),

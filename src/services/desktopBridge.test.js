@@ -4,9 +4,13 @@ import {
   chooseDesktopWorkspace,
   appendDesktopWorkspaceTurn,
   executeDesktopTool,
+  configureDesktopDeepSeek,
   getDesktopBridge,
   getDesktopPermissionStatus,
+  getDesktopProviderStatus,
   getDesktopRuntimeInfo,
+  requestDesktopAgentChat,
+  requestDesktopCodeAssist,
   requestDesktopPermission,
   saveDesktopWorkspaceFile,
   subscribeDesktopSaveShortcut,
@@ -25,6 +29,28 @@ test('desktop workspace helpers remain unavailable on the web', async () => {
   assert.equal(await getDesktopPermissionStatus({ window: {} }), null);
   await assert.rejects(chooseDesktopWorkspace({ window: {} }), /desktop application/i);
   await assert.rejects(requestDesktopPermission('accessibility', { window: {} }), /desktop application/i);
+  assert.equal(await getDesktopProviderStatus({ window: {} }), null);
+  assert.equal(await requestDesktopAgentChat({}, { window: {} }), null);
+  assert.equal(await requestDesktopCodeAssist({}, { window: {} }), null);
+  await assert.rejects(configureDesktopDeepSeek('secret', { window: {} }), /update the installed/i);
+});
+
+test('desktop AI requests cross only the trusted preload bridge', async () => {
+  const scope = {
+    window: {
+      miraDesktop: {
+        invokeTool: async () => ({ ok: true }),
+        getProviderStatus: async () => ({ deepseekConfigured: true }),
+        configureDeepSeek: async () => ({ ok: true, status: { deepseekConfigured: true } }),
+        requestAgentChat: async () => ({ ok: true, answer: 'done', toolCalls: [] }),
+        requestCodeAssist: async () => ({ ok: true, suggestion: 'return value;' }),
+      },
+    },
+  };
+  assert.equal((await getDesktopProviderStatus(scope)).deepseekConfigured, true);
+  assert.equal((await configureDesktopDeepSeek('secret', scope)).deepseekConfigured, true);
+  assert.equal((await requestDesktopAgentChat({ messages: [] }, scope)).answer, 'done');
+  assert.equal((await requestDesktopCodeAssist({ task: 'completion' }, scope)).suggestion, 'return value;');
 });
 
 test('desktop permission requests use only the allowlisted native bridge', async () => {

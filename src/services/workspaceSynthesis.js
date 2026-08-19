@@ -1,3 +1,5 @@
+import { requestDesktopCodeAssist } from './desktopBridge.js';
+
 function toolEvidenceText(toolResults = []) {
   return toolResults
     .slice(-20)
@@ -13,14 +15,23 @@ function parseJsonResult(toolResults, name) {
 }
 
 export async function requestWorkspaceSynthesis({ request, toolResults, fetchImpl = fetch, signal } = {}) {
+  const body = {
+    task: 'workspace-synthesis',
+    request: String(request || '').slice(0, 4_000),
+    evidence: toolEvidenceText(toolResults),
+  };
+  let desktopResult = null;
+  try {
+    desktopResult = await requestDesktopCodeAssist(body);
+  } catch {
+    // The hosted small-model route remains a secondary synthesis fallback.
+  }
+  if (desktopResult?.suggestion) return String(desktopResult.suggestion).trim();
+
   const response = await fetchImpl('/api/code-assist', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      task: 'workspace-synthesis',
-      request: String(request || '').slice(0, 4_000),
-      evidence: toolEvidenceText(toolResults),
-    }),
+    body: JSON.stringify(body),
     signal,
   });
   const payload = await response.json().catch(() => ({}));

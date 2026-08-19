@@ -11,6 +11,7 @@ import { syntaxTree } from '@codemirror/language';
 import { keymap } from '@codemirror/view';
 import { linter } from '@codemirror/lint';
 import { oneDark } from '@codemirror/theme-one-dark';
+import { requestDesktopCodeAssist } from '../../services/desktopBridge.js';
 
 function extensionForPath(path = '') {
   const extension = path.split('.').pop()?.toLowerCase();
@@ -59,19 +60,29 @@ export default function WorkspaceCodeEditor({ path, value, onChange, onSave, onD
     setAiBusy(true);
     try {
       const source = context.state.doc.toString();
-      const response = await fetch('/api/code-assist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task: 'completion',
-          path,
-          language: languageName(path),
-          prefix: source.slice(0, context.pos),
-          suffix: source.slice(context.pos),
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.suggestion) return null;
+      const request = {
+        task: 'completion',
+        path,
+        language: languageName(path),
+        prefix: source.slice(0, context.pos),
+        suffix: source.slice(context.pos),
+      };
+      let payload = null;
+      try {
+        payload = await requestDesktopCodeAssist(request);
+      } catch {
+        // Fall through to the managed Qwen completion route.
+      }
+      if (!payload) {
+        const response = await fetch('/api/code-assist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        payload = await response.json().catch(() => ({}));
+        if (!response.ok) return null;
+      }
+      if (!payload.suggestion) return null;
       const suggestion = String(payload.suggestion);
       return {
         from: context.pos,

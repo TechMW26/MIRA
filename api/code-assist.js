@@ -1,6 +1,8 @@
 export const config = { maxDuration: 30 };
 
-const POLLINATIONS_ORIGIN = 'https://gen.pollinations.ai';
+const POLLINATIONS_ORIGIN = String(process.env.POLLINATIONS_API_URL || 'https://gen.pollinations.ai')
+  .trim()
+  .replace(/\/+$/, '');
 let cachedModel = null;
 let modelCacheExpiresAt = 0;
 let cachedEmbeddingModel = null;
@@ -28,7 +30,10 @@ export function selectAssistModel(models = []) {
   return candidates
     .map((model) => {
       const description = String(model.description || '').toLowerCase();
+      const name = String(model.name || '').toLowerCase();
       let score = 0;
+      if (/qwen[-_ ]?coder/.test(name)) score += 12;
+      if (/coder/.test(name)) score += 8;
       if (/cod(e|ing)|developer|agentic/.test(description)) score += 5;
       if (/fast|flash|compact|small|low-cost|affordable/.test(description)) score += 4;
       if (model.tools) score += 1;

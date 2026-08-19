@@ -26,9 +26,12 @@ import {
 } from 'lucide-react';
 import {
   chooseDesktopWorkspace,
+  configureDesktopDeepSeek,
   executeDesktopTool,
   getDesktopPermissionStatus,
+  getDesktopProviderStatus,
   getDesktopRuntimeInfo,
+  requestDesktopCodeAssist,
   requestDesktopPermission,
   saveDesktopWorkspaceFile,
   subscribeDesktopSaveShortcut,
@@ -90,6 +93,9 @@ export default function DesktopWorkspace({ style }) {
   const [permissionBusy, setPermissionBusy] = useState('');
   const [permissionError, setPermissionError] = useState('');
   const [permissionMessage, setPermissionMessage] = useState('');
+  const [providerStatus, setProviderStatus] = useState(null);
+  const [providerKey, setProviderKey] = useState('');
+  const [providerBusy, setProviderBusy] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState('');
@@ -209,6 +215,7 @@ export default function DesktopWorkspace({ style }) {
       }
     }).catch(() => setPermissionStatus(null));
     refreshPermissionStatus();
+    getDesktopProviderStatus().then(setProviderStatus).catch(() => setProviderStatus(null));
     window.addEventListener('focus', refreshPermissionStatus);
     return () => window.removeEventListener('focus', refreshPermissionStatus);
   }, [loadDirectory]);
@@ -286,6 +293,24 @@ export default function DesktopWorkspace({ style }) {
       setPermissionError(permissionError?.message || 'Could not open system permissions.');
     } finally {
       setPermissionBusy('');
+    }
+  }
+
+  async function configureCodingProvider(event) {
+    event.preventDefault();
+    if (!providerKey.trim()) return;
+    setProviderBusy(true);
+    setPermissionError('');
+    setPermissionMessage('');
+    try {
+      const status = await configureDesktopDeepSeek(providerKey);
+      setProviderStatus(status);
+      setProviderKey('');
+      setPermissionMessage('DeepSeek coding access verified and stored securely on this device.');
+    } catch (providerError) {
+      setPermissionError(providerError?.message || 'Could not configure the coding provider.');
+    } finally {
+      setProviderBusy(false);
     }
   }
 
@@ -609,13 +634,23 @@ export default function DesktopWorkspace({ style }) {
     setAiReviewBusy(task);
     setError('');
     try {
-      const response = await fetch('/api/code-assist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task, diff: gitDiff, status: gitInfo.status }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.suggestion) throw new Error(payload.error || 'AI suggestion failed.');
+      const request = { task, diff: gitDiff, status: gitInfo.status };
+      let payload = null;
+      try {
+        payload = await requestDesktopCodeAssist(request);
+      } catch {
+        // Fall through to the managed small-model route.
+      }
+      if (!payload) {
+        const response = await fetch('/api/code-assist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || 'AI suggestion failed.');
+      }
+      if (!payload.suggestion) throw new Error('AI suggestion failed.');
       if (task === 'commit') setCommitMessage(String(payload.suggestion).split('\n')[0].slice(0, 200));
       else setReviewComment(String(payload.suggestion));
     } catch (assistError) {
@@ -983,6 +1018,26 @@ export default function DesktopWorkspace({ style }) {
                   </button>
                 </article>
               )}
+              <article>
+                <div>
+                  <strong>DeepSeek coding agent</strong>
+                  <span>{providerStatus?.deepseekConfigured ? `Ready · ${providerStatus.deepseekModel}` : 'Required for desktop coding, reasoning, and tool orchestration.'}</span>
+                </div>
+                <form onSubmit={configureCodingProvider} className="desktop-provider-form">
+                  <input
+                    type="password"
+                    value={providerKey}
+                    onChange={(event) => setProviderKey(event.target.value)}
+                    placeholder={providerStatus?.deepseekConfigured ? 'Replace API key' : 'DeepSeek API key'}
+                    autoComplete="off"
+                    spellCheck="false"
+                    aria-label="DeepSeek API key"
+                  />
+                  <button type="submit" disabled={providerBusy || !providerKey.trim()} className="desktop-ide-button">
+                    {providerBusy ? 'Verifying…' : providerStatus?.deepseekConfigured ? 'Update' : 'Configure'}
+                  </button>
+                </form>
+              </article>
             </div>
             {permissionError && <p className="desktop-permission-alert" role="alert">{permissionError}</p>}
             {permissionMessage && <p className="desktop-permission-success" role="status">{permissionMessage}</p>}

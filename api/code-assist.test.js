@@ -9,6 +9,13 @@ test('selects a fast coding-capable Pollinations model dynamically', () => {
   ]), 'quick-code');
 });
 
+test('prefers a Qwen coder model for managed coding tasks', () => {
+  assert.equal(selectAssistModel([
+    { name: 'general-fast', description: 'Fast affordable coding assistant', output_modalities: ['text'] },
+    { name: 'qwen-coder', description: 'Code completion model', output_modalities: ['text'] },
+  ]), 'qwen-coder');
+});
+
 test('prefers the Qwen semantic embedding model for code retrieval', () => {
   assert.equal(selectEmbeddingModel([
     { name: 'openai-3-small', description: 'Fast text embeddings' },

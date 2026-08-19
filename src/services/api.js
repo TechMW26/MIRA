@@ -8,6 +8,8 @@ import {
   shouldRetryChatRequest,
 } from './chatRequestPolicy.js';
 import { diagnosticError, diagnosticLog, diagnosticWarn } from './diagnostics.js';
+import { requestDesktopAgentChat } from './desktopBridge.js';
+import { MIRA_IDENTITY_PROMPT } from '../config/systemPrompt.js';
 
 let activeChatAbortController = null;
 let activeChatRequestId = null;
@@ -653,6 +655,30 @@ export async function sendChatMessage(messages, onChunk, images = [], {
   let latestAnswer = '';
   let latestThinking = '';
   let streamed;
+  if (!images.length) {
+    try {
+      const desktop = await requestDesktopAgentChat({
+        messages,
+        systemPrompt: [MIRA_IDENTITY_PROMPT, systemPrompt].filter(Boolean).join('\n\n'),
+        tools,
+        think,
+        maxTokens,
+      });
+      if (desktop) {
+        const control = toolCallsToControl(desktop.toolCalls);
+        const answer = control || String(desktop.answer || '').trim();
+        if (!answer) throw new Error('The desktop coding provider returned no result.');
+        const thinking = String(desktop.thinking || '').trim();
+        if (thinking) onThinking?.(thinking);
+        onChunk?.(answer, answer);
+        return answer;
+      }
+    } catch (error) {
+      diagnosticWarn('model', 'desktop coding provider unavailable; using primary model fallback', {
+        error: error?.message || 'Unknown desktop provider error',
+      });
+    }
+  }
   try {
     streamed = await requestChat({
       messages,

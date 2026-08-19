@@ -47,6 +47,38 @@ export async function requestDesktopPermission(permission, scope = globalThis) {
   return await bridge.requestPermission(permission);
 }
 
+export async function getDesktopProviderStatus(scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.getProviderStatus !== 'function') return null;
+  return await bridge.getProviderStatus();
+}
+
+export async function configureDesktopDeepSeek(key, scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.configureDeepSeek !== 'function') {
+    throw new Error('Update the installed MIRA desktop app before configuring the coding provider.');
+  }
+  const result = await bridge.configureDeepSeek(String(key || ''));
+  if (!result?.ok) throw new Error(result?.error || 'Could not configure the coding provider.');
+  return result.status;
+}
+
+export async function requestDesktopAgentChat(payload, scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.requestAgentChat !== 'function') return null;
+  const result = await bridge.requestAgentChat(payload);
+  if (!result?.ok) throw new Error(result?.error || 'The desktop coding provider is unavailable.');
+  return result;
+}
+
+export async function requestDesktopCodeAssist(payload, scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.requestCodeAssist !== 'function') return null;
+  const result = await bridge.requestCodeAssist(payload);
+  if (!result?.ok) throw new Error(result?.error || 'The desktop coding assistant is unavailable.');
+  return result;
+}
+
 export async function getDesktopWorkspaceMemory(scope = globalThis) {
   const bridge = getDesktopBridge(scope);
   if (!bridge || typeof bridge.getWorkspaceMemory !== 'function') return null;
