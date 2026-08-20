@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Check, FileText, FileCode, File, X, ExternalLink, Download, RefreshCw, Pencil, Globe, EyeOff } from 'lucide-react';
+import { Copy, Check, FileText, FileCode, File, X, ExternalLink, Download, RefreshCw, Pencil, Globe, EyeOff, FileDiff, RotateCcw, RotateCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
@@ -10,6 +10,7 @@ import ParticleText from './ParticleText';
 import RelatedMedia from './RelatedMedia';
 import UserAvatar from '../common/UserAvatar';
 import { exportDocument, sanitizeDocumentContent } from '../../utils/documentExport';
+import { executeDesktopTool } from '../../services/desktopBridge.js';
 
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
 const VIDEO_GEN_PATTERN = /\[VIDEO_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
@@ -279,14 +280,18 @@ function ThinkingSection({ content, isActive }) {
   const [expanded, setExpanded] = useState(Boolean(isActive));
   const scrollRef = useRef(null);
   const [lines, setLines] = useState([]);
+  const isAgentActivity = String(content || '').startsWith('[Agent activity]');
 
   // Split streaming thinking content into lines that appear one by one
   useEffect(() => {
     if (!content) return;
     // Split on sentences / line breaks for a cascading effect
-    const raw = content.replace(/\n{2,}/g, '\n').split(/(?<=[.!?])\s+|\n/);
+    const visibleContent = isAgentActivity
+      ? content.replace(/^\[Agent activity\]\s*/, '')
+      : content;
+    const raw = visibleContent.replace(/\n{2,}/g, '\n').split(/(?<=[.!?])\s+|\n/);
     setLines(raw.filter(Boolean));
-  }, [content]);
+  }, [content, isAgentActivity]);
 
   useEffect(() => {
     if (isActive && scrollRef.current) {
@@ -308,22 +313,99 @@ function ThinkingSection({ content, isActive }) {
         className="thinking-toggle"
         aria-expanded={expanded}
       >
-        <span className="thinking-label">{isActive ? 'Thinking' : 'Thought process'}</span>
+        <span className="thinking-label">{isAgentActivity ? (isActive ? 'Live work' : 'Work log') : (isActive ? 'Thinking' : 'Thought process')}</span>
         {isActive && !expanded && <span className="thinking-live-dot" />}
       </button>
 
       <div className={`thinking-body${expanded ? ' is-expanded' : ''}`}>
         <div ref={scrollRef} className="thinking-scroll">
           <div className="thinking-lines">
-            {lines.map((line, i) => (
+            {lines.map((line, i) => {
+              const changeType = isAgentActivity && /^\s*\+\s/.test(line)
+                ? ' is-addition'
+                : isAgentActivity && /^\s*-\s/.test(line)
+                  ? ' is-removal'
+                  : '';
+              return (
               <div key={`${i}-${line}`} className="thinking-line">
-                <span className={`thinking-line-text${isActive && i >= lines.length - 2 ? ' is-ghosting' : ''}`}>{line}</span>
+                <span className={`thinking-line-text${isAgentActivity ? ' is-agent-activity' : ''}${changeType}${isActive && i >= lines.length - 2 ? ' is-ghosting' : ''}`}>{line}</span>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function WorkspaceChangeActions({ changes = [] }) {
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [state, setState] = useState('applied');
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const validChanges = changes.filter((change) => change?.id && change?.path);
+
+  const applyAction = useCallback(async (action) => {
+    if (!validChanges.length || busy) return;
+    setBusy(action);
+    setError('');
+    const ordered = action === 'undo' ? [...validChanges].reverse() : validChanges;
+    try {
+      for (const change of ordered) {
+        await executeDesktopTool({
+          name: action === 'undo' ? 'change.undo' : 'change.redo',
+          arguments: { id: change.id },
+        });
+      }
+      setState(action === 'undo' ? 'undone' : 'applied');
+      window.dispatchEvent(new CustomEvent('mira-workspace-changed', {
+        detail: { action, paths: validChanges.map((change) => change.path) },
+      }));
+    } catch (actionError) {
+      setError(actionError?.message || `Could not ${action === 'undo' ? 'undo' : 'reapply'} these changes.`);
+    } finally {
+      setBusy('');
+    }
+  }, [busy, validChanges]);
+
+  if (!validChanges.length) return null;
+
+  return (
+    <section className="workspace-change-card not-prose" aria-label="Completed workspace changes">
+      <div className="workspace-change-actions">
+        <button type="button" onClick={() => setReviewOpen((value) => !value)} aria-expanded={reviewOpen}>
+          <FileDiff size={14} /> Review {validChanges.length} {validChanges.length === 1 ? 'change' : 'changes'}
+        </button>
+        {state === 'applied' ? (
+          <button type="button" onClick={() => applyAction('undo')} disabled={Boolean(busy)}>
+            <RotateCcw size={14} /> {busy === 'undo' ? 'Undoing…' : 'Undo'}
+          </button>
+        ) : (
+          <button type="button" onClick={() => applyAction('reapply')} disabled={Boolean(busy)}>
+            <RotateCw size={14} /> {busy === 'reapply' ? 'Reapplying…' : 'Reapply'}
+          </button>
+        )}
+      </div>
+      {reviewOpen && (
+        <div className="workspace-change-review">
+          {validChanges.map((change) => (
+            <article key={change.id} className="workspace-change-file">
+              <header>{change.path}</header>
+              <div className="workspace-change-diff" role="region" aria-label={`Diff for ${change.path}`}>
+                {(change.removals || []).map((line, index) => (
+                  <div key={`remove-${index}`} className="workspace-change-line is-removal"><span>-</span><code>{line || ' '}</code></div>
+                ))}
+                {(change.additions || []).map((line, index) => (
+                  <div key={`add-${index}`} className="workspace-change-line is-addition"><span>+</span><code>{line || ' '}</code></div>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+      {error && <p className="workspace-change-error" role="alert">{error}</p>}
+    </section>
   );
 }
 
@@ -1052,6 +1134,9 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
               )}
               {message.media && !message.isStreaming && (
                 <RelatedMedia media={message.media} />
+              )}
+              {!message.isStreaming && Array.isArray(message.workspaceChanges) && message.workspaceChanges.length > 0 && (
+                <WorkspaceChangeActions changes={message.workspaceChanges} />
               )}
               {isLast && message.content === '' && !message.thinkingContent && isSearching && (
                 <SearchingPlaceholder />

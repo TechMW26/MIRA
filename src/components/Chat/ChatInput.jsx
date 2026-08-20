@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import {
   Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Loader,
   Globe, Code2, Zap, Wrench, BookMarked, Share2, ListPlus, CornerDownRight, Pencil, Check,
+  Mic, MicOff,
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 import {
@@ -107,6 +108,10 @@ export default function ChatInput({
   onSendQueuedNow,
   onHeightChange,
   currentUserId = '',
+  voiceActive = false,
+  voiceStatus = 'idle',
+  voiceStatusLabel = 'Voice mode',
+  onToggleVoice,
 }) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState([]);
@@ -490,6 +495,18 @@ export default function ChatInput({
               </p>
             )}
 
+            {(voiceActive || voiceStatus === 'connecting' || voiceStatus === 'error') && (
+              <div className="voice-mode-status" role="status" aria-live="polite" data-state={voiceStatus}>
+                <span className="voice-mode-status__pulse" />
+                <span>{voiceStatusLabel}</span>
+                {voiceActive && (
+                  <button type="button" onClick={onToggleVoice} aria-label="End voice conversation">
+                    End
+                  </button>
+                )}
+              </div>
+            )}
+
             {attachments.length > 0 && (
               <div className="hud-attachment-strip pt-3 pb-2">
                 {attachments.map((att, i) => {
@@ -558,6 +575,18 @@ export default function ChatInput({
                 title="Attach files"
               >
                 {parsing ? <Loader size={18} className="animate-spin" /> : <Paperclip size={18} />}
+              </button>
+
+              <button
+                type="button"
+                onClick={onToggleVoice}
+                className="composer-icon-btn"
+                data-active={voiceActive || undefined}
+                title={voiceActive ? 'End voice conversation' : 'Start voice conversation'}
+                aria-label={voiceActive ? 'End voice conversation' : 'Start voice conversation'}
+                aria-pressed={voiceActive}
+              >
+                {voiceActive ? <MicOff size={18} /> : <Mic size={18} />}
               </button>
 
               {isGenerating ? (

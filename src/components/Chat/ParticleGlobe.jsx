@@ -154,7 +154,10 @@ export default function ParticleGlobe({
       const layout = getGlobeLayout(width, height);
       const cx = layout.centerX;
       const cy = layout.centerY;
-      const R = layout.globeRadius;
+      // On the home screen the Bloub identity owns the former globe diameter,
+      // so the particle hull contracts to the avatar's former diameter.
+      const formerAvatarDiameter = Math.max(118, Math.min(190, layout.globeRadius * 0.82));
+      const R = hasChats ? layout.globeRadius : formerAvatarDiameter / 2;
       const nowMs = performance.now();
       
       // In chat mode, disable MOUSE tracking but keep all autonomous behavior

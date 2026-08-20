@@ -108,7 +108,11 @@ import {
   appendDesktopWorkspaceTurn,
   getDesktopWorkspaceMemory,
 } from '../services/desktopBridge.js';
-import { buildWorkspaceMemoryPrompt } from '../services/workspaceMemory.js';
+import {
+  buildWorkspaceHistoryMessages,
+  buildWorkspaceMemoryPrompt,
+  mergeWorkspaceHistoryMessages,
+} from '../services/workspaceMemory.js';
 import {
   buildLocalWorkspaceSummary,
   requestWorkspaceSynthesis,
@@ -176,8 +180,71 @@ function desktopToolTitle(call = {}) {
   })[call.name] || 'Work on workspace';
 }
 
+function compactActivityLines(value = '', prefix = '', limit = 5) {
+  return String(value || '')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((line) => `${prefix}${line.slice(0, 220)}`);
+}
+
+function boundedChangeLines(value = '', limit = 80) {
+  const lines = String(value || '').split('\n').slice(0, limit).map((line) => line.slice(0, 500));
+  return lines.join('\n').slice(0, 12_000).split('\n');
+}
+
+function desktopChangeSummary(call = {}, result = '') {
+  if (![AGENT_CAPABILITIES.FILE_WRITE, AGENT_CAPABILITIES.FILE_REPLACE].includes(call.name)) return null;
+  let payload = {};
+  try { payload = JSON.parse(String(result || '{}')); } catch {}
+  if (!payload.changeId || !payload.path) return null;
+  const args = call.arguments || {};
+  return {
+    id: payload.changeId,
+    path: payload.path,
+    additions: Array.isArray(payload.additions)
+      ? payload.additions.map((line) => String(line).slice(0, 500))
+      : boundedChangeLines(call.name === AGENT_CAPABILITIES.FILE_WRITE ? args.content : args.newText),
+    removals: Array.isArray(payload.removals)
+      ? payload.removals.map((line) => String(line).slice(0, 500))
+      : call.name === AGENT_CAPABILITIES.FILE_REPLACE ? boundedChangeLines(args.oldText) : [],
+  };
+}
+
+function desktopToolActivity(call = {}, status = 'running', result = '') {
+  const title = desktopToolTitle(call);
+  const marker = status === 'error' ? '✕' : status === 'done' ? '✓' : '•';
+  const lines = [`${marker} ${status === 'running' ? `${title}…` : title}`];
+  const args = call.arguments || {};
+
+  if (status === 'done' && [AGENT_CAPABILITIES.FILE_REPLACE, AGENT_CAPABILITIES.FILE_WRITE].includes(call.name)) {
+    let payload = {};
+    try { payload = JSON.parse(String(result || '{}')); } catch {}
+    const removals = Array.isArray(payload.removals) ? payload.removals.join('\n') : args.oldText;
+    const additions = Array.isArray(payload.additions)
+      ? payload.additions.join('\n')
+      : call.name === AGENT_CAPABILITIES.FILE_WRITE ? args.content : args.newText;
+    lines.push(...compactActivityLines(removals, '  - '));
+    lines.push(...compactActivityLines(additions, '  + '));
+  } else if (status === 'running' && [AGENT_CAPABILITIES.SHELL_RUN, AGENT_CAPABILITIES.TEST_RUN].includes(call.name)) {
+    const command = [args.command, ...(Array.isArray(args.args) ? args.args : [])].filter(Boolean).join(' ');
+    if (command) lines.push(`  $ ${command.slice(0, 300)}`);
+  } else if (status === 'error') {
+    const message = String(result || 'The operation failed.').replace(/\s+/g, ' ').trim();
+    lines.push(`  ${message.slice(0, 320)}`);
+  }
+
+  return lines.join('\n');
+}
+
 function stripAllControlText(text = '') {
   return stripToolControl(stripBrowserControl(stripWebSearchControl(text)));
+}
+
+function isToolNarration(text = '') {
+  return /\b(?:let me|i(?:'ll|\s+will)|checking|searching|browsing|looking\s+up)\b[\s\S]{0,100}\b(?:search|check|verify|browse|internet|web|tool)\b/i
+    .test(String(text || ''));
 }
 
 function applyTaskWorkflowPhase(workflow, update = {}) {
@@ -962,6 +1029,25 @@ export default function useChat() {
   const titleSessionRef = useRef({ conversationId: null, messages: [] });
   const generationRunRef = useRef(0);
   const activeResponseRef = useRef(null);
+  const workspaceHistoryRef = useRef([]);
+
+  const refreshWorkspaceHistory = useCallback(async () => {
+    try {
+      const memory = await getDesktopWorkspaceMemory();
+      const history = buildWorkspaceHistoryMessages(memory);
+      workspaceHistoryRef.current = history;
+      setMessages((previous) => mergeWorkspaceHistoryMessages(
+        history,
+        currentConversationId
+          ? previous.filter((message) => !message?.workspaceHistory)
+          : [],
+      ));
+    } catch (error) {
+      diagnosticWarn('context', 'desktop workspace history could not be restored', {
+        error: error?.message || 'Unknown workspace history error',
+      });
+    }
+  }, [currentConversationId]);
 
   const persistConversationUpdate = useCallback(async (conversationId, data) => {
     if (!user?.uid || !conversationId) return;
@@ -1096,6 +1182,12 @@ export default function useChat() {
   }, []);
 
   useEffect(() => {
+    refreshWorkspaceHistory();
+    window.addEventListener('mira:workspace-changed', refreshWorkspaceHistory);
+    return () => window.removeEventListener('mira:workspace-changed', refreshWorkspaceHistory);
+  }, [refreshWorkspaceHistory]);
+
+  useEffect(() => {
     const previous = titleSessionRef.current;
     if (previous.conversationId && previous.conversationId !== currentConversationId) {
       refreshConversationTitle(previous.conversationId, previous.messages).catch(() => {});
@@ -1133,10 +1225,13 @@ export default function useChat() {
 
   useEffect(() => {
     if (!currentConversationId) {
-      setMessages([]);
+      setMessages(workspaceHistoryRef.current);
       return;
     }
 
+    // Do not render the previous chat while the requested URL-backed session
+    // is loading its own realtime timeline.
+    setMessages([]);
     const unsub = subscribeMessages(currentConversationId, (msgs) => {
       setMessages((previous) => {
         const previousById = new Map((previous || []).map((msg) => [msg.id, msg]));
@@ -1171,20 +1266,62 @@ export default function useChat() {
         // Preserve local echoes that were rendered instantly on send, until
         // Firebase catches up with the persisted server message.
         const pendingLocalEchoes = (previous || []).filter((msg) => msg?.localEcho);
-        if (!pendingLocalEchoes.length) return next;
+        const merged = mergeWorkspaceHistoryMessages(workspaceHistoryRef.current, next);
+        if (!pendingLocalEchoes.length) return merged;
 
-        const incomingFingerprints = new Set(next.map((msg) => messageFingerprint(msg)));
+        const incomingFingerprints = new Set(merged.map((msg) => messageFingerprint(msg)));
         const unresolvedEchoes = pendingLocalEchoes.filter(
           (msg) => !incomingFingerprints.has(messageFingerprint(msg)),
         );
 
-        if (!unresolvedEchoes.length) return next;
-        return [...next, ...unresolvedEchoes];
+        if (!unresolvedEchoes.length) return merged;
+        return [...merged, ...unresolvedEchoes];
 
       });
     });
     return unsub;
   }, [currentConversationId]);
+
+  useEffect(() => {
+    if (!currentConversationId || activeProjectId || isGenerating) return undefined;
+    const interrupted = messages.filter((message) => (
+      message?.role === 'assistant' && message?.isStreaming
+    ));
+    if (!interrupted.length) return undefined;
+
+    const timer = setTimeout(() => {
+      if (activeResponseRef.current?.conversationId === currentConversationId) return;
+      const interruptedIds = new Set(interrupted.map((message) => message.id));
+      setMessages((previous) => previous.map((message) => (
+        interruptedIds.has(message.id)
+          ? {
+            ...message,
+            content: String(message.content || '').trim()
+              || 'This response was interrupted when the session reloaded. Please retry to continue.',
+            interrupted: true,
+            isStreaming: false,
+          }
+          : message
+      )));
+      interrupted.forEach((message) => {
+        updateMessage(currentConversationId, message.id, {
+          content: String(message.content || '').trim()
+            || 'This response was interrupted when the session reloaded. Please retry to continue.',
+          interrupted: true,
+          isStreaming: false,
+          streamCompletedAt: Date.now(),
+        }).catch((error) => {
+          diagnosticWarn('stream', 'interrupted response recovery failed', {
+            conversationId: currentConversationId,
+            messageId: message.id,
+            error: error?.message || 'Unknown persistence error',
+          });
+        });
+      });
+    }, 2500);
+
+    return () => clearTimeout(timer);
+  }, [activeProjectId, currentConversationId, isGenerating, messages]);
 
   const stopGenerating = useCallback(() => {
     generationRunRef.current += 1;
@@ -1273,6 +1410,7 @@ export default function useChat() {
       let convId = currentConversationId;
       const replaceMessageId = options.replaceMessageId || null;
       let assistantMsgId = null;
+      let completedAnswer = '';
 
       const textAttachments = attachments.filter((a) => !a.isImage);
       const imageAttachments = attachments.filter((a) => a.isImage);
@@ -1373,7 +1511,9 @@ export default function useChat() {
         }
         if (!isCurrentRun()) return;
 
-        let historySource = isNewChat ? [] : messages;
+        let historySource = isNewChat
+          ? messages.filter((message) => message?.workspaceHistory)
+          : messages;
         if (interruptedResponse?.content) {
           const interruptedIndex = historySource.findIndex(
             (message) => message.id === interruptedResponse.messageId,
@@ -1566,8 +1706,8 @@ export default function useChat() {
           type: 'text',
           timestamp: assistantTimestamp,
           generatedBy: messageAuthor,
-          isStreaming: Boolean(activeProjectId),
-          ...(activeProjectId ? { streamStartedAt: assistantTimestamp } : {}),
+          isStreaming: true,
+          streamStartedAt: assistantTimestamp,
         });
         if (replaceMessageId) {
           [, assistantMsgId] = await Promise.all([
@@ -1605,15 +1745,13 @@ export default function useChat() {
           conversationId: convId,
           messageId: assistantMsgId,
           content: '',
-          syncWriter: activeProjectId
-            ? createThrottledRealtimeWriter(
-              (payload) => updateMessage(convId, assistantMsgId, payload),
-              {
-                intervalMs: 250,
-                onError: (error) => console.warn('Project answer live sync failed:', error?.message || error),
-              },
-            )
-            : null,
+          syncWriter: createThrottledRealtimeWriter(
+            (payload) => updateMessage(convId, assistantMsgId, payload),
+            {
+              intervalMs: activeProjectId ? 250 : 400,
+              onError: (error) => console.warn('Answer live sync failed:', error?.message || error),
+            },
+          ),
         };
 
         if (simpleGreeting) {
@@ -1680,6 +1818,7 @@ export default function useChat() {
         // into the LLM prompt (would bloat tokens and confuse the model).
         let mediaForMessage = null;
         let generatedMediaForMessage = null;
+        let workspaceChangesForMessage = [];
         let deterministicMediaReply = null;
         let groundingSearchData = null;
         let groundingSearchQuery = '';
@@ -2230,16 +2369,22 @@ export default function useChat() {
                   requestedWebSearchQuery = controlRequest.query;
                   setIsSearching(true);
                 }
-                const visibleText = stripAllControlText(accumulated);
                 const controlPending = isPotentialToolControl(accumulated) || isPotentialWebSearchControl(accumulated) || isPotentialBrowserControl(accumulated);
+                const hasHiddenControl = Boolean(controlRequest || browserRequest || toolCall || controlPending);
+                const visibleText = hasHiddenControl ? '' : stripAllControlText(accumulated);
                 if (!firstChunkSeen && visibleText && !controlRequest && !browserRequest && !toolCall) { firstChunkSeen = true; setIsSearching(false); }
                 fullText = accumulated;
                 flushStreamingContent(visibleText);
+                if (options.voice && visibleText && !isToolNarration(visibleText)) {
+                  options.onResponseChunk?.(visibleText, { final: false });
+                }
               },
               images,
               {
+                desktopCoding: desktopWorkspaceRequest.active,
                 think: shouldThink,
                 tools: responseModelTools,
+                voice: Boolean(options.voice),
                 onThinking: (accumulated) => {
                   if (!isCurrentRun()) return;
                   const thinkingControlRequest = extractWebSearchRequest(accumulated);
@@ -2327,6 +2472,7 @@ export default function useChat() {
                     },
                     images,
                     {
+                      desktopCoding: desktopWorkspaceRequest.active,
                       think: false,
                       tools: [],
                     },
@@ -2404,6 +2550,7 @@ export default function useChat() {
                   },
                   images,
                   {
+                    desktopCoding: desktopWorkspaceRequest.active,
                     think: shouldThink,
                     tools: responseModelTools,
                   },
@@ -2440,6 +2587,7 @@ export default function useChat() {
                 },
                 images,
                 {
+                  desktopCoding: desktopWorkspaceRequest.active,
                   think: shouldThink,
                   tools: responseModelTools,
                   onThinking: (accumulated) => {
@@ -2466,6 +2614,11 @@ export default function useChat() {
             const executedCalls = [];
             const successfulCalls = [];
             const desktopToolResults = [];
+            const desktopActivities = [];
+            const publishDesktopActivities = () => {
+              finalThinkingText = `[Agent activity]\n${desktopActivities.join('\n')}`;
+              flushThinkingContent(finalThinkingText);
+            };
             let changesSinceValidation = false;
             let validationFailures = [];
             const pendingDeterministicCalls = extractWorkspaceFileReferences(content).map((path) => ({
@@ -2500,6 +2653,8 @@ export default function useChat() {
                 } : current);
 
                 const completedCall = currentCall;
+                const activityIndex = desktopActivities.push(desktopToolActivity(completedCall)) - 1;
+                publishDesktopActivities();
                 let toolResult = '';
                 let toolError = null;
                 try {
@@ -2515,6 +2670,16 @@ export default function useChat() {
                   result: String(toolResult || ''),
                   ok: !toolError,
                 });
+                desktopActivities[activityIndex] = desktopToolActivity(
+                  completedCall,
+                  toolError ? 'error' : 'done',
+                  toolResult,
+                );
+                if (!toolError) {
+                  const changeSummary = desktopChangeSummary(completedCall, toolResult);
+                  if (changeSummary) workspaceChangesForMessage = [...workspaceChangesForMessage, changeSummary];
+                }
+                publishDesktopActivities();
                 setTaskWorkflow((current) => current?.runId === runId ? {
                   ...current,
                   updatedAt: Date.now(),
@@ -2576,12 +2741,14 @@ export default function useChat() {
                         },
                         images,
                         {
+                          desktopCoding: true,
                           think: shouldThink,
                           tools: responseModelTools,
-                          onThinking: (accumulated) => {
-                            if (!isCurrentRun()) return;
-                            finalThinkingText = stripAllControlText(accumulated);
-                            flushThinkingContent(finalThinkingText);
+                          // Keep the chat's live work log focused on concrete
+                          // operations and diffs rather than private model
+                          // reasoning.
+                          onThinking: () => {
+                            if (isCurrentRun()) publishDesktopActivities();
                           },
                         },
                       );
@@ -2755,6 +2922,7 @@ export default function useChat() {
                       (accumulated) => { result = stripAllControlText(accumulated); },
                       [],
                       {
+                        desktopCoding: desktopWorkspaceRequest.active,
                         think: generationOptions.think ?? true,
                         maxTokens: generationOptions.maxTokens,
                         tools: [],
@@ -2833,6 +3001,7 @@ export default function useChat() {
                   },
                   images,
                   {
+                    desktopCoding: desktopWorkspaceRequest.active,
                     think: shouldThink,
                     tools: isTaskResult
                       ? []
@@ -2935,6 +3104,53 @@ export default function useChat() {
             }
             requestedWebSearchQuery = explicitSearchRequest.query;
           }
+
+          // If the host already attached live evidence, a repeated search call
+          // is a provider control mistake rather than a reason to browse twice.
+          // Re-run synthesis once without tools so the user receives the actual
+          // grounded answer and neither chat nor TTS exposes the control text.
+          const requestedSearchAlreadyGrounded = Boolean(
+            !requestFailed
+            && requestedWebSearchQuery
+            && groundingSearchData?.results?.length
+            && normalizeSearchComparison(requestedWebSearchQuery) === normalizeSearchComparison(groundingSearchQuery),
+          );
+          if (requestedSearchAlreadyGrounded && isCurrentRun()) {
+            diagnosticWarn('search', 'model repeated an already-completed search; regenerating from attached evidence', {
+              runId,
+              query: String(requestedWebSearchQuery).slice(0, 180),
+            });
+            cancelPendingStreamFlushes();
+            setStreamingContent('');
+            setThinkingContent('');
+            let groundedRetryText = '';
+            try {
+              await sendChatMessage(
+                history,
+                (accumulated) => {
+                  if (!isCurrentRun()) return;
+                  groundedRetryText = stripAllControlText(accumulated);
+                  flushStreamingContent(groundedRetryText);
+                },
+                images,
+                {
+                  desktopCoding: desktopWorkspaceRequest.active,
+                  think: false,
+                  tools: [],
+                  voice: Boolean(options.voice),
+                },
+              );
+              if (groundedRetryText.trim()) fullText = groundedRetryText.trim();
+            } catch (groundedRetryError) {
+              diagnosticWarn('search', 'grounded control recovery failed; using evidence fallback', {
+                runId,
+                error: groundedRetryError?.message || 'Unknown grounded synthesis error',
+              });
+              fullText = buildEvidenceFallbackAnswer(groundingSearchData, groundingSearchQuery || content);
+            }
+            requestedWebSearchQuery = '';
+            if (requestedToolCall?.name === TOOL_NAMES.WEB_SEARCH) requestedToolCall = null;
+          }
           const autoSearchEligible =
             !requestFailed &&
             isCurrentRun() &&
@@ -2970,6 +3186,7 @@ export default function useChat() {
               },
               images,
               {
+                desktopCoding: desktopWorkspaceRequest.active,
                 think: shouldThink,
                 tools: [],
                 onThinking: (accumulated) => {
@@ -3056,6 +3273,7 @@ export default function useChat() {
                     },
                     images,
                     {
+                      desktopCoding: desktopWorkspaceRequest.active,
                       think: false,
                       tools: [],
                       onThinking: (accumulated) => {
@@ -3159,6 +3377,7 @@ export default function useChat() {
                 },
                 images,
                 {
+                  desktopCoding: desktopWorkspaceRequest.active,
                   think: true,
                   tools: responseModelTools,
                   onThinking: (accumulated) => {
@@ -3187,6 +3406,10 @@ export default function useChat() {
             fullText = polishAssistantAnswer(fullText, {
               grounded: Boolean(groundingSearchData),
             });
+            completedAnswer = fullText;
+            if (options.voice) {
+              options.onResponseChunk?.(fullText, { final: true });
+            }
 
             const requestedFormat = requestedDocumentFormat;
             let titleSource = fullText;
@@ -3201,6 +3424,7 @@ export default function useChat() {
                 content: documentContent,
                 isStreaming: false,
                 ...(finalThinkingText ? { thinkingContent: finalThinkingText } : {}),
+                ...(workspaceChangesForMessage.length ? { workspaceChanges: workspaceChangesForMessage } : {}),
                 exportFormat: requestedFormat,
                 exportStatus: 'ready',
               };
@@ -3221,6 +3445,7 @@ export default function useChat() {
                 content: fullText,
                 isStreaming: false,
                 ...(finalThinkingText ? { thinkingContent: finalThinkingText } : {}),
+                ...(workspaceChangesForMessage.length ? { workspaceChanges: workspaceChangesForMessage } : {}),
                 ...(mediaForMessage ? { media: mediaForMessage } : {}),
                 ...(generatedMediaForMessage ? { generatedMedia: generatedMediaForMessage } : {}),
               };
@@ -3285,6 +3510,7 @@ export default function useChat() {
         setStreamingContent('');
         setThinkingContent('');
       }
+      return { answer: completedAnswer };
     },
     [
       currentConversationId,

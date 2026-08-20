@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useChatContext } from '../../contexts/ChatContext';
 import useChat from '../../hooks/useChat';
 import useUserProfile from '../../hooks/useUserProfile';
+import useVoiceConversation from '../../hooks/useVoiceConversation';
 import {
   enqueueConversationPrompt,
   removeConversationPrompt,
@@ -20,12 +21,20 @@ import {
 import MessageBubble from './MessageBubble';
 import WelcomeScreen from './WelcomeScreen';
 import ParticleGlobe from './ParticleGlobe';
+import MiraBloub from './MiraBloub';
 import ChatInput from './ChatInput';
 import CanvasPanel from './CanvasPanel';
 import TaskRunner from './TaskRunner';
 import ToolsPanel from './ToolsPanel';
 import PromptLibrary from './PromptLibrary';
 import ShareModal from './ShareModal';
+import VoiceModeOverlay from './VoiceModeOverlay';
+import {
+  NEW_VOICE_CONVERSATION,
+  resolveVoiceConversationBinding,
+  sanitizeVoiceOutput,
+} from '../../services/voiceConversation';
+import { resolveMiraExpression, shouldShowMiraWelcome } from '../../services/miraIdentity';
 
 const FONT_SIZE_MAP = { small: '13px', medium: '14px', large: '16px' };
 function getStoredFontSize() {
@@ -143,7 +152,7 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, workspac
   );
 }
 
-export default function ChatWindow() {
+export default function ChatWindow({ onMiraExpressionChange }) {
   const { currentConversationId, isGenerating, isSearching, activeProjectId, showWorkspace } = useChatContext();
   const {
     messages,
@@ -167,11 +176,16 @@ export default function ChatWindow() {
   const [sharedPromptQueue, setSharedPromptQueue] = useState([]);
   const [activeConversationRun, setActiveConversationRun] = useState(null);
   const [composerHeight, setComposerHeight] = useState(176);
+  const [voiceScreenOpen, setVoiceScreenOpen] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState('');
+  const [voiceResponse, setVoiceResponse] = useState('');
   const scrollAreaRef = useRef(null);
   const autoScrollRef = useRef(true);
   const queueDrainRef = useRef(false);
   const previousConversationRef = useRef(currentConversationId);
   const autoOpenedWorkflowRef = useRef(null);
+  const voiceRef = useRef(null);
+  const voiceConversationRef = useRef('');
 
   const displayMessages = useMemo(() => {
     if (!isGenerating || messages.length === 0) return messages;
@@ -189,6 +203,10 @@ export default function ChatWindow() {
     ];
   }, [messages, streamingContent, thinkingContent, isGenerating]);
   const latestVisibleContent = displayMessages[displayMessages.length - 1]?.content || '';
+  const latestUserMessage = useMemo(
+    () => [...displayMessages].reverse().find((message) => message.role === 'user') || null,
+    [displayMessages],
+  );
 
   const handleScroll = useCallback(() => {
     const el = scrollAreaRef.current;
@@ -218,6 +236,74 @@ export default function ChatWindow() {
   const sendToChat = useCallback((content, attachments, ws, options = {}) => {
     return sendMessage(content, attachments, ws, options);
   }, [sendMessage]);
+
+  const handleVoiceTranscript = useCallback(async (text, { language } = {}) => {
+    setVoiceTranscript(text);
+    setVoiceResponse('');
+    voiceRef.current?.beginSpeech(language);
+    try {
+      const result = await sendToChat(text, [], false, {
+        voice: true,
+        onResponseChunk: (answer, { final = false } = {}) => {
+          const visibleAnswer = sanitizeVoiceOutput(answer);
+          if (visibleAnswer) setVoiceResponse(visibleAnswer);
+          voiceRef.current?.queueSpeech(answer, language, final);
+        },
+      });
+      const answer = String(result?.answer || '').trim();
+      const visibleAnswer = sanitizeVoiceOutput(answer);
+      setVoiceResponse(visibleAnswer);
+      if (visibleAnswer && voiceRef.current?.active) {
+        await voiceRef.current.finishSpeech(answer, language);
+      }
+    } finally {
+      voiceRef.current?.resumeListening();
+    }
+  }, [sendToChat]);
+
+  const voice = useVoiceConversation({
+    onTranscript: handleVoiceTranscript,
+    onInterrupt: stopGenerating,
+  });
+  voiceRef.current = voice;
+
+  const startVoiceMode = useCallback(() => {
+    setVoiceTranscript('');
+    setVoiceResponse('');
+    setVoiceScreenOpen(true);
+    voiceConversationRef.current = currentConversationId || NEW_VOICE_CONVERSATION;
+    voiceRef.current?.start();
+  }, [currentConversationId]);
+
+  const closeVoiceMode = useCallback(() => {
+    voiceRef.current?.shutdown();
+    voiceConversationRef.current = '';
+    setVoiceScreenOpen(false);
+  }, []);
+
+  const retryVoiceMode = useCallback(() => {
+    setVoiceTranscript('');
+    setVoiceResponse('');
+    voiceRef.current?.start();
+  }, []);
+
+  useEffect(() => {
+    if (!voiceScreenOpen) return;
+    const resolution = resolveVoiceConversationBinding(
+      voiceConversationRef.current,
+      currentConversationId,
+    );
+    if (resolution.action === 'bind') {
+      voiceConversationRef.current = resolution.conversationId;
+      return;
+    }
+    if (resolution.action !== 'close') return;
+    voiceRef.current?.shutdown();
+    voiceConversationRef.current = '';
+    setVoiceScreenOpen(false);
+    // A voice turn belongs to the conversation where it was started.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentConversationId, voiceScreenOpen]);
 
   useEffect(() => {
     if (!activeProjectId || !currentConversationId) {
@@ -347,7 +433,23 @@ export default function ChatWindow() {
     setPanel('tasks');
   }, [taskWorkflow?.id, taskWorkflow?.status]);
 
-  const showingWelcome = messages.length === 0;
+  // A realtime subscription briefly clears the message array while a routed
+  // conversation hydrates. Keep the identity in chat mode for that session so
+  // the home-to-chat transition runs exactly once.
+  const showingWelcome = shouldShowMiraWelcome(currentConversationId, messages);
+  const miraExpression = resolveMiraExpression({
+    isWelcome: showingWelcome,
+    isGenerating,
+    isSearching,
+    voiceStatus: voice.status,
+    taskWorkflow,
+    lastMessage: displayMessages[displayMessages.length - 1],
+    latestUserMessage,
+  });
+
+  useEffect(() => {
+    onMiraExpressionChange?.(miraExpression);
+  }, [miraExpression, onMiraExpressionChange]);
 
   return (
     <div className="flex-1 flex min-h-0 relative">
@@ -357,16 +459,36 @@ export default function ChatWindow() {
           <ParticleGlobe
             iconAttractor={iconAttractor}
             hasMessages={messages.length > 0}
+            thinking={isGenerating || isSearching || taskWorkflow?.status === 'running'}
+            speaking={voice.status === 'speaking'}
           />
         </div>
+      )}
+      {!showWorkspace && (
+        <MiraBloub
+          expression={miraExpression}
+          expanded={!showingWelcome}
+          variant="ambient"
+        />
       )}
 
       {showShare && <ShareModal messages={messages} title={messages[0]?.content?.slice(0, 50)} onClose={() => setShowShare(false)} />}
 
+      {voiceScreenOpen && (
+        <VoiceModeOverlay
+          status={voice.status}
+          statusLabel={voice.statusLabel}
+          transcript={voiceTranscript}
+          response={voiceResponse}
+          onClose={closeVoiceMode}
+          onRetry={retryVoiceMode}
+        />
+      )}
+
       <div className="flex flex-col flex-1 min-w-0 min-h-0 relative z-10">
         <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden hud-scroll-area" style={{ fontSize: chatFontSize }}>
           <div
-            className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 gap-6 px-4 w-full min-w-0`}
+            className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center pt-24' : 'justify-end pt-44'} min-h-full gap-6 px-4 w-full min-w-0`}
             style={{ paddingBottom: `${Math.max(216, composerHeight + 40)}px` }}
           >
             {showingWelcome && showWorkspace ? (
@@ -420,6 +542,10 @@ export default function ChatWindow() {
           onEditQueued={editPromptInQueue}
           onSendQueuedNow={sendQueuedPromptNow}
           onHeightChange={handleComposerHeightChange}
+          voiceActive={voice.active}
+          voiceStatus={voice.status}
+          voiceStatusLabel={voice.statusLabel}
+          onToggleVoice={voiceScreenOpen ? closeVoiceMode : startVoiceMode}
         />
       </div>
 

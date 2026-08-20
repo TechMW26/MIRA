@@ -29,7 +29,7 @@ const capabilities = Object.freeze([
 ]);
 
 contextBridge.exposeInMainWorld('miraDesktop', Object.freeze({
-  bridgeVersion: 9,
+  bridgeVersion: 10,
   platform: process.platform,
   capabilities,
   chooseWorkspace: () => ipcRenderer.invoke('mira:choose-workspace'),

@@ -96,6 +96,11 @@
         "zip"
       ],
       "category": "public.app-category.developer-tools",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "MIRA uses the microphone only while voice conversation mode is active."
+      },
+      "entitlements": "desktop/entitlements.mac.plist",
+      "entitlementsInherit": "desktop/entitlements.mac.plist",
       "hardenedRuntime": true
     },
     "win": {

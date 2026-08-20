@@ -1,27 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { useChatContext } from '../../contexts/ChatContext';
 import Sidebar from '../Sidebar/Sidebar';
 import ChatWindow from '../Chat/ChatWindow';
 import HudOverlay from '../Chat/HudOverlay';
+import MiraBloub from '../Chat/MiraBloub';
 import SettingsModal from '../Profile/ProfilePage';
 import DesktopWorkspace from '../Desktop/DesktopWorkspace';
-import { stopChatGeneration } from '../../services/api';
 
 export default function MainLayout() {
   const {
     showSettings,
     setShowSettings,
-    currentConversationId,
-    setCurrentConversationId,
-    activeProjectId,
-    setActiveProjectId,
     showWorkspace,
   } = useChatContext();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const hasResetSessionRef = useRef(false);
   const workspaceSplitRef = useRef(null);
   const [workspacePercent, setWorkspacePercent] = useState(() => Number(localStorage.getItem('mira_workspace_width_percent')) || 58);
+  const [desktopMiraExpression, setDesktopMiraExpression] = useState('neutral');
 
   function startWorkspaceResize(event) {
     event.preventDefault();
@@ -59,43 +53,25 @@ export default function MainLayout() {
     };
   }, []);
 
-  // App reopen should always start a fresh session.
-  useEffect(() => {
-    if (hasResetSessionRef.current) return;
-    hasResetSessionRef.current = true;
-
-    stopChatGeneration();
-    setCurrentConversationId(null);
-    setActiveProjectId(null);
-
-    const next = new URLSearchParams(searchParams);
-    let changed = false;
-    if (next.has('c')) {
-      next.delete('c');
-      changed = true;
-    }
-    if (next.has('p')) {
-      next.delete('p');
-      changed = true;
-    }
-
-    if (changed) {
-      setSearchParams(next, { replace: true });
-    }
-  }, [searchParams, setSearchParams, setCurrentConversationId, setActiveProjectId]);
-
   return (
     <div className="app-shell relative flex overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
       <Sidebar />
 
       <div className="flex-1 flex flex-col min-w-0 relative z-10">
+        {showWorkspace && (
+          <MiraBloub
+            expression={desktopMiraExpression}
+            expanded
+            variant="desktop"
+          />
+        )}
         <HudOverlay />
 
         <div ref={workspaceSplitRef} className={`flex-1 min-h-0 flex ${showWorkspace ? 'desktop-workspace-split' : 'flex-col'}`}>
           {showWorkspace && <DesktopWorkspace style={{ flex: `0 0 ${workspacePercent}%` }} />}
           {showWorkspace && <div className="desktop-workspace-resizer" onMouseDown={startWorkspaceResize} onKeyDown={resizeWorkspaceWithKeyboard} role="separator" tabIndex={0} aria-orientation="vertical" aria-label="Resize workspace and chat" />}
           <div className={`min-h-0 min-w-0 flex flex-col ${showWorkspace ? 'desktop-chat-pane' : 'flex-1'}`} style={showWorkspace ? { flex: '1 1 0' } : undefined}>
-            <ChatWindow />
+            <ChatWindow onMiraExpressionChange={showWorkspace ? setDesktopMiraExpression : undefined} />
           </div>
         </div>
       </div>

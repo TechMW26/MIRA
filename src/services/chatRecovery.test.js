@@ -87,3 +87,53 @@ test('uses the managed completion fallback after primary retries fail', async ()
     globalThis.fetch = originalFetch;
   }
 });
+
+test('uses the desktop coding provider only for explicitly marked coding work', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  let desktopCalls = 0;
+  let primaryCalls = 0;
+
+  globalThis.window = {
+    miraDesktop: {
+      invokeTool: async () => ({ ok: true }),
+      requestAgentChat: async () => {
+        desktopCalls += 1;
+        return { ok: true, answer: 'Desktop coding response.', toolCalls: [] };
+      },
+    },
+  };
+  globalThis.fetch = async () => {
+    primaryCalls += 1;
+    return new Response(`${JSON.stringify({ message: { content: 'Self-hosted response.' }, done: true })}\n`, {
+      status: 200,
+      headers: { 'content-type': 'application/x-ndjson' },
+    });
+  };
+
+  try {
+    const regular = await sendChatMessage(
+      [{ role: 'user', content: 'Tell me a story.' }],
+      () => {},
+      [],
+      { think: false },
+    );
+    assert.equal(regular, 'Self-hosted response.');
+    assert.equal(desktopCalls, 0);
+    assert.equal(primaryCalls, 1);
+
+    const coding = await sendChatMessage(
+      [{ role: 'user', content: 'Fix this function.' }],
+      () => {},
+      [],
+      { desktopCoding: true, think: false },
+    );
+    assert.equal(coding, 'Desktop coding response.');
+    assert.equal(desktopCalls, 1);
+    assert.equal(primaryCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});

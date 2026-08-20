@@ -474,7 +474,16 @@ export function installGenerationExitCancellation() {
   };
 }
 
-async function requestChat({ messages, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think, onChunk }) {
+async function requestChat({
+  messages,
+  images = [],
+  systemPrompt,
+  maxTokens,
+  tools = MODEL_TOOLS,
+  think,
+  onChunk,
+  endpoint = '/api/chat',
+}) {
   const controller = new AbortController();
   activeChatAbortController = controller;
 
@@ -496,7 +505,7 @@ async function requestChat({ messages, images = [], systemPrompt, maxTokens, too
           imageCount: images.length,
         });
         const response = await raceWithTimeout(
-          fetch('/api/chat', {
+          fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             signal: attemptController.signal,
@@ -651,11 +660,13 @@ export async function sendChatMessage(messages, onChunk, images = [], {
   tools = MODEL_TOOLS,
   think,
   maxTokens,
+  voice = false,
+  desktopCoding = false,
 } = {}) {
   let latestAnswer = '';
   let latestThinking = '';
   let streamed;
-  if (!images.length) {
+  if (desktopCoding && !images.length && !voice) {
     try {
       const desktop = await requestDesktopAgentChat({
         messages,
@@ -683,10 +694,13 @@ export async function sendChatMessage(messages, onChunk, images = [], {
     streamed = await requestChat({
       messages,
       images,
-      systemPrompt,
-      tools,
-      think,
+      systemPrompt: voice
+        ? [MIRA_IDENTITY_PROMPT, systemPrompt].filter(Boolean).join('\n\n')
+        : systemPrompt,
+      tools: voice ? [] : tools,
+      think: voice ? false : think,
       maxTokens,
+      endpoint: voice ? '/api/voice-chat' : '/api/chat',
       onChunk: ({ answerFull, thinkingFull }) => {
         const split = splitThinkingFromRaw(answerFull || '');
         const mergedThinking = [thinkingFull || '', split.thinking || '']
@@ -702,7 +716,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
       },
     });
   } catch (error) {
-    if (isAbortError(error) || images.length) throw error;
+    if (isAbortError(error) || images.length || voice) throw error;
     diagnosticWarn('model', 'primary model failed; trying Pollinations completion fallback', {
       error: error?.message || 'Unknown model failure',
     });

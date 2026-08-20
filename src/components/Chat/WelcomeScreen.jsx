@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Code2, Lightbulb, MessageCircle, Eye, Bug, PenLine, Calculator, Database, FlaskConical, FileText,
   BarChart3, Globe, Palette, Shield, Send, X, Paperclip, Camera, RefreshCw,
@@ -100,7 +101,7 @@ function CameraCaptureModal({ onClose, onCapture }) {
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(6px)' }} onClick={onClose}>
+    <div className="fixed inset-0 z-[1010] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(6px)' }} onClick={onClose}>
       <div className="glass-strong rounded-3xl p-5 w-full max-w-lg shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -349,7 +350,7 @@ function TemplateForm({ template, onSubmit, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(4px)' }} onClick={onClose}>
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(4px)' }} onClick={onClose}>
       <div className="glass-strong rounded-3xl p-6 w-full max-w-md shadow-2xl" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between mb-5">
@@ -498,12 +499,13 @@ export default function WelcomeScreen({ onSend, onIconHover }) {
   return (
     <>
       {/* Template form modal */}
-      {selectedTemplate && (
+      {selectedTemplate && createPortal(
         <TemplateForm
           template={selectedTemplate}
           onSubmit={handleTemplateSubmit}
           onClose={() => setSelectedTemplate(null)}
-        />
+        />,
+        document.body,
       )}
 
       <ToolOrbit

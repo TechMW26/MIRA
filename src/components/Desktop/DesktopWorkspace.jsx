@@ -12,8 +12,6 @@ import {
   History,
   Plus,
   RefreshCw,
-  RotateCcw,
-  RotateCw,
   Save,
   ShieldCheck,
   Sparkles,
@@ -101,7 +99,6 @@ export default function DesktopWorkspace({ style }) {
   const [actionBusy, setActionBusy] = useState('');
   const [gitInfo, setGitInfo] = useState({ branch: '', upstream: '', remote: '', status: '' });
   const [gitDiff, setGitDiff] = useState('');
-  const [changeJournal, setChangeJournal] = useState({ applied: [], redo: [] });
   const [githubUrl, setGithubUrl] = useState('');
   const [commitMessage, setCommitMessage] = useState('');
   const [reviewComment, setReviewComment] = useState('');
@@ -173,14 +170,12 @@ export default function DesktopWorkspace({ style }) {
     setReviewLoading(true);
     setError('');
     try {
-      const [infoOutput, diffOutput, journalOutput] = await Promise.all([
+      const [infoOutput, diffOutput] = await Promise.all([
         executeDesktopTool({ name: 'git.info', arguments: {} }),
         executeDesktopTool({ name: 'git.diff', arguments: {} }),
-        executeDesktopTool({ name: 'change.list', arguments: {} }),
       ]);
       setGitInfo(JSON.parse(infoOutput));
       setGitDiff(diffOutput === 'Command completed successfully.' ? '' : diffOutput);
-      setChangeJournal(JSON.parse(journalOutput));
     } catch (reviewError) {
       setError(reviewError?.message || 'Could not review workspace changes.');
     } finally {
@@ -269,6 +264,31 @@ export default function DesktopWorkspace({ style }) {
   }, [activeTab?.content, activeTab?.path, activeTab?.preview, activeTab?.savedContent, activeTab?.saving]);
 
   useEffect(() => {
+    const refreshChangedFiles = async (event) => {
+      const paths = Array.isArray(event.detail?.paths) ? event.detail.paths : [];
+      await loadDirectory(directory);
+      await Promise.all(paths.map(async (path) => {
+        const tab = fileTabsRef.current.find((entry) => entry.path === path);
+        if (!tab || (!tab.preview && tab.content !== tab.savedContent)) return;
+        try {
+          if (tab.preview) {
+            const output = await executeDesktopTool({ name: 'filesystem.preview', arguments: { path } });
+            updateFileTab(path, { preview: JSON.parse(output) });
+          } else {
+            const next = await executeDesktopTool({ name: 'filesystem.read', arguments: { path } });
+            updateFileTab(path, { content: next, savedContent: next, saveError: '' });
+          }
+        } catch (refreshError) {
+          setError(refreshError?.message || `Could not refresh ${path}.`);
+        }
+      }));
+      if (showReview) await refreshReview();
+    };
+    window.addEventListener('mira-workspace-changed', refreshChangedFiles);
+    return () => window.removeEventListener('mira-workspace-changed', refreshChangedFiles);
+  }, [directory, loadDirectory, refreshReview, showReview]);
+
+  useEffect(() => {
     if (!runtime?.workspace) return;
     refreshApprovalStatus();
     refreshWorkspaceIndex(false);
@@ -331,6 +351,9 @@ export default function DesktopWorkspace({ style }) {
       setBrowserAgentActive(false);
       agentBrowserRequestsRef.current.clear();
       await loadDirectory('');
+      window.dispatchEvent(new CustomEvent('mira:workspace-changed', {
+        detail: { workspace: next.workspace },
+      }));
     } catch (chooseError) {
       if (!/No workspace was selected/i.test(chooseError?.message || '')) {
         setError(chooseError?.message || 'Could not open that workspace.');
@@ -743,8 +766,8 @@ export default function DesktopWorkspace({ style }) {
         </div>
         <div className="flex items-center gap-2">
           {hasCapability('git.info') && (
-            <button type="button" onClick={openReview} className="desktop-ide-button" aria-label="Review changes and GitHub sync">
-              <GitBranch size={13} /> Review
+            <button type="button" onClick={openReview} className="desktop-ide-button" aria-label="Open GitHub sync">
+              <GitBranch size={13} /> GitHub
             </button>
           )}
           {hasCapability('workspace.index') && (
@@ -919,15 +942,13 @@ export default function DesktopWorkspace({ style }) {
           <section className="desktop-review-dialog">
             <div className="desktop-permission-heading">
               <div>
-                <span className="desktop-permission-eyebrow">Workspace history</span>
-                <h2 id="desktop-review-title">Review changes & GitHub</h2>
+                <span className="desktop-permission-eyebrow">Source control</span>
+                <h2 id="desktop-review-title">GitHub sync</h2>
               </div>
-              <button type="button" onClick={() => setShowReview(false)} aria-label="Close change review"><X size={18} /></button>
+              <button type="button" onClick={() => setShowReview(false)} aria-label="Close GitHub sync"><X size={18} /></button>
             </div>
 
             <div className="desktop-review-actions">
-              <button type="button" onClick={() => runWorkspaceAction('change.undo')} disabled={actionBusy || !changeJournal.applied.length} className="desktop-ide-button"><RotateCcw size={13} /> Undo</button>
-              <button type="button" onClick={() => runWorkspaceAction('change.redo')} disabled={actionBusy || !changeJournal.redo.length} className="desktop-ide-button"><RotateCw size={13} /> Redo</button>
               <button type="button" onClick={refreshReview} disabled={reviewLoading} className="desktop-ide-button"><RefreshCw size={13} /> Refresh</button>
             </div>
 
@@ -958,21 +979,13 @@ export default function DesktopWorkspace({ style }) {
 
             <div className="desktop-review-grid">
               <section>
-                <h3><History size={13} /> MIRA changes</h3>
-                {changeJournal.applied.length ? changeJournal.applied.slice().reverse().map((change) => <p key={change.id}>{change.path}</p>) : <p>No MIRA-applied changes this session.</p>}
-              </section>
-              <section>
                 <h3>Git status</h3>
                 <pre>{gitInfo.status || 'Working tree clean.'}</pre>
               </section>
             </div>
-            <section className="desktop-diff-review">
-              <h3>Uncommitted diff</h3>
-              <pre>{gitDiff || 'No uncommitted diff.'}</pre>
-            </section>
             <section className="desktop-github-comment">
               <div>
-                <h3>GitHub review summary</h3>
+                <h3>GitHub change summary</h3>
                 <div className="desktop-review-actions">
                   <button type="button" onClick={() => generateGitText('github-comment')} disabled={aiReviewBusy || !gitDiff.trim()} className="desktop-ide-button"><Sparkles size={13} /> {aiReviewBusy === 'github-comment' ? 'Writing…' : 'AI draft'}</button>
                   <button type="button" onClick={() => navigator.clipboard.writeText(reviewComment)} disabled={!reviewComment} className="desktop-ide-button"><Copy size={13} /> Copy</button>
@@ -993,7 +1006,7 @@ export default function DesktopWorkspace({ style }) {
               </div>
               <button type="button" onClick={closePermissions} aria-label="Close system access dialog"><X size={18} /></button>
             </div>
-            <p>MIRA requests each macOS permission explicitly. File and command access remains limited to the selected workspace; non-destructive commands can be trusted for the current workspace session.</p>
+            <p>Selecting a workspace trusts in-workspace edits and non-destructive commands for the current app session. Destructive commands and Git publishing still require explicit approval.</p>
             {permissionStatus?.updateRequired && (
               <p className="desktop-permission-alert" role="alert">This installed MIRA desktop shell is outdated. Install the latest desktop build to enable native permission prompts.</p>
             )}
@@ -1012,7 +1025,7 @@ export default function DesktopWorkspace({ style }) {
               </article>
               {hasCapability('approval.set') && (
                 <article>
-                  <div><strong>Workspace commands</strong><span>Skip repeated prompts for non-destructive commands until MIRA quits or you switch folders.</span></div>
+                  <div><strong>Workspace agent access</strong><span>Run in-workspace edits and non-destructive commands without repeated prompts until MIRA quits or you switch folders.</span></div>
                   <button type="button" onClick={toggleWorkspaceCommandTrust} className="desktop-ide-button">
                     {workspaceCommandsTrusted ? 'Revoke session trust' : 'Trust this session'}
                   </button>

@@ -17,11 +17,13 @@ const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 40 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 const PRODUCTION_APP_URL = 'https://www.itsmira.cloud';
-const PERMISSION_BRIDGE_VERSION = 9;
+const PERMISSION_BRIDGE_VERSION = 10;
 const WORKSPACE_MEMORY_DIRECTORY = '.mira';
 const WORKSPACE_INSTRUCTIONS_FILE = 'MIRA.md';
-const WORKSPACE_HISTORY_FILE = 'history.jsonl';
+const WORKSPACE_HISTORY_FILE = 'history.mira';
+const WORKSPACE_LEGACY_HISTORY_FILE = 'history.jsonl';
 const MAX_WORKSPACE_MEMORY_BYTES = 2 * 1024 * 1024;
+const MAX_WORKSPACE_MEMORY_EVENTS = 500;
 const DESKTOP_CAPABILITIES = Object.freeze([
   'filesystem.read',
   'filesystem.list',
@@ -54,6 +56,7 @@ let workspaceRoot = '';
 let desktopEnvironmentPromise = null;
 let workspaceCommandTrust = false;
 let workspaceVectorIndex = null;
+let workspaceMemoryWriteQueue = Promise.resolve();
 const appliedChanges = [];
 const undoneChanges = [];
 const runningProcesses = new Map();
@@ -186,7 +189,10 @@ async function restoreWorkspace() {
     const stored = JSON.parse(await fs.readFile(workspaceStatePath(), 'utf8'));
     const root = await fs.realpath(String(stored?.root || ''));
     const stat = await fs.stat(root);
-    if (stat.isDirectory()) workspaceRoot = root;
+    if (stat.isDirectory()) {
+      workspaceRoot = root;
+      workspaceCommandTrust = true;
+    }
   } catch {
     workspaceRoot = '';
   }
@@ -277,24 +283,30 @@ async function ensureWorkspace(window) {
   });
   if (result.canceled || !result.filePaths[0]) throw new Error('No workspace was selected.');
   workspaceRoot = await fs.realpath(result.filePaths[0]);
+  // Selecting a workspace is the explicit trust boundary for this app
+  // session. In-workspace edits and non-destructive commands should not keep
+  // interrupting an agent run with identical approval prompts.
+  workspaceCommandTrust = true;
   await rememberWorkspace(workspaceRoot);
   return workspaceRoot;
 }
 
-function workspaceMemoryPaths() {
-  const directory = path.join(workspaceRoot, WORKSPACE_MEMORY_DIRECTORY);
+function workspaceMemoryPaths(root = workspaceRoot) {
+  const directory = path.join(root, WORKSPACE_MEMORY_DIRECTORY);
   return {
     directory,
     instructions: path.join(directory, WORKSPACE_INSTRUCTIONS_FILE),
     history: path.join(directory, WORKSPACE_HISTORY_FILE),
+    legacyHistory: path.join(directory, WORKSPACE_LEGACY_HISTORY_FILE),
     gitignore: path.join(directory, '.gitignore'),
   };
 }
 
-async function ensureWorkspaceMemory() {
-  if (!workspaceRoot) return null;
-  const paths = workspaceMemoryPaths();
-  await fs.mkdir(paths.directory, { recursive: true });
+async function ensureWorkspaceMemory(root = workspaceRoot) {
+  if (!root) return null;
+  const paths = workspaceMemoryPaths(root);
+  await fs.mkdir(paths.directory, { recursive: true, mode: 0o700 });
+  await fs.chmod(paths.directory, 0o700).catch(() => {});
   try {
     await fs.access(paths.instructions);
   } catch {
@@ -313,12 +325,16 @@ async function ensureWorkspaceMemory() {
   try {
     await fs.access(paths.gitignore);
   } catch {
-    await fs.writeFile(paths.gitignore, `${WORKSPACE_HISTORY_FILE}\n`, 'utf8');
+    await fs.writeFile(
+      paths.gitignore,
+      `${WORKSPACE_HISTORY_FILE}\n${WORKSPACE_LEGACY_HISTORY_FILE}\n`,
+      { encoding: 'utf8', mode: 0o600 },
+    );
   }
   return paths;
 }
 
-async function readRecentWorkspaceEvents(historyPath) {
+async function readLegacyWorkspaceEvents(historyPath) {
   try {
     const stat = await fs.stat(historyPath);
     if (!stat.isFile() || stat.size === 0) return [];
@@ -346,12 +362,68 @@ async function readRecentWorkspaceEvents(historyPath) {
   }
 }
 
+function encryptWorkspaceEvents(events) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure workspace history storage is unavailable on this system.');
+  }
+  const source = JSON.stringify({ version: 1, events });
+  return JSON.stringify({
+    version: 1,
+    cipher: 'electron-safe-storage',
+    payload: safeStorage.encryptString(source).toString('base64'),
+  });
+}
+
+function decryptWorkspaceEvents(source) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure workspace history storage is unavailable on this system.');
+  }
+  const envelope = JSON.parse(String(source || ''));
+  if (envelope?.cipher !== 'electron-safe-storage' || !envelope?.payload) {
+    throw new Error('The MIRA workspace history file is invalid.');
+  }
+  const decoded = safeStorage.decryptString(Buffer.from(envelope.payload, 'base64'));
+  const parsed = JSON.parse(decoded);
+  return Array.isArray(parsed?.events) ? parsed.events.filter(Boolean) : [];
+}
+
+async function writeWorkspaceEvents(paths, inputEvents) {
+  let events = (Array.isArray(inputEvents) ? inputEvents : [])
+    .filter(Boolean)
+    .slice(-MAX_WORKSPACE_MEMORY_EVENTS);
+  let encrypted = encryptWorkspaceEvents(events);
+  while (Buffer.byteLength(encrypted) > MAX_WORKSPACE_MEMORY_BYTES && events.length > 1) {
+    events = events.slice(Math.max(1, Math.floor(events.length / 8)));
+    encrypted = encryptWorkspaceEvents(events);
+  }
+  const temporary = `${paths.history}.${process.pid}.tmp`;
+  await fs.writeFile(temporary, encrypted, { encoding: 'utf8', mode: 0o600 });
+  await fs.rename(temporary, paths.history);
+  await fs.chmod(paths.history, 0o600).catch(() => {});
+  return events;
+}
+
+async function readRecentWorkspaceEvents(paths) {
+  try {
+    const source = await fs.readFile(paths.history, 'utf8');
+    return decryptWorkspaceEvents(source).slice(-120);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+
+  const legacyEvents = await readLegacyWorkspaceEvents(paths.legacyHistory);
+  if (!legacyEvents.length) return [];
+  await writeWorkspaceEvents(paths, legacyEvents);
+  await fs.unlink(paths.legacyHistory).catch(() => {});
+  return legacyEvents.slice(-120);
+}
+
 async function getWorkspaceMemory() {
   const paths = await ensureWorkspaceMemory();
   if (!paths) return null;
   const [instructions, events] = await Promise.all([
     fs.readFile(paths.instructions, 'utf8'),
-    readRecentWorkspaceEvents(paths.history),
+    readRecentWorkspaceEvents(paths),
   ]);
   return {
     workspace: workspaceRoot,
@@ -368,8 +440,8 @@ function cleanWorkspaceMemoryText(value, limit = 24_000) {
   return String(value || '').replace(/\u0000/g, '').slice(0, limit);
 }
 
-async function appendWorkspaceEvent(event) {
-  const paths = await ensureWorkspaceMemory();
+async function appendWorkspaceEventNow(event, targetWorkspace) {
+  const paths = await ensureWorkspaceMemory(targetWorkspace);
   if (!paths) return;
   const payload = {
     ...event,
@@ -378,7 +450,15 @@ async function appendWorkspaceEvent(event) {
   if (payload.user != null) payload.user = cleanWorkspaceMemoryText(payload.user);
   if (payload.assistant != null) payload.assistant = cleanWorkspaceMemoryText(payload.assistant, 48_000);
   if (payload.path != null) payload.path = cleanWorkspaceMemoryText(payload.path, 2_000);
-  await fs.appendFile(paths.history, `${JSON.stringify(payload)}\n`, 'utf8');
+  const events = await readRecentWorkspaceEvents(paths);
+  await writeWorkspaceEvents(paths, [...events, payload]);
+}
+
+function appendWorkspaceEvent(event) {
+  const targetWorkspace = workspaceRoot;
+  const operation = workspaceMemoryWriteQueue.then(() => appendWorkspaceEventNow(event, targetWorkspace));
+  workspaceMemoryWriteQueue = operation.catch(() => {});
+  return operation;
 }
 
 async function resolveWorkspacePath(window, input = '.') {
@@ -1010,6 +1090,27 @@ async function applyJournalState(change, direction) {
   }
 }
 
+function summarizeLineChanges(beforeValue = '', afterValue = '', limit = 120) {
+  const before = String(beforeValue).split('\n');
+  const after = String(afterValue).split('\n');
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < before.length - prefix
+    && suffix < after.length - prefix
+    && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) suffix += 1;
+  const trim = (lines) => {
+    if (lines.length <= limit) return lines;
+    return [...lines.slice(0, limit), `… ${lines.length - limit} more lines`];
+  };
+  return {
+    removals: trim(before.slice(prefix, before.length - suffix)),
+    additions: trim(after.slice(prefix, after.length - suffix)),
+  };
+}
+
 async function gitInfo(window) {
   const cwd = await ensureWorkspace(window);
   const read = async (args) => {
@@ -1038,8 +1139,9 @@ async function saveWorkspaceFile(window, requestedPath, requestedContent, source
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, content, 'utf8');
   const relativePath = path.relative(workspaceRoot, target);
+  const changeId = `${Date.now()}:${relativePath}`;
   appliedChanges.push({
-    id: `${Date.now()}:${relativePath}`,
+    id: changeId,
     path: relativePath,
     target,
     before: before.content,
@@ -1051,7 +1153,13 @@ async function saveWorkspaceFile(window, requestedPath, requestedContent, source
   undoneChanges.length = 0;
   workspaceVectorIndex = null;
   await appendWorkspaceEvent({ type: 'change', path: relativePath, source });
-  return JSON.stringify({ changed: true, path: relativePath, undoAvailable: true });
+  return JSON.stringify({
+    changed: true,
+    changeId,
+    path: relativePath,
+    undoAvailable: true,
+    ...summarizeLineChanges(before.content, content),
+  });
 }
 
 async function invokeDesktopTool(window, call = {}) {
@@ -1091,7 +1199,16 @@ async function invokeDesktopTool(window, call = {}) {
     const target = await resolveWorkspacePath(window, args.path);
     const content = String(args.content ?? '');
     if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error('Desktop writes are limited to 2 MB per file.');
-    await approve(window, 'Allow file write?', `Write ${path.relative(workspaceRoot, target) || path.basename(target)}`);
+    if (!workspaceCommandTrust) {
+      const approval = await approve(
+        window,
+        'Allow file write?',
+        `Write ${path.relative(workspaceRoot, target) || path.basename(target)}`,
+        false,
+        true,
+      );
+      if (approval === 'workspace-session') workspaceCommandTrust = true;
+    }
     return await saveWorkspaceFile(window, args.path, content, 'agent');
   }
 
@@ -1112,7 +1229,16 @@ async function invokeDesktopTool(window, call = {}) {
       ? source.split(oldText).join(newText)
       : source.replace(oldText, newText);
     if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error('Desktop writes are limited to 2 MB per file.');
-    await approve(window, 'Allow precise file edit?', `Edit ${path.relative(workspaceRoot, target) || path.basename(target)}`);
+    if (!workspaceCommandTrust) {
+      const approval = await approve(
+        window,
+        'Allow precise file edit?',
+        `Edit ${path.relative(workspaceRoot, target) || path.basename(target)}`,
+        false,
+        true,
+      );
+      if (approval === 'workspace-session') workspaceCommandTrust = true;
+    }
     return await saveWorkspaceFile(window, args.path, content, 'agent');
   }
 
@@ -1327,7 +1453,10 @@ async function invokeDesktopTool(window, call = {}) {
     const destination = name === 'change.undo' ? undoneChanges : appliedChanges;
     const change = source[source.length - 1];
     if (!change) throw new Error(name === 'change.undo' ? 'There are no MIRA changes to undo.' : 'There are no MIRA changes to redo.');
-    await approve(window, name === 'change.undo' ? 'Undo MIRA change?' : 'Redo MIRA change?', `${name === 'change.undo' ? 'Restore' : 'Reapply'} ${change.path}`);
+    const requestedId = String(args.id || '').trim();
+    if (requestedId && change.id !== requestedId) {
+      throw new Error('This change is no longer the latest reversible change. Review the newest change set first.');
+    }
     source.pop();
     await applyJournalState(change, name === 'change.undo' ? 'undo' : 'redo');
     workspaceVectorIndex = null;
@@ -1400,6 +1529,21 @@ function createWindow() {
       webSecurity: true,
       webviewTag: true,
     },
+  });
+
+  const isTrustedAppOrigin = (url = '') => (
+    url.startsWith(PRODUCTION_APP_URL)
+    || (process.argv.includes('--dev') && url.startsWith('http://127.0.0.1:3000'))
+  );
+  window.webContents.session.setPermissionCheckHandler((webContents, permission, requestingOrigin, details = {}) => {
+    if (permission !== 'media') return false;
+    const origin = requestingOrigin || details.requestingUrl || webContents?.getURL?.() || '';
+    return isTrustedAppOrigin(origin);
+  });
+  window.webContents.session.setPermissionRequestHandler((webContents, permission, callback, details = {}) => {
+    const origin = details.requestingUrl || webContents?.getURL?.() || '';
+    const audioOnly = !details.mediaTypes?.length || details.mediaTypes.includes('audio');
+    callback(permission === 'media' && audioOnly && isTrustedAppOrigin(origin));
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -1508,15 +1652,19 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('mira:choose-workspace', async () => {
     const previousWorkspace = workspaceRoot;
+    const previousWorkspaceTrust = workspaceCommandTrust;
     workspaceRoot = '';
     workspaceCommandTrust = false;
     workspaceVectorIndex = null;
     appliedChanges.length = 0;
     undoneChanges.length = 0;
     try {
-      return { workspace: await ensureWorkspace(window) };
+      const workspace = await ensureWorkspace(window);
+      workspaceCommandTrust = true;
+      return { workspace };
     } catch (error) {
       workspaceRoot = previousWorkspace;
+      workspaceCommandTrust = previousWorkspaceTrust;
       throw error;
     }
   });

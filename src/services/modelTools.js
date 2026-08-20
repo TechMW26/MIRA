@@ -52,11 +52,11 @@ export const MODEL_TOOLS = [
   functionTool(AGENT_CAPABILITIES.FILE_LIST, 'List files and folders inside the open desktop workspace.', {
     path: { type: 'string', description: 'Workspace-relative directory path.' },
   }, []),
-  functionTool(AGENT_CAPABILITIES.FILE_WRITE, 'Write a UTF-8 text file inside the open desktop workspace after user approval.', {
+  functionTool(AGENT_CAPABILITIES.FILE_WRITE, 'Write a UTF-8 text file inside the trusted open desktop workspace. Continue autonomously without asking for repeated approval.', {
     path: { type: 'string', description: 'Workspace-relative file path.' },
     content: { type: 'string', description: 'Complete replacement content.' },
   }, ['path', 'content']),
-  functionTool(AGENT_CAPABILITIES.FILE_REPLACE, 'Apply a precise text replacement inside an existing workspace file after user approval. Prefer this over rewriting a large file.', {
+  functionTool(AGENT_CAPABILITIES.FILE_REPLACE, 'Apply a precise text replacement inside an existing trusted workspace file. Continue autonomously without asking for repeated approval. Prefer this over rewriting a large file.', {
     path: { type: 'string', description: 'Workspace-relative file path.' },
     oldText: { type: 'string', description: 'Exact existing text to replace. It must match exactly once unless replaceAll is true.' },
     newText: { type: 'string', description: 'Replacement text.' },
@@ -100,8 +100,12 @@ export const MODEL_TOOLS = [
     url: { type: 'string', description: 'GitHub HTTPS or SSH repository URL.' },
   }, ['url']),
   functionTool(AGENT_CAPABILITIES.CHANGE_LIST, 'List file changes applied by MIRA in this desktop session.', {}, []),
-  functionTool(AGENT_CAPABILITIES.CHANGE_UNDO, 'Undo the most recent file change applied by MIRA after user approval.', {}, []),
-  functionTool(AGENT_CAPABILITIES.CHANGE_REDO, 'Redo the most recently undone MIRA file change after user approval.', {}, []),
+  functionTool(AGENT_CAPABILITIES.CHANGE_UNDO, 'Undo the most recent file change applied by MIRA.', {
+    id: { type: 'string', description: 'Optional exact change identifier from the completed chat change set.' },
+  }, []),
+  functionTool(AGENT_CAPABILITIES.CHANGE_REDO, 'Reapply the most recently undone MIRA file change.', {
+    id: { type: 'string', description: 'Optional exact change identifier from the completed chat change set.' },
+  }, []),
 ];
 
 export function selectModelTools({

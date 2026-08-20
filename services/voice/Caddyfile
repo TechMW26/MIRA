@@ -1,0 +1,34 @@
+147-93-102-103.sslip.io {
+    encode zstd gzip
+
+    @health path /health
+    handle @health {
+        reverse_proxy 127.0.0.1:8765
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:8765 {
+            transport http {
+                read_timeout 2m
+                write_timeout 2m
+            }
+            flush_interval -1
+        }
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        -Server
+    }
+
+    log {
+        output file /var/log/caddy/mira-voice-access.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+        format json
+    }
+}
