@@ -124,6 +124,10 @@ export function sanitizeSpeechText(value = '') {
     .trim();
 }
 
+export function resolveVoiceTurnAnswer(resultAnswer = '', streamedAnswer = '') {
+  return sanitizeVoiceOutput(resultAnswer) || sanitizeVoiceOutput(streamedAnswer);
+}
+
 export function sanitizeVoiceOutput(value = '') {
   const withoutControls = stripWebSearchControl(
     stripBrowserControl(stripToolControl(String(value || ''))),

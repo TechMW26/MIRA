@@ -2727,14 +2727,60 @@ body.mira-hud-active {
   width: var(--bloub-size);
   height: var(--bloub-size);
   transform: translate(-50%, -50%);
-  transition: left 0.8s cubic-bezier(0.22, 1, 0.36, 1),
-    top 0.8s cubic-bezier(0.22, 1, 0.36, 1),
-    width 0.8s cubic-bezier(0.22, 1, 0.36, 1),
-    height 0.8s cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: auto;
   filter: drop-shadow(0 0 24px rgba(224, 251, 255, 0.28))
     drop-shadow(0 0 48px rgba(94, 234, 212, 0.13));
-  will-change: top, width, height;
+  will-change: transform, opacity;
+}
+
+.mira-identity-layer.is-home .mira-bloub {
+  animation: mira-bloub-pop-home 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.mira-identity-layer.is-expanded .mira-bloub {
+  animation: mira-bloub-pop-expanded 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.mira-identity-layer.is-desktop .mira-bloub {
+  animation: mira-bloub-pop-desktop 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.mira-identity-layer.is-voice .mira-bloub {
+  animation: mira-bloub-pop-voice 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.mira-identity-layer.is-companion .mira-bloub {
+  animation: mira-bloub-pop-companion 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes mira-bloub-pop-home {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.72); }
+  70% { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes mira-bloub-pop-expanded {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.72); }
+  70% { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes mira-bloub-pop-desktop {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.72); }
+  70% { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes mira-bloub-pop-voice {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.72); }
+  70% { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes mira-bloub-pop-companion {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.72); }
+  70% { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 }
 
 .mira-bloub__body {
@@ -3289,8 +3335,9 @@ body.desktop-companion-mode #root {
   .tool-orbit-ring,
   .hud-chip-dot,
   body.mira-hud-active::before,
+  .mira-bloub,
   .mira-bloub__body,
-  .mira-bloub__eye { animation: none; }
+  .mira-bloub__eye { animation: none !important; }
 }
 
 /* HUD chat input pasted-attachment chips reuse glass-subtle but with cyan border */

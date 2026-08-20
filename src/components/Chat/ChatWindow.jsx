@@ -32,6 +32,7 @@ import VoiceModeOverlay from './VoiceModeOverlay';
 import {
   NEW_VOICE_CONVERSATION,
   resolveVoiceConversationBinding,
+  resolveVoiceTurnAnswer,
   sanitizeVoiceOutput,
 } from '../../services/voiceConversation';
 import {
@@ -245,23 +246,24 @@ export default function ChatWindow({ onMiraExpressionChange, compact = false }) 
     setVoiceTranscript(text);
     setVoiceResponse('');
     voiceRef.current?.beginSpeech(language);
-    try {
-      const result = await sendToChat(text, [], false, {
-        voice: true,
-        onResponseChunk: (answer, { final = false } = {}) => {
-          const visibleAnswer = sanitizeVoiceOutput(answer);
-          if (visibleAnswer) setVoiceResponse(visibleAnswer);
-          voiceRef.current?.queueSpeech(answer, language, final);
-        },
-      });
-      const answer = String(result?.answer || '').trim();
-      const visibleAnswer = sanitizeVoiceOutput(answer);
-      setVoiceResponse(visibleAnswer);
-      if (visibleAnswer && voiceRef.current?.active) {
-        await voiceRef.current.finishSpeech(answer, language);
-      }
-    } finally {
-      voiceRef.current?.resumeListening();
+    let streamedAnswer = '';
+    const result = await sendToChat(text, [], false, {
+      voice: true,
+      onResponseChunk: (answer, { final = false } = {}) => {
+        const visibleAnswer = sanitizeVoiceOutput(answer);
+        if (!visibleAnswer) return;
+        streamedAnswer = visibleAnswer;
+        setVoiceResponse(visibleAnswer);
+        voiceRef.current?.queueSpeech(visibleAnswer, language, final);
+      },
+    });
+    const visibleAnswer = resolveVoiceTurnAnswer(result?.answer, streamedAnswer);
+    if (!visibleAnswer) {
+      throw new Error('Mira returned an empty voice response.');
+    }
+    setVoiceResponse(visibleAnswer);
+    if (voiceRef.current?.active) {
+      await voiceRef.current.finishSpeech(visibleAnswer, language);
     }
   }, [sendToChat]);
 

@@ -7,6 +7,7 @@ import {
   NEW_VOICE_CONVERSATION,
   normalizeVoiceTranscript,
   resolveVoiceConversationBinding,
+  resolveVoiceTurnAnswer,
   sanitizeSpeechText,
   sanitizeVoiceOutput,
   splitSpeechText,
@@ -56,6 +57,17 @@ test('sanitizes voice captions without exposing markdown or model controls', () 
   assert.equal(
     sanitizeVoiceOutput('Let me verify that. <web.search>algae tree</web.search>'),
     'Let me verify that.',
+  );
+});
+
+test('keeps the streamed voice answer when the final result is empty', () => {
+  assert.equal(
+    resolveVoiceTurnAnswer('', '### Answer\nHello **Aviraj**.'),
+    'Answer\nHello Aviraj.',
+  );
+  assert.equal(
+    resolveVoiceTurnAnswer('Final answer.', 'Partial answer.'),
+    'Final answer.',
   );
 });
 
