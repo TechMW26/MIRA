@@ -75,6 +75,7 @@ const runningProcesses = new Map();
 let mainWindow = null;
 let companionWindow = null;
 let companionExpanded = false;
+let deepSeekStorageError = '';
 
 function workspaceStatePath() {
   return path.join(app.getPath('userData'), 'workspace-state.json');
@@ -103,14 +104,29 @@ async function readDevelopmentProviderKey() {
 }
 
 async function readStoredDeepSeekKey() {
-  if (!safeStorage.isEncryptionAvailable()) return '';
-  try {
-    const stored = JSON.parse(await fs.readFile(providerSecretsPath(), 'utf8'));
-    if (!stored?.deepseek) return '';
-    return normalizeProviderKey(safeStorage.decryptString(Buffer.from(stored.deepseek, 'base64')));
-  } catch {
+  if (!safeStorage.isEncryptionAvailable()) {
+    deepSeekStorageError = 'secure_storage_unavailable';
     return '';
   }
+  try {
+    const stored = JSON.parse(await fs.readFile(providerSecretsPath(), 'utf8'));
+    if (!stored?.deepseek) {
+      deepSeekStorageError = '';
+      return '';
+    }
+    const key = normalizeProviderKey(safeStorage.decryptString(Buffer.from(stored.deepseek, 'base64')));
+    deepSeekStorageError = '';
+    return key;
+  } catch (error) {
+    deepSeekStorageError = error?.code === 'ENOENT' ? '' : 'stored_credential_unreadable';
+    return '';
+  }
+}
+
+function providerReconnectError() {
+  const error = new Error('Reconnect the DeepSeek coding provider under System access.');
+  error.code = 'provider_reconnect_required';
+  return error;
 }
 
 async function getDeepSeekKey() {
@@ -124,6 +140,7 @@ async function writeStoredDeepSeekKey(key) {
   await fs.writeFile(providerSecretsPath(), JSON.stringify({
     deepseek: safeStorage.encryptString(key).toString('base64'),
   }), { encoding: 'utf8', mode: 0o600 });
+  deepSeekStorageError = '';
 }
 
 async function saveDeepSeekKey(value) {
@@ -150,6 +167,7 @@ async function getProviderStatus() {
   const storedKey = environmentKey ? '' : await readStoredDeepSeekKey();
   return {
     deepseekConfigured: Boolean(environmentKey || storedKey),
+    deepseekNeedsReconnect: !environmentKey && deepSeekStorageError === 'stored_credential_unreadable',
     deepseekModel: process.env.DEEPSEEK_AGENT_MODEL || 'deepseek-v4-pro',
     source: environmentKey ? 'environment' : storedKey ? 'secure-storage' : 'none',
   };
@@ -170,7 +188,10 @@ function desktopAssistPrompt(task, body = {}) {
 
 async function runDesktopCodeAssist(body = {}) {
   const key = await getDeepSeekKey();
-  if (!key) throw new Error('Configure the DeepSeek coding provider under System access.');
+  if (!key) {
+    if (deepSeekStorageError === 'stored_credential_unreadable') throw providerReconnectError();
+    throw new Error('Configure the DeepSeek coding provider under System access.');
+  }
   const task = String(body.task || 'completion');
   if (task === 'completion') {
     const suggestion = await requestDeepSeekCompletion({
@@ -1807,7 +1828,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('mira:agent-chat', async (_event, body) => {
     try {
       const key = await getDeepSeekKey();
-      if (!key) throw new Error('Configure the DeepSeek coding provider under System access.');
+      if (!key) {
+        if (deepSeekStorageError === 'stored_credential_unreadable') throw providerReconnectError();
+        throw new Error('Configure the DeepSeek coding provider under System access.');
+      }
       const result = await requestDeepSeekChat({
         apiKey: key,
         messages: body?.messages,
@@ -1818,14 +1842,14 @@ app.whenReady().then(async () => {
       });
       return { ok: true, ...result };
     } catch (error) {
-      return { ok: false, error: error?.message || 'The desktop coding provider is unavailable.' };
+      return { ok: false, code: error?.code || '', error: error?.message || 'The desktop coding provider is unavailable.' };
     }
   });
   ipcMain.handle('mira:code-assist', async (_event, body) => {
     try {
       return { ok: true, ...await runDesktopCodeAssist(body) };
     } catch (error) {
-      return { ok: false, error: error?.message || 'The desktop coding assistant is unavailable.' };
+      return { ok: false, code: error?.code || '', error: error?.message || 'The desktop coding assistant is unavailable.' };
     }
   });
   ipcMain.handle('mira:choose-workspace', async () => {

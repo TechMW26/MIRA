@@ -31,6 +31,7 @@ import {
   getDesktopProviderStatus,
   getDesktopRuntimeInfo,
   requestDesktopCodeAssist,
+  notifyDesktopProviderRequired,
   requestDesktopPermission,
   saveDesktopWorkspaceFile,
   subscribeDesktopSaveShortcut,
@@ -211,9 +212,20 @@ export default function DesktopWorkspace({ style, onExitWorkspace }) {
       }
     }).catch(() => setPermissionStatus(null));
     refreshPermissionStatus();
-    getDesktopProviderStatus().then(setProviderStatus).catch(() => setProviderStatus(null));
+    const refreshProviderStatus = () => getDesktopProviderStatus().then(setProviderStatus).catch(() => setProviderStatus(null));
+    const requireProviderReconnect = (event) => {
+      refreshProviderStatus();
+      setPermissionError(event?.detail?.message || 'Reconnect the DeepSeek coding provider to continue.');
+      setPermissionMessage('');
+      setShowPermissions(true);
+    };
+    refreshProviderStatus();
     window.addEventListener('focus', refreshPermissionStatus);
-    return () => window.removeEventListener('focus', refreshPermissionStatus);
+    window.addEventListener('mira:desktop-provider-required', requireProviderReconnect);
+    return () => {
+      window.removeEventListener('focus', refreshPermissionStatus);
+      window.removeEventListener('mira:desktop-provider-required', requireProviderReconnect);
+    };
   }, [loadDirectory]);
 
   useEffect(() => {
@@ -662,7 +674,8 @@ export default function DesktopWorkspace({ style, onExitWorkspace }) {
       let payload = null;
       try {
         payload = await requestDesktopCodeAssist(request);
-      } catch {
+      } catch (error) {
+        notifyDesktopProviderRequired(error);
         // Fall through to the managed small-model route.
       }
       if (!payload) {
@@ -1056,20 +1069,24 @@ export default function DesktopWorkspace({ style, onExitWorkspace }) {
               <article>
                 <div>
                   <strong>DeepSeek coding agent</strong>
-                  <span>{providerStatus?.deepseekConfigured ? `Ready · ${providerStatus.deepseekModel}` : 'Required for desktop coding, reasoning, and tool orchestration.'}</span>
+                  <span>{providerStatus?.deepseekConfigured
+                    ? `Ready · ${providerStatus.deepseekModel}`
+                    : providerStatus?.deepseekNeedsReconnect
+                      ? 'Reconnect required. The previously stored credential can no longer be decrypted.'
+                      : 'Required for desktop coding, reasoning, and tool orchestration.'}</span>
                 </div>
                 <form onSubmit={configureCodingProvider} className="desktop-provider-form">
                   <input
                     type="password"
                     value={providerKey}
                     onChange={(event) => setProviderKey(event.target.value)}
-                    placeholder={providerStatus?.deepseekConfigured ? 'Replace API key' : 'DeepSeek API key'}
+                    placeholder={providerStatus?.deepseekConfigured ? 'Replace API key' : providerStatus?.deepseekNeedsReconnect ? 'Reconnect DeepSeek API key' : 'DeepSeek API key'}
                     autoComplete="off"
                     spellCheck="false"
                     aria-label="DeepSeek API key"
                   />
                   <button type="submit" disabled={providerBusy || !providerKey.trim()} className="desktop-ide-button">
-                    {providerBusy ? 'Verifying…' : providerStatus?.deepseekConfigured ? 'Update' : 'Configure'}
+                    {providerBusy ? 'Verifying…' : providerStatus?.deepseekConfigured ? 'Update' : providerStatus?.deepseekNeedsReconnect ? 'Reconnect' : 'Configure'}
                   </button>
                 </form>
               </article>

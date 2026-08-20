@@ -9,6 +9,7 @@ import {
   getDesktopPermissionStatus,
   getDesktopProviderStatus,
   getDesktopRuntimeInfo,
+  notifyDesktopProviderRequired,
   requestDesktopAgentChat,
   requestDesktopCodeAssist,
   requestDesktopPermission,
@@ -51,6 +52,48 @@ test('desktop AI requests cross only the trusted preload bridge', async () => {
   assert.equal((await configureDesktopDeepSeek('secret', scope)).deepseekConfigured, true);
   assert.equal((await requestDesktopAgentChat({ messages: [] }, scope)).answer, 'done');
   assert.equal((await requestDesktopCodeAssist({ task: 'completion' }, scope)).suggestion, 'return value;');
+});
+
+test('desktop AI preserves reconnect errors and notifies the workspace UI', async () => {
+  const events = [];
+  class TestCustomEvent {
+    constructor(type, options) {
+      this.type = type;
+      this.detail = options.detail;
+    }
+  }
+  const scope = {
+    CustomEvent: TestCustomEvent,
+    window: {
+      dispatchEvent: (event) => events.push(event),
+      miraDesktop: {
+        invokeTool: async () => ({ ok: true }),
+        requestAgentChat: async () => ({
+          ok: false,
+          code: 'provider_reconnect_required',
+          error: 'Reconnect the DeepSeek coding provider under System access.',
+        }),
+        requestCodeAssist: async () => ({
+          ok: false,
+          code: 'provider_reconnect_required',
+          error: 'Reconnect the DeepSeek coding provider under System access.',
+        }),
+      },
+    },
+  };
+
+  for (const request of [requestDesktopAgentChat({ messages: [] }, scope), requestDesktopCodeAssist({}, scope)]) {
+    await assert.rejects(request, (error) => {
+      assert.equal(error.code, 'provider_reconnect_required');
+      assert.match(error.message, /Reconnect the DeepSeek/i);
+      return true;
+    });
+  }
+  const reconnectError = new Error('Reconnect the DeepSeek coding provider under System access.');
+  reconnectError.code = 'provider_reconnect_required';
+  assert.equal(notifyDesktopProviderRequired(reconnectError, scope), true);
+  assert.equal(events[0].type, 'mira:desktop-provider-required');
+  assert.equal(events[0].detail.code, 'provider_reconnect_required');
 });
 
 test('desktop permission requests use only the allowlisted native bridge', async () => {

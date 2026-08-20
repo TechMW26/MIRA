@@ -1,4 +1,4 @@
-import { requestDesktopCodeAssist } from './desktopBridge.js';
+import { notifyDesktopProviderRequired, requestDesktopCodeAssist } from './desktopBridge.js';
 
 function toolEvidenceText(toolResults = []) {
   return toolResults
@@ -23,7 +23,8 @@ export async function requestWorkspaceSynthesis({ request, toolResults, fetchImp
   let desktopResult = null;
   try {
     desktopResult = await requestDesktopCodeAssist(body);
-  } catch {
+  } catch (error) {
+    notifyDesktopProviderRequired(error);
     // The hosted small-model route remains a secondary synthesis fallback.
   }
   if (desktopResult?.suggestion) return String(desktopResult.suggestion).trim();

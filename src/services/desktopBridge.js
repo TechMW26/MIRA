@@ -59,7 +59,11 @@ export async function configureDesktopDeepSeek(key, scope = globalThis) {
     throw new Error('Update the installed MIRA desktop app before configuring the coding provider.');
   }
   const result = await bridge.configureDeepSeek(String(key || ''));
-  if (!result?.ok) throw new Error(result?.error || 'Could not configure the coding provider.');
+  if (!result?.ok) {
+    const error = new Error(result?.error || 'Could not configure the coding provider.');
+    error.code = result?.code || '';
+    throw error;
+  }
   return result.status;
 }
 
@@ -67,7 +71,11 @@ export async function requestDesktopAgentChat(payload, scope = globalThis) {
   const bridge = getDesktopBridge(scope);
   if (!bridge || typeof bridge.requestAgentChat !== 'function') return null;
   const result = await bridge.requestAgentChat(payload);
-  if (!result?.ok) throw new Error(result?.error || 'The desktop coding provider is unavailable.');
+  if (!result?.ok) {
+    const error = new Error(result?.error || 'The desktop coding provider is unavailable.');
+    error.code = result?.code || '';
+    throw error;
+  }
   return result;
 }
 
@@ -75,8 +83,23 @@ export async function requestDesktopCodeAssist(payload, scope = globalThis) {
   const bridge = getDesktopBridge(scope);
   if (!bridge || typeof bridge.requestCodeAssist !== 'function') return null;
   const result = await bridge.requestCodeAssist(payload);
-  if (!result?.ok) throw new Error(result?.error || 'The desktop coding assistant is unavailable.');
+  if (!result?.ok) {
+    const error = new Error(result?.error || 'The desktop coding assistant is unavailable.');
+    error.code = result?.code || '';
+    throw error;
+  }
   return result;
+}
+
+export function notifyDesktopProviderRequired(error, scope = globalThis) {
+  if (error?.code !== 'provider_reconnect_required') return false;
+  const EventConstructor = scope?.CustomEvent;
+  const target = scope?.window;
+  if (typeof EventConstructor !== 'function' || typeof target?.dispatchEvent !== 'function') return false;
+  target.dispatchEvent(new EventConstructor('mira:desktop-provider-required', {
+    detail: { code: error.code, message: error.message },
+  }));
+  return true;
 }
 
 export async function getDesktopWorkspaceMemory(scope = globalThis) {

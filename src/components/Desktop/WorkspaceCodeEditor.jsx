@@ -11,7 +11,7 @@ import { syntaxTree } from '@codemirror/language';
 import { keymap } from '@codemirror/view';
 import { linter } from '@codemirror/lint';
 import { oneDark } from '@codemirror/theme-one-dark';
-import { requestDesktopCodeAssist } from '../../services/desktopBridge.js';
+import { notifyDesktopProviderRequired, requestDesktopCodeAssist } from '../../services/desktopBridge.js';
 
 function extensionForPath(path = '') {
   const extension = path.split('.').pop()?.toLowerCase();
@@ -70,7 +70,8 @@ export default function WorkspaceCodeEditor({ path, value, onChange, onSave, onD
       let payload = null;
       try {
         payload = await requestDesktopCodeAssist(request);
-      } catch {
+      } catch (error) {
+        notifyDesktopProviderRequired(error);
         // Fall through to the managed Qwen completion route.
       }
       if (!payload) {

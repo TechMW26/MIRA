@@ -8,7 +8,7 @@ import {
   shouldRetryChatRequest,
 } from './chatRequestPolicy.js';
 import { diagnosticError, diagnosticLog, diagnosticWarn } from './diagnostics.js';
-import { requestDesktopAgentChat } from './desktopBridge.js';
+import { notifyDesktopProviderRequired, requestDesktopAgentChat } from './desktopBridge.js';
 import { composeMiraSystemPrompt } from '../config/systemPrompt.js';
 
 let activeChatAbortController = null;
@@ -666,6 +666,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
   let latestAnswer = '';
   let latestThinking = '';
   let streamed;
+  let desktopProviderError = null;
   if (desktopCoding && !images.length && !voice) {
     try {
       const desktop = await requestDesktopAgentChat({
@@ -685,6 +686,8 @@ export async function sendChatMessage(messages, onChunk, images = [], {
         return answer;
       }
     } catch (error) {
+      desktopProviderError = error;
+      notifyDesktopProviderRequired(error);
       diagnosticWarn('model', 'desktop coding provider unavailable; using primary model fallback', {
         error: error?.message || 'Unknown desktop provider error',
       });
@@ -718,12 +721,19 @@ export async function sendChatMessage(messages, onChunk, images = [], {
     diagnosticWarn('model', 'primary model failed; trying Pollinations completion fallback', {
       error: error?.message || 'Unknown model failure',
     });
-    streamed = await requestPollinationsFallback({
-      messages,
-      systemPrompt: composeMiraSystemPrompt(systemPrompt),
-      tools,
-      maxTokens,
-    });
+    try {
+      streamed = await requestPollinationsFallback({
+        messages,
+        systemPrompt: composeMiraSystemPrompt(systemPrompt),
+        tools,
+        maxTokens,
+      });
+    } catch (fallbackError) {
+      if (desktopProviderError?.code === 'provider_reconnect_required') {
+        throw desktopProviderError;
+      }
+      throw fallbackError;
+    }
     latestAnswer = streamed.answer;
     onChunk?.(latestAnswer, latestAnswer);
   }
