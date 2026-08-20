@@ -79,3 +79,42 @@ test('creates server-side workspace embeddings without exposing credentials', as
     else process.env.POLLINATIONS_API_KEY = originalKey;
   }
 });
+
+test('routes desktop coding sessions through the server-side DeepSeek credential', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.DEEPSEEK_API_KEY;
+  const originalModel = process.env.DEEPSEEK_DESKTOP_MODEL;
+  const requests = [];
+  process.env.DEEPSEEK_API_KEY = 'deepseek-server-secret';
+  process.env.DEEPSEEK_DESKTOP_MODEL = 'deepseek-v4-pro';
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), options });
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: 'Implemented and verified.' } }],
+    }), { status: 200 });
+  };
+  try {
+    const response = await POST(new Request('http://localhost/api/code-assist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-MIRA-Desktop': '1' },
+      body: JSON.stringify({
+        task: 'chat',
+        systemPrompt: 'You are MIRA, a coding agent.',
+        messages: [{ role: 'user', content: 'Fix the failing test.' }],
+      }),
+    }));
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.answer, 'Implemented and verified.');
+    assert.equal(payload.model, 'deepseek-v4-pro');
+    assert.match(requests[0].url, /api\.deepseek\.com\/chat\/completions$/);
+    assert.equal(requests[0].options.headers.Authorization, 'Bearer deepseek-server-secret');
+    assert.doesNotMatch(requests[0].options.body, /deepseek-server-secret/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalKey;
+    if (originalModel === undefined) delete process.env.DEEPSEEK_DESKTOP_MODEL;
+    else process.env.DEEPSEEK_DESKTOP_MODEL = originalModel;
+  }
+});

@@ -3,6 +3,9 @@ export const config = { maxDuration: 30 };
 const POLLINATIONS_ORIGIN = String(process.env.POLLINATIONS_API_URL || 'https://gen.pollinations.ai')
   .trim()
   .replace(/\/+$/, '');
+const DEEPSEEK_ORIGIN = String(process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com')
+  .trim()
+  .replace(/\/+$/, '');
 let cachedModel = null;
 let modelCacheExpiresAt = 0;
 let cachedEmbeddingModel = null;
@@ -20,6 +23,21 @@ function serverKey() {
     .trim()
     .replace(/^['"]|['"]$/g, '')
     .replace(/\s+/g, '');
+}
+
+function deepSeekKey() {
+  return String(process.env.DEEPSEEK_API_KEY || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .replace(/\s+/g, '');
+}
+
+function deepSeekModel() {
+  return String(process.env.DEEPSEEK_DESKTOP_MODEL || 'deepseek-v4-pro').trim();
+}
+
+function isDesktopRequest(request) {
+  return request.headers.get('x-mira-desktop') === '1';
 }
 
 export function selectAssistModel(models = []) {
@@ -166,6 +184,63 @@ async function pollinationsJson(url, options, attempts = 2) {
   throw lastError || new Error('Pollinations request failed.');
 }
 
+async function deepSeekJson(payload, signal) {
+  const key = deepSeekKey();
+  if (!key) throw new Error('Desktop coding assistance is not configured.');
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(`${DEEPSEEK_ORIGIN}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal,
+      });
+      const result = await response.json().catch(() => ({}));
+      if (response.ok) return result;
+      const error = new Error(`DeepSeek request failed (${response.status}).`);
+      error.status = response.status;
+      if (![408, 429, 500, 502, 503, 504].includes(response.status)) throw error;
+      lastError = error;
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      lastError = error;
+    }
+    if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw lastError || new Error('DeepSeek request failed.');
+}
+
+async function requestDesktopChat({ messages = [], systemPrompt = '', tools = [], maxTokens, signal } = {}) {
+  const chatMessages = [
+    ...(systemPrompt ? [{ role: 'system', content: String(systemPrompt).slice(0, 20_000) }] : []),
+    ...sanitizeMessages(messages),
+  ];
+  if (!chatMessages.length) throw new Error('Desktop coding assistance requires messages.');
+  const model = deepSeekModel();
+  const result = await deepSeekJson({
+    model,
+    messages: chatMessages,
+    max_tokens: Math.max(256, Math.min(4_000, Number(maxTokens) || 1_600)),
+    temperature: 0.15,
+    ...(Array.isArray(tools) && tools.length ? { tools: tools.slice(0, 32), tool_choice: 'auto' } : {}),
+  }, signal);
+  const message = result?.choices?.[0]?.message || {};
+  const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  const answer = cleanSuggestion(message.content, 12_000);
+  const thinking = cleanSuggestion(message.reasoning_content, 12_000);
+  if (!answer && !toolCalls.length) throw new Error('Desktop coding assistance returned no response.');
+  return {
+    ...(answer ? { answer } : {}),
+    ...(thinking ? { thinking } : {}),
+    ...(toolCalls.length ? { toolCalls } : {}),
+    model,
+  };
+}
+
 export async function requestManagedChat({
   messages = [],
   systemPrompt = '',
@@ -211,14 +286,19 @@ export async function requestManagedChat({
 }
 
 export async function POST(request) {
-  const key = serverKey();
-  if (!key) return json({ error: 'Code assistance is not configured.' }, 503);
-
   let body;
   try { body = await request.json(); } catch { return json({ error: 'Invalid JSON request.' }, 400); }
   const task = String(body?.task || 'completion');
   if (!['completion', 'github-comment', 'commit', 'workspace-synthesis', 'chat', 'embedding'].includes(task)) {
     return json({ error: 'Unsupported code-assistance task.' }, 400);
+  }
+  const desktopRequest = isDesktopRequest(request);
+  const key = serverKey();
+  if (desktopRequest && task !== 'embedding' && !deepSeekKey()) {
+    return json({ error: 'Desktop coding assistance is not configured.' }, 503);
+  }
+  if ((!desktopRequest || task === 'embedding') && !key) {
+    return json({ error: 'Code assistance is not configured.' }, 503);
   }
 
   const controller = new AbortController();
@@ -253,7 +333,13 @@ export async function POST(request) {
     }
 
     if (task === 'chat') {
-      const result = await requestManagedChat({
+      const result = desktopRequest ? await requestDesktopChat({
+        messages: body.messages,
+        systemPrompt: body.systemPrompt,
+        tools: body.tools,
+        maxTokens: body.maxTokens,
+        signal: controller.signal,
+      }) : await requestManagedChat({
         messages: body.messages,
         systemPrompt: body.systemPrompt,
         tools: body.tools,
@@ -263,7 +349,6 @@ export async function POST(request) {
       return json(result);
     }
 
-    const model = await assistModel(key, controller.signal);
     const prompt = task === 'completion'
       ? completionPrompt({
         path: String(body.path || '').slice(0, 500),
@@ -285,6 +370,26 @@ export async function POST(request) {
       { role: 'system', content: 'You are a fast, precise coding copilot. Follow the output contract exactly and never expose credentials.' },
       { role: 'user', content: prompt },
     ];
+    if (desktopRequest) {
+      const model = deepSeekModel();
+      const result = await deepSeekJson({
+        model,
+        messages: chatMessages,
+        max_tokens: task === 'completion'
+          ? 220
+          : task === 'commit'
+            ? 120
+            : task === 'github-comment'
+              ? 420
+              : 1_600,
+        temperature: 0.15,
+      }, controller.signal);
+      const suggestion = cleanSuggestion(result?.choices?.[0]?.message?.content, task === 'completion' ? 4_000 : 12_000);
+      if (!suggestion) return json({ error: 'The coding assistant returned no suggestion.' }, 502);
+      return json({ suggestion, model });
+    }
+
+    const model = await assistModel(key, controller.signal);
     const payload = {
       messages: chatMessages,
       max_tokens: task === 'completion'
