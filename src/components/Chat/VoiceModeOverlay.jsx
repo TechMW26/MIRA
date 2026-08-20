@@ -62,6 +62,7 @@ export default function VoiceModeOverlay({
           <MiraBloub
             variant="voice"
             expression={expression}
+            activity={status}
           />
         </div>
 

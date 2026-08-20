@@ -58,13 +58,15 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
   const captureStartedAtRef = useRef(0);
   const speechStartedAtRef = useRef(0);
   const silenceStartedAtRef = useRef(0);
+  const noiseFloorRef = useRef(0.006);
   const chunksRef = useRef([]);
   const requestAbortRef = useRef(null);
   const speechAbortRef = useRef(null);
   const playbackRef = useRef(null);
   const speechQueueRef = useRef([]);
   const speechWorkerRef = useRef(null);
-  const speechStreamRef = useRef({ consumed: '', latest: '', language: 'en' });
+  const speechGenerationRef = useRef(0);
+  const speechStreamRef = useRef({ consumed: '', latest: '', language: 'en', generation: 0 });
 
   const setVoiceActive = useCallback((value) => {
     activeRef.current = value;
@@ -111,9 +113,9 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
     requestAbortRef.current = null;
     speechAbortRef.current?.abort();
     speechAbortRef.current = null;
+    speechGenerationRef.current += 1;
     speechQueueRef.current = [];
-    speechWorkerRef.current = null;
-    speechStreamRef.current = { consumed: '', latest: '', language: 'en' };
+    speechStreamRef.current = { consumed: '', latest: '', language: 'en', generation: 0 };
     resumePendingRef.current = false;
     processingRef.current = false;
     stopPlayback();
@@ -165,9 +167,9 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
     requestAbortRef.current = null;
     speechAbortRef.current?.abort();
     speechAbortRef.current = null;
+    speechGenerationRef.current += 1;
     speechQueueRef.current = [];
-    speechWorkerRef.current = null;
-    speechStreamRef.current = { consumed: '', latest: '', language: 'en' };
+    speechStreamRef.current = { consumed: '', latest: '', language: 'en', generation: 0 };
     stopInterruptionMonitor();
     stopCapture();
     stopPlayback();
@@ -233,28 +235,45 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
     });
   }, [stopPlayback]);
 
-  const runSpeechQueue = useCallback(() => {
-    if (speechWorkerRef.current) return speechWorkerRef.current;
+  const runSpeechQueue = useCallback((generation = speechGenerationRef.current) => {
+    if (generation !== speechGenerationRef.current) return Promise.resolve();
+    if (speechWorkerRef.current?.generation === generation) return speechWorkerRef.current.promise;
     const worker = (async () => {
       const controller = speechAbortRef.current;
-      while (activeRef.current && !controller?.signal.aborted && speechQueueRef.current.length) {
+      while (
+        activeRef.current
+        && generation === speechGenerationRef.current
+        && !controller?.signal.aborted
+        && speechQueueRef.current.length
+      ) {
         const item = speechQueueRef.current.shift();
+        if (item.generation !== generation) continue;
         setStatus('speaking');
         const resultPromise = primeSpeechItem(item, controller);
         primeSpeechWindow(speechQueueRef.current, controller);
         const result = await resultPromise;
+        if (generation !== speechGenerationRef.current || controller?.signal.aborted) return;
         if (result.error) throw result.error;
         await playBlob(result.audio);
       }
     })();
-    speechWorkerRef.current = worker;
+    const workerRecord = { generation, promise: worker };
+    speechWorkerRef.current = workerRecord;
     worker.catch((voiceError) => {
-      if (voiceError?.name === 'AbortError' || !activeRef.current) return;
+      if (
+        voiceError?.name === 'AbortError'
+        || !activeRef.current
+        || generation !== speechGenerationRef.current
+      ) return;
       setError(voiceError?.message || 'MIRA could not play the voice response.');
       setStatus('error');
     }).finally(() => {
-      if (speechWorkerRef.current === worker) speechWorkerRef.current = null;
-      if (activeRef.current && speechQueueRef.current.length) runSpeechQueue();
+      if (speechWorkerRef.current === workerRecord) speechWorkerRef.current = null;
+      if (
+        activeRef.current
+        && generation === speechGenerationRef.current
+        && speechQueueRef.current.some((item) => item.generation === generation)
+      ) runSpeechQueue(generation);
     });
     return worker;
   }, [playBlob]);
@@ -262,36 +281,49 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
   const beginSpeech = useCallback((hintedLanguage = '') => {
     speechAbortRef.current?.abort();
     stopPlayback();
+    const generation = speechGenerationRef.current + 1;
+    speechGenerationRef.current = generation;
     speechQueueRef.current = [];
-    speechWorkerRef.current = null;
     speechAbortRef.current = new AbortController();
     speechStreamRef.current = {
       consumed: '',
       latest: '',
       language: detectVoiceLanguage('', hintedLanguage),
+      generation,
     };
   }, [stopPlayback]);
 
   const queueSpeech = useCallback((text, hintedLanguage = '', final = false) => {
     if (!activeRef.current) return;
     const stream = speechStreamRef.current;
+    if (!stream.generation || stream.generation !== speechGenerationRef.current) return;
     stream.language = detectVoiceLanguage(text, hintedLanguage || stream.language);
     stream.latest = text;
     const increment = getSpeakableIncrement(stream.consumed, text, final);
     if (!increment.text) return;
     stream.consumed = increment.consumed;
-    for (const chunk of splitSpeechText(increment.text, 92)) {
-      speechQueueRef.current.push({ text: chunk, language: stream.language });
+    for (const chunk of splitSpeechText(increment.text, 148)) {
+      speechQueueRef.current.push({
+        text: chunk,
+        language: stream.language,
+        generation: stream.generation,
+      });
     }
     primeSpeechWindow(speechQueueRef.current, speechAbortRef.current);
-    runSpeechQueue();
+    runSpeechQueue(stream.generation);
   }, [runSpeechQueue]);
 
   const finishSpeech = useCallback(async (text, hintedLanguage = '') => {
+    const generation = speechStreamRef.current.generation;
     queueSpeech(text, hintedLanguage, true);
-    while (activeRef.current && (speechWorkerRef.current || speechQueueRef.current.length)) {
-      if (!speechWorkerRef.current) runSpeechQueue();
-      await speechWorkerRef.current;
+    while (
+      activeRef.current
+      && generation === speechGenerationRef.current
+      && (speechWorkerRef.current?.generation === generation
+        || speechQueueRef.current.some((item) => item.generation === generation))
+    ) {
+      if (speechWorkerRef.current?.generation !== generation) runSpeechQueue(generation);
+      await speechWorkerRef.current?.promise?.catch(() => {});
     }
   }, [queueSpeech, runSpeechQueue]);
 
@@ -318,6 +350,7 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
     captureStartedAtRef.current = performance.now();
     speechStartedAtRef.current = 0;
     silenceStartedAtRef.current = 0;
+    noiseFloorRef.current = Math.min(Math.max(noiseFloorRef.current, 0.004), 0.015);
     recorder.start(160);
     setStatus('listening');
 
@@ -332,18 +365,23 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
       }
       const rms = Math.sqrt(sum / samples.length);
       const now = performance.now();
-      if (rms > 0.025) {
+      const floor = noiseFloorRef.current;
+      const speechThreshold = Math.min(0.04, Math.max(0.016, floor * 2.6 + 0.003));
+      if (!speechStartedAtRef.current && rms < speechThreshold) {
+        noiseFloorRef.current = (floor * 0.92) + (Math.min(rms, 0.025) * 0.08);
+      }
+      if (rms > speechThreshold) {
         if (!speechStartedAtRef.current) speechStartedAtRef.current = now;
         silenceStartedAtRef.current = 0;
       } else if (speechStartedAtRef.current) {
         if (!silenceStartedAtRef.current) silenceStartedAtRef.current = now;
-        const enoughSpeech = now - speechStartedAtRef.current > 200;
-        if (enoughSpeech && now - silenceStartedAtRef.current > 480) {
+        const enoughSpeech = now - speechStartedAtRef.current > 160;
+        if (enoughSpeech && now - silenceStartedAtRef.current > 340) {
           recorder.stop();
           return;
         }
       }
-      if (now - captureStartedAtRef.current > 20_000) recorder.stop();
+      if (now - captureStartedAtRef.current > 15_000) recorder.stop();
       else monitorFrameRef.current = requestAnimationFrame(monitor);
     };
     monitorFrameRef.current = requestAnimationFrame(monitor);
@@ -413,12 +451,29 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
       unlockSource.start(0);
 
       const healthController = new AbortController();
-      const healthTimeout = setTimeout(() => healthController.abort(), 10_000);
-      const health = await getVoiceHealth(healthController.signal).finally(() => clearTimeout(healthTimeout));
-      if (!health.ready) throw new Error(health.error || 'Voice engines are still warming up. Try again shortly.');
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const healthTimeout = setTimeout(() => healthController.abort(), 6_000);
+      const healthPromise = getVoiceHealth(healthController.signal)
+        .finally(() => clearTimeout(healthTimeout));
+      const streamPromise = navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
       });
+      let stream;
+      try {
+        [stream] = await Promise.all([
+          streamPromise,
+          healthPromise.then((health) => {
+            if (!health.ready) {
+              throw new Error(health.error || 'Voice engines are still warming up. Try again shortly.');
+            }
+            return health;
+          }),
+        ]);
+      } catch (voiceError) {
+        streamPromise.then((pendingStream) => {
+          pendingStream?.getTracks?.().forEach((track) => track.stop());
+        }).catch(() => {});
+        throw voiceError;
+      }
       const source = context.createMediaStreamSource(stream);
       const analyser = context.createAnalyser();
       analyser.fftSize = 1024;

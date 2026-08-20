@@ -7,6 +7,35 @@ const PRAISE_PATTERN = /\b(?:amazing|awesome|brilliant|excellent|great job|love 
 const LAUGHTER_PATTERN = /(?:\b(?:haha+|hehe+|lol|lmao|funny|hilarious)\b|😂|🤣)/i;
 const EXCITEMENT_PATTERN = /\b(?:can't wait|excited|fantastic|incredible|wow|yay)\b|!{2,}/i;
 const CONFUSION_PATTERN = /\b(?:confused|don't understand|do not understand|makes no sense|what do you mean|samajh nahi)\b/i;
+const SUSPICION_PATTERN = /\b(?:are you sure|double[- ]check|doubt(?:ful)?|questionable|suspicious|verify that)\b/i;
+const FATIGUE_PATTERN = /\b(?:bored|boring|exhausted|sleepy|tired)\b/i;
+const DISMISSIVE_PATTERN = /\b(?:meh|not impressed|unimpressed|whatever)\b/i;
+const ACHIEVEMENT_PATTERN = /\b(?:i did it|i finished|i fixed it|it works|we did it|we won)\b/i;
+
+const STRONG_EMOTIONS = new Set([
+  'angry',
+  'sad',
+  'scared',
+  'laughing',
+  'shy',
+  'excited',
+]);
+
+const ACTIVITY_EXPRESSIONS = Object.freeze({
+  idle: [],
+  welcome: ['neutral', 'attentive', 'happy'],
+  listening: ['attentive', 'curious'],
+  transcribing: ['curious', 'suspicious', 'attentive'],
+  thinking: ['curious', 'suspicious', 'confused', 'attentive'],
+  searching: ['curious', 'attentive', 'surprised', 'suspicious'],
+  planning: ['curious', 'suspicious', 'attentive'],
+  executing: ['attentive', 'curious', 'proud'],
+  synthesizing: ['curious', 'excited', 'proud'],
+  responding: ['attentive', 'happy', 'proud'],
+  speaking: ['happy', 'attentive', 'excited'],
+  connecting: ['shy', 'attentive'],
+  error: ['sad', 'confused'],
+});
 
 export function shouldShowMiraWelcome(conversationId, messages = []) {
   return !conversationId && messages.length === 0;
@@ -25,6 +54,9 @@ export function expressionForAssistantContent(content = '') {
   if (/\b(?:wow|surpris(?:e|ed|ing)|unexpected|remarkable|incredible)\b/i.test(text)) return 'surprised';
   if (/\b(?:thank you|thanks|appreciate|glad to help|my pleasure)\b/i.test(text)) return 'shy';
   if (/\b(?:not sure|unclear|ambiguous|could mean|need clarification)\b/i.test(text)) return 'confused';
+  if (/\b(?:warning|caution|double[- ]check|verify|questionable|doesn't add up)\b/i.test(text)) return 'suspicious';
+  if (/\b(?:not ideal|poor result|weak approach|underwhelming)\b/i.test(text)) return 'unimpressed';
+  if (/\b(?:good news|sounds good|happy to|glad that)\b/i.test(text)) return 'happy';
   if (/[!！]\s*$/.test(text.trim())) return 'excited';
   return 'neutral';
 }
@@ -39,10 +71,45 @@ export function expressionForUserContent(content = '') {
   if (LAUGHTER_PATTERN.test(text)) return 'laughing';
   if (PRAISE_PATTERN.test(text)) return 'shy';
   if (CONFUSION_PATTERN.test(text)) return 'confused';
+  if (SUSPICION_PATTERN.test(text)) return 'suspicious';
+  if (FATIGUE_PATTERN.test(text)) return 'sleepy';
+  if (DISMISSIVE_PATTERN.test(text)) return 'unimpressed';
+  if (ACHIEVEMENT_PATTERN.test(text)) return 'proud';
   if (EXCITEMENT_PATTERN.test(text)) return 'excited';
   if (/\b(?:hello|hey|hi|namaste)\b/i.test(text)) return 'happy';
   if (/\?\s*$/.test(text)) return 'curious';
   return 'attentive';
+}
+
+export function resolveMiraActivity({
+  isWelcome = false,
+  isGenerating = false,
+  isSearching = false,
+  voiceStatus = 'idle',
+  taskWorkflow = null,
+  thinkingContent = '',
+  streamingContent = '',
+} = {}) {
+  if (voiceStatus && voiceStatus !== 'idle') return voiceStatus;
+  if (isSearching) return 'searching';
+  if (taskWorkflow?.status === 'running') {
+    if (taskWorkflow.phase === 'planning') return 'planning';
+    if (taskWorkflow.phase === 'synthesizing') return 'synthesizing';
+    if (taskWorkflow.phase === 'responding') return 'responding';
+    return 'executing';
+  }
+  if (isGenerating && streamingContent) return 'responding';
+  if (isGenerating && thinkingContent) return 'thinking';
+  if (isGenerating) return 'thinking';
+  if (isWelcome) return 'welcome';
+  return 'idle';
+}
+
+export function expressionsForMiraActivity(activity = 'idle', baseExpression = 'neutral') {
+  if (STRONG_EMOTIONS.has(baseExpression)) return [baseExpression];
+  const activityExpressions = ACTIVITY_EXPRESSIONS[activity] || [];
+  if (activityExpressions.length === 0) return [baseExpression];
+  return [...new Set([baseExpression, ...activityExpressions])];
 }
 
 export function resolveMiraExpression({

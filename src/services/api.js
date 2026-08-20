@@ -9,7 +9,7 @@ import {
 } from './chatRequestPolicy.js';
 import { diagnosticError, diagnosticLog, diagnosticWarn } from './diagnostics.js';
 import { requestDesktopAgentChat } from './desktopBridge.js';
-import { MIRA_IDENTITY_PROMPT } from '../config/systemPrompt.js';
+import { composeMiraSystemPrompt } from '../config/systemPrompt.js';
 
 let activeChatAbortController = null;
 let activeChatRequestId = null;
@@ -670,7 +670,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
     try {
       const desktop = await requestDesktopAgentChat({
         messages,
-        systemPrompt: [MIRA_IDENTITY_PROMPT, systemPrompt].filter(Boolean).join('\n\n'),
+        systemPrompt: composeMiraSystemPrompt(systemPrompt),
         tools,
         think,
         maxTokens,
@@ -694,9 +694,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
     streamed = await requestChat({
       messages,
       images,
-      systemPrompt: voice
-        ? [MIRA_IDENTITY_PROMPT, systemPrompt].filter(Boolean).join('\n\n')
-        : systemPrompt,
+      systemPrompt: composeMiraSystemPrompt(systemPrompt),
       tools: voice ? [] : tools,
       think: voice ? false : think,
       maxTokens,
@@ -720,7 +718,12 @@ export async function sendChatMessage(messages, onChunk, images = [], {
     diagnosticWarn('model', 'primary model failed; trying Pollinations completion fallback', {
       error: error?.message || 'Unknown model failure',
     });
-    streamed = await requestPollinationsFallback({ messages, systemPrompt, tools, maxTokens });
+    streamed = await requestPollinationsFallback({
+      messages,
+      systemPrompt: composeMiraSystemPrompt(systemPrompt),
+      tools,
+      maxTokens,
+    });
     latestAnswer = streamed.answer;
     onChunk?.(latestAnswer, latestAnswer);
   }

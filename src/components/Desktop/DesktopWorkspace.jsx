@@ -10,6 +10,7 @@ import {
   Github,
   Globe2,
   History,
+  MessageSquare,
   Plus,
   RefreshCw,
   Save,
@@ -57,7 +58,7 @@ function languageFor(path = '') {
   return ({ js: 'JavaScript', jsx: 'React', ts: 'TypeScript', tsx: 'React TS', py: 'Python', css: 'CSS', html: 'HTML', json: 'JSON', md: 'Markdown' })[extension] || 'Text';
 }
 
-export default function DesktopWorkspace({ style }) {
+export default function DesktopWorkspace({ style, onExitWorkspace }) {
   const [runtime, setRuntime] = useState(null);
   const [directory, setDirectory] = useState('');
   const [entries, setEntries] = useState([]);
@@ -765,6 +766,9 @@ export default function DesktopWorkspace({ style }) {
             : activeFile && <span className="truncate text-[11px] opacity-60">/ {activeFile}{dirty ? ' •' : ''}</span>}
         </div>
         <div className="flex items-center gap-2">
+          <button type="button" onClick={onExitWorkspace} className="desktop-ide-button" aria-label="Return to normal chats">
+            <MessageSquare size={13} /> Chats
+          </button>
           {hasCapability('git.info') && (
             <button type="button" onClick={openReview} className="desktop-ide-button" aria-label="Open GitHub sync">
               <GitBranch size={13} /> GitHub
@@ -1021,6 +1025,24 @@ export default function DesktopWorkspace({ style }) {
                 <div><strong>Full Disk Access</strong><span>Lets selected workspaces include protected folders.</span></div>
                 <button type="button" onClick={() => requestPermission('full-disk-access')} disabled={permissionStatus?.updateRequired || permissionBusy === 'full-disk-access'} className="desktop-ide-button">
                   {permissionStatus?.updateRequired ? 'Update required' : permissionBusy === 'full-disk-access' ? 'Opening…' : 'Open settings'}
+                </button>
+              </article>
+              <article>
+                <div><strong>Screen capture</strong><span>Allows screenshots and screen sharing after operating-system approval.</span></div>
+                <button type="button" onClick={() => requestPermission('screen-capture')} disabled={permissionStatus?.updateRequired || permissionBusy === 'screen-capture'} className="desktop-ide-button">
+                  {permissionStatus?.screenCapture === 'granted' ? 'Allowed' : permissionBusy === 'screen-capture' ? 'Opening…' : 'Request access'}
+                </button>
+              </article>
+              <article>
+                <div><strong>Camera</strong><span>Enables camera input only while a MIRA feature is actively using it.</span></div>
+                <button type="button" onClick={() => requestPermission('camera')} disabled={permissionStatus?.updateRequired || permissionBusy === 'camera' || permissionStatus?.camera === 'granted'} className="desktop-ide-button">
+                  {permissionStatus?.camera === 'granted' ? 'Allowed' : permissionBusy === 'camera' ? 'Requesting…' : 'Request access'}
+                </button>
+              </article>
+              <article>
+                <div><strong>Microphone</strong><span>Enables voice conversations only while voice mode is active.</span></div>
+                <button type="button" onClick={() => requestPermission('microphone')} disabled={permissionStatus?.updateRequired || permissionBusy === 'microphone' || permissionStatus?.microphone === 'granted'} className="desktop-ide-button">
+                  {permissionStatus?.microphone === 'granted' ? 'Allowed' : permissionBusy === 'microphone' ? 'Requesting…' : 'Request access'}
                 </button>
               </article>
               {hasCapability('approval.set') && (

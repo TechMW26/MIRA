@@ -11,4 +11,8 @@ test('uses conversation context only to resolve a referential follow-up', () => 
   const context = 'Model search hint: AlgaeTree\nEarlier user message: Tell me about AlgaeTree';
   assert.equal(fallbackSearchQuery('What does it do?', context), 'AlgaeTree purpose function');
   assert.equal(fallbackSearchQuery('Tell me about Project Zephyr.', context), 'Project Zephyr');
+  assert.equal(
+    fallbackSearchQuery('Do some deep research on their market', 'Recent subject anchor: Manor Lords'),
+    'Manor Lords deep research market',
+  );
 });

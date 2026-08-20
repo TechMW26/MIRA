@@ -18,7 +18,7 @@ export async function POST(request) {
       method: 'POST',
       body: form,
       signal: request.signal,
-    });
+    }, { attempts: 2, timeoutMs: 35_000 });
     if (!response.ok) return proxyError(response, 'Speech recognition failed.');
     return new Response(response.body, {
       status: 200,

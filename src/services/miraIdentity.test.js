@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   expressionForAssistantContent,
   expressionForUserContent,
+  expressionsForMiraActivity,
   messageHasError,
+  resolveMiraActivity,
   resolveMiraExpression,
   shouldShowMiraWelcome,
 } from './miraIdentity.js';
@@ -29,12 +31,31 @@ test('MIRA identity reflects search, workflow, and response states', () => {
   assert.equal(resolveMiraExpression({ isGenerating: true }), 'attentive');
 });
 
+test('MIRA activity follows the live generation phase', () => {
+  assert.equal(resolveMiraActivity({ isSearching: true, isGenerating: true }), 'searching');
+  assert.equal(resolveMiraActivity({ isGenerating: true, thinkingContent: 'Considering options' }), 'thinking');
+  assert.equal(resolveMiraActivity({ isGenerating: true, streamingContent: 'The answer' }), 'responding');
+  assert.equal(resolveMiraActivity({ taskWorkflow: { status: 'running', phase: 'planning' } }), 'planning');
+  assert.equal(resolveMiraActivity({ taskWorkflow: { status: 'running', phase: 'executing' } }), 'executing');
+  assert.equal(resolveMiraActivity({ voiceStatus: 'speaking', isSearching: true }), 'speaking');
+});
+
+test('MIRA activity cycles contextual expressions without overriding strong emotion', () => {
+  assert.deepEqual(
+    expressionsForMiraActivity('thinking', 'curious'),
+    ['curious', 'suspicious', 'confused', 'attentive'],
+  );
+  assert.deepEqual(expressionsForMiraActivity('searching', 'angry'), ['angry']);
+  assert.deepEqual(expressionsForMiraActivity('idle', 'sleepy'), ['sleepy']);
+});
+
 test('MIRA identity uses nuanced positive expressions for response meaning', () => {
   assert.equal(expressionForAssistantContent('Everything is fixed and tests passed.'), 'proud');
   assert.equal(expressionForAssistantContent('Thanks — I appreciate that.'), 'shy');
   assert.equal(expressionForAssistantContent('Wow, that result is remarkable.'), 'surprised');
   assert.equal(expressionForAssistantContent('Haha, that was funny.'), 'laughing');
   assert.equal(expressionForAssistantContent('That name could mean several things.'), 'confused');
+  assert.equal(expressionForAssistantContent('We should double-check that questionable claim.'), 'suspicious');
 });
 
 test('MIRA identity recognizes assistant errors without misclassifying user text', () => {
@@ -52,6 +73,9 @@ test('MIRA reacts to the actual tone of the latest user turn', () => {
   assert.equal(expressionForUserContent('I am feeling very sad today.'), 'sad');
   assert.equal(expressionForUserContent('Amazing work, thank you!'), 'shy');
   assert.equal(expressionForUserContent('What does this result mean?'), 'curious');
+  assert.equal(expressionForUserContent('I am tired and sleepy.'), 'sleepy');
+  assert.equal(expressionForUserContent('Are you sure? Please verify that.'), 'suspicious');
+  assert.equal(expressionForUserContent('We did it — it works.'), 'proud');
   assert.equal(resolveMiraExpression({
     isGenerating: true,
     latestUserMessage: { role: 'user', content: 'You are an idiot, Mira.' },

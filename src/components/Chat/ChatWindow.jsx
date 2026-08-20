@@ -34,7 +34,11 @@ import {
   resolveVoiceConversationBinding,
   sanitizeVoiceOutput,
 } from '../../services/voiceConversation';
-import { resolveMiraExpression, shouldShowMiraWelcome } from '../../services/miraIdentity';
+import {
+  resolveMiraActivity,
+  resolveMiraExpression,
+  shouldShowMiraWelcome,
+} from '../../services/miraIdentity';
 
 const FONT_SIZE_MAP = { small: '13px', medium: '14px', large: '16px' };
 function getStoredFontSize() {
@@ -152,7 +156,7 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, workspac
   );
 }
 
-export default function ChatWindow({ onMiraExpressionChange }) {
+export default function ChatWindow({ onMiraExpressionChange, compact = false }) {
   const { currentConversationId, isGenerating, isSearching, activeProjectId, showWorkspace } = useChatContext();
   const {
     messages,
@@ -446,15 +450,24 @@ export default function ChatWindow({ onMiraExpressionChange }) {
     lastMessage: displayMessages[displayMessages.length - 1],
     latestUserMessage,
   });
+  const miraActivity = resolveMiraActivity({
+    isWelcome: showingWelcome,
+    isGenerating,
+    isSearching,
+    voiceStatus: voice.status,
+    taskWorkflow,
+    thinkingContent,
+    streamingContent,
+  });
 
   useEffect(() => {
     onMiraExpressionChange?.(miraExpression);
   }, [miraExpression, onMiraExpressionChange]);
 
   return (
-    <div className="flex-1 flex min-h-0 relative">
+    <div className={`flex-1 flex min-h-0 relative ${compact ? 'desktop-companion-chat' : ''}`}>
       {/* Particle background — always rendered, scattered when messages appear */}
-      {!showWorkspace && (
+      {!showWorkspace && !compact && (
         <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
           <ParticleGlobe
             iconAttractor={iconAttractor}
@@ -464,9 +477,10 @@ export default function ChatWindow({ onMiraExpressionChange }) {
           />
         </div>
       )}
-      {!showWorkspace && (
+      {!showWorkspace && !compact && (
         <MiraBloub
           expression={miraExpression}
+          activity={miraActivity}
           expanded={!showingWelcome}
           variant="ambient"
         />
@@ -488,10 +502,15 @@ export default function ChatWindow({ onMiraExpressionChange }) {
       <div className="flex flex-col flex-1 min-w-0 min-h-0 relative z-10">
         <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden hud-scroll-area" style={{ fontSize: chatFontSize }}>
           <div
-            className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center pt-24' : 'justify-end pt-44'} min-h-full gap-6 px-4 w-full min-w-0`}
+            className={`max-w-4xl mx-auto flex flex-col ${compact ? 'desktop-companion-message-stack' : ''} ${showingWelcome ? 'justify-center pt-24' : 'justify-end pt-44'} min-h-full gap-6 px-4 w-full min-w-0`}
             style={{ paddingBottom: `${Math.max(216, composerHeight + 40)}px` }}
           >
-            {showingWelcome && showWorkspace ? (
+            {showingWelcome && compact ? (
+              <div className="desktop-companion-empty">
+                <strong>Mini chat</strong>
+                <span>Ask MIRA anything, or open the full app for your workspace.</span>
+              </div>
+            ) : showingWelcome && showWorkspace ? (
               <div className="desktop-workspace-chat-empty">
                 <strong>Workspace assistant</strong>
                 <span>Open a folder, then ask MIRA to inspect, edit, or test the project.</span>

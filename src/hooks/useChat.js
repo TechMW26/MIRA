@@ -324,10 +324,10 @@ const EXPLICIT_MEDIA_SEARCH_PATTERN = /\b(show|find|fetch|get|search|look\s+up|p
 const EXPLICIT_VISUAL_WEB_SEARCH_PATTERN = /\b(who\s+is\s+this|who\s+is\s+in\s+this\s+image|find\s+this\s+online|find\s+this\s+on\s+the\s+web|search\s+this\s+product|search\s+this\s+image|search\s+this\s+online|look\s+this\s+up|look\s+this\s+up\s+online|check\s+this\s+online|verify\s+this\s+online|find\s+out\s+what\s+product\s+this\s+is|search\s+the\s+web\s+for\s+this|identify\s+this\s+online)\b/i;
 const EXPLICIT_EXTERNAL_SEARCH_PATTERN = /\b(search|browse|look\s+up|find\s+online|web|internet|online|latest|current|today|recent|live|news|verify|fact[-\s]?check|cross[-\s]?check|up[-\s]?to[-\s]?date)\b/i;
 const CONTEXTUAL_DEVICE_MEDIA_PATTERN = /\b(this|that|the)\s+(device|product|tool|item|object|thing|model|prototype|machine|system)\b|\b(tell me more|more about|details about|background on|explain)\b[^.!?]{0,70}\b(this|that|it|device|product|object|thing|model|prototype|machine|system)\b/i;
-const CONTEXT_REFERENCE_PATTERN = /\b(it|its|this|that|these|those|they|them|the\s+(device|product|tool|item|object|thing|company|brand|manufacturer|maker|producer|person|model|app|software|platform|service|system|prototype|machine))\b/i;
+const CONTEXT_REFERENCE_PATTERN = /\b(it|its|this|that|these|those|they|them|their|theirs|his|her|hers|same|former|latter|(?:the|this|that)\s+(device|product|tool|item|object|thing|company|brand|manufacturer|maker|producer|person|model|app|software|platform|service|system|prototype|machine|game|studio|developer|publisher|market))\b/i;
 const CONTEXTUAL_WEB_RESEARCH_PATTERN = /\b(company|companies|manufacturer|manufactures?|producer|produces?|producing|maker|made\s+by|built\s+by|created\s+by|developed\s+by|owner|owned\s+by|founder|team|organization|brand|official|website|source|origin|specs?|features?|pricing|price|cost|availability|launch|release|details?|in[-\s]?depth|deep\s+dive|full\s+information|complete\s+information|let\s+me\s+know|tell\s+me\s+more|more\s+about|background|research|explain)\b/i;
 const SHORT_CONTEXT_FOLLOWUP_PATTERN = /\b(are\s+you\s+sure|sure\s+about\s+that|really|seriously|wait|why\??|how\s+so|what\s+do\s+you\s+mean|continue|go\s+on|tell\s+me\s+more|more|elaborate|explain\s+that)\b/i;
-const SEARCH_WORTHY_CONTEXT_PATTERN = /\b(company|manufacturer|maker|producer|brand|official\s+website|specs?|pricing|price|cost|availability|launch|release|latest|current|current\s+status|who\s+makes|who\s+owns|what\s+company|where\s+to\s+buy|how\s+much|how\s+many)\b/i;
+const SEARCH_WORTHY_CONTEXT_PATTERN = /\b(company|manufacturer|maker|producer|brand|official\s+website|specs?|pricing|price|cost|availability|launch|release|latest|current|current\s+status|market|marketplace|research|analysis|revenue|sales|audience|competitors?|who\s+makes|who\s+owns|what\s+company|where\s+to\s+buy|how\s+much|how\s+many)\b/i;
 const CONTEXT_ENTITY_STOP = new Set(['I', 'The', 'A', 'An', 'It', 'This', 'That', 'These', 'Those', 'You', 'He', 'She', 'We', 'They', 'My', 'Your', 'MIRA', 'AI', 'PDF', 'DOCX', 'PPTX']);
 const TEXT_ENTITY_RESEARCH_PATTERN = /\b(tell\s+me\s+about|tell\s+me\s+more\s+about|details?\s+about|information\s+about|info\s+about|background\s+on|research|explain|what\s+is|what\s+are|what\s+an|what\s+a|what's|overview\s+of|in\s+detail|deep\s+dive|let\s+me\s+know\s+what)\b/i;
 const MEDIA_RELEVANCE_STOPWORDS = new Set([
@@ -689,6 +689,17 @@ function getRecentContextAnchor(historySource = []) {
     return message?.role === 'assistant' && text.length > 20;
   });
   return normalizeMessageContent(source?.content || source?.promptContent || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+function getLatestConversationSubject(historySource = []) {
+  const recent = Array.isArray(historySource) ? historySource.slice(-8) : [];
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    const message = recent[index];
+    const text = normalizeMessageContent(message?.promptContent || message?.content || '');
+    const entities = extractContextEntities(message?.media?.query || text);
+    if (entities.length) return entities[0];
+  }
+  return '';
 }
 
 function needsContextualWebSearch(text = '', historySource = []) {
@@ -1831,11 +1842,12 @@ export default function useChat() {
           }
 
           const recentContextAnchor = getRecentContextAnchor(historySource);
+          const latestConversationSubject = getLatestConversationSubject(historySource);
           const recentConversationContext = needsRecentConversationContext(content, historySource)
             ? buildRecentConversationContext(historySource)
             : '';
           const recentConversationContextBlock = recentConversationContext
-            ? `\n\n=== RECENT CONVERSATION CONTEXT FOR THIS FOLLOW-UP ===\n${recentConversationContext}\n=== END RECENT CONVERSATION CONTEXT ===\n\nUse this context to resolve the current short follow-up before answering. If the previous turn generated an image, treat questions like "are you sure?" as referring to that generated image/prompt unless the user clearly changes topic.`
+            ? `\n\n=== RECENT CONVERSATION CONTEXT FOR THIS FOLLOW-UP ===\n${latestConversationSubject ? `Immediate subject: ${latestConversationSubject}\n` : ''}${recentConversationContext}\n=== END RECENT CONVERSATION CONTEXT ===\n\nThe immediately preceding exchange is the highest-priority context. Resolve pronouns and possessives such as “it”, “their”, “that game”, or “the company” against that exchange. Do not substitute an older project or search topic unless the user explicitly refers back to it. If the previous turn generated an image, treat questions like "are you sure?" as referring to that generated image/prompt unless the user clearly changes topic.`
             : '';
           if (recentConversationContextBlock) {
             userContent = `${userContent}${recentConversationContextBlock}`;
@@ -1949,17 +1961,17 @@ export default function useChat() {
             const cleanedWords = cleaned.split(/\s+/).filter(Boolean);
             const useCleaned = cleaned && cleanedWords.length >= 1 && cleanedWords.length <= 12;
 
-            const PRONOUN_RE = /\b(it|its|this|that|these|those|they|them|the (device|product|tool|item|object|thing|company|brand|manufacturer|maker|producer|person|model|app|software|platform|service|prototype|machine|system))\b/i;
+            const PRONOUN_RE = CONTEXT_REFERENCE_PATTERN;
             const looksReferential = current.length < 80 || PRONOUN_RE.test(current);
             const fallback = useCleaned ? cleaned : current;
             if (!looksReferential || historySource.length === 0) return fallback;
 
-            const dedup = getRecentContextEntities(historySource).slice(0, 3);
+            const dedup = latestConversationSubject ? [latestConversationSubject] : [];
             if (!dedup.length) return fallback;
 
             // Pull a couple of meaningful keywords from the current message
             // (skip stopwords and the pronouns we used to detect referentiality).
-            const STOP_KW = new Set(['can','you','tell','me','more','about','this','that','the','a','an','is','are','was','were','do','does','did','what','how','why','when','where','please','it','its','they','them','these','those','of','to','for','on','in','with','and','or','but','know','let','hello','hi','hey','research','search','find','look','dig','digging','some','do']);
+            const STOP_KW = new Set(['can','you','tell','me','more','about','this','that','the','a','an','is','are','was','were','do','does','did','what','how','why','when','where','please','it','its','they','them','their','theirs','his','her','hers','these','those','same','former','latter','of','to','for','on','in','with','and','or','but','know','let','hello','hi','hey','search','find','look','dig','digging','some','do']);
             const kw = (useCleaned ? cleaned : current).toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/)
               .filter((w) => w.length > 2 && !STOP_KW.has(w))
               .slice(0, 2);
@@ -1972,10 +1984,13 @@ export default function useChat() {
           let formedLatestQueryPromise = null;
           const getLatestMessageSearchQuery = (toolHint = '') => {
             if (formedLatestQueryPromise) return formedLatestQueryPromise;
-            const latestIsContextDependent = /\b(it|its|this|that|these|those|they|them|the\s+(device|product|tool|item|object|thing|company|brand|person|model|app|service|system))\b/i.test(content)
+            const latestIsContextDependent = CONTEXT_REFERENCE_PATTERN.test(content)
               || content.trim().split(/\s+/).length <= 2;
             const contextParts = [];
             if (latestIsContextDependent && recentConversationContext) {
+              if (latestConversationSubject) {
+                contextParts.push(`Recent subject anchor: ${latestConversationSubject}`);
+              }
               contextParts.push(recentConversationContext);
             }
             if (visualSearchAnchor) {
@@ -2940,8 +2955,8 @@ export default function useChat() {
                   return await runAgentTask({
                     goal,
                     context: [
-                      getRecentContextEntities(historySource)[0]
-                        ? `Recent subject anchor: ${getRecentContextEntities(historySource)[0]}`
+                      latestConversationSubject
+                        ? `Recent subject anchor: ${latestConversationSubject}`
                         : '',
                       buildRecentConversationContext(historySource),
                     ].filter(Boolean).join('\n'),

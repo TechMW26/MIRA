@@ -1,4 +1,14 @@
-const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, systemPreferences } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  desktopCapturer,
+  dialog,
+  ipcMain,
+  safeStorage,
+  screen,
+  shell,
+  systemPreferences,
+} = require('electron');
 const { execFile, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
@@ -17,7 +27,9 @@ const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 40 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 const PRODUCTION_APP_URL = 'https://www.itsmira.cloud';
-const PERMISSION_BRIDGE_VERSION = 10;
+const PERMISSION_BRIDGE_VERSION = 11;
+const COMPANION_COLLAPSED_SIZE = Object.freeze({ width: 168, height: 168 });
+const COMPANION_EXPANDED_SIZE = Object.freeze({ width: 420, height: 640 });
 const WORKSPACE_MEMORY_DIRECTORY = '.mira';
 const WORKSPACE_INSTRUCTIONS_FILE = 'MIRA.md';
 const WORKSPACE_HISTORY_FILE = 'history.mira';
@@ -60,6 +72,9 @@ let workspaceMemoryWriteQueue = Promise.resolve();
 const appliedChanges = [];
 const undoneChanges = [];
 const runningProcesses = new Map();
+let mainWindow = null;
+let companionWindow = null;
+let companionExpanded = false;
 
 function workspaceStatePath() {
   return path.join(app.getPath('userData'), 'workspace-state.json');
@@ -198,6 +213,14 @@ async function restoreWorkspace() {
   }
 }
 
+function mediaAccessStatus(mediaType) {
+  try {
+    return systemPreferences.getMediaAccessStatus(mediaType);
+  } catch {
+    return 'unknown';
+  }
+}
+
 function getSystemPermissionStatus() {
   if (process.platform === 'darwin') {
     return {
@@ -206,6 +229,9 @@ function getSystemPermissionStatus() {
       platform: 'darwin',
       accessibility: systemPreferences.isTrustedAccessibilityClient(false),
       fullDiskAccess: 'managed-in-system-settings',
+      screenCapture: mediaAccessStatus('screen'),
+      camera: mediaAccessStatus('camera'),
+      microphone: mediaAccessStatus('microphone'),
     };
   }
   return {
@@ -214,6 +240,9 @@ function getSystemPermissionStatus() {
     platform: process.platform,
     accessibility: 'not-required',
     fullDiskAccess: process.platform === 'win32' ? 'managed-in-system-settings' : 'not-required',
+    screenCapture: process.platform === 'win32' ? 'available' : 'not-required',
+    camera: process.platform === 'win32' ? 'managed-in-system-settings' : 'available',
+    microphone: process.platform === 'win32' ? 'managed-in-system-settings' : 'available',
   };
 }
 
@@ -233,6 +262,24 @@ async function requestSystemPermission(permission) {
       await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles');
     } else if (process.platform === 'win32') {
       await shell.openExternal('ms-settings:privacy-broadfilesystemaccess');
+    }
+    return getSystemPermissionStatus();
+  }
+
+  if (permission === 'camera' || permission === 'microphone') {
+    if (process.platform === 'darwin') {
+      await systemPreferences.askForMediaAccess(permission);
+    } else if (process.platform === 'win32') {
+      await shell.openExternal(`ms-settings:privacy-${permission === 'camera' ? 'webcam' : 'microphone'}`);
+    }
+    return getSystemPermissionStatus();
+  }
+
+  if (permission === 'screen-capture') {
+    if (process.platform === 'darwin') {
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+    } else if (process.platform === 'win32') {
+      await shell.openExternal('ms-settings:privacy-screenshots');
     }
     return getSystemPermissionStatus();
   }
@@ -1513,6 +1560,139 @@ async function invokeDesktopTool(window, call = {}) {
   throw new Error('Unsupported desktop operation.');
 }
 
+function isTrustedAppOrigin(url = '') {
+  return url.startsWith(PRODUCTION_APP_URL)
+    || (process.argv.includes('--dev') && (
+      url.startsWith('http://127.0.0.1:3000')
+      || url.startsWith('http://localhost:3000')
+    ));
+}
+
+function configureDesktopSession(window) {
+  const session = window.webContents.session;
+  session.setPermissionCheckHandler((webContents, permission, requestingOrigin, details = {}) => {
+    if (!['media', 'display-capture'].includes(permission)) return false;
+    const origin = requestingOrigin || details.requestingUrl || webContents?.getURL?.() || '';
+    return isTrustedAppOrigin(origin);
+  });
+  session.setPermissionRequestHandler((webContents, permission, callback, details = {}) => {
+    const origin = details.requestingUrl || webContents?.getURL?.() || '';
+    callback(['media', 'display-capture'].includes(permission) && isTrustedAppOrigin(origin));
+  });
+  session.setDisplayMediaRequestHandler(async (request, callback) => {
+    if (!isTrustedAppOrigin(request.securityOrigin || request.frame?.url || '')) {
+      callback({});
+      return;
+    }
+    try {
+      const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
+      callback(sources[0] ? { video: sources[0] } : {});
+    } catch {
+      callback({});
+    }
+  }, { useSystemPicker: true });
+}
+
+function companionUrl() {
+  const base = process.argv.includes('--dev') ? 'http://127.0.0.1:3000' : PRODUCTION_APP_URL;
+  return `${base}/?desktopCompanion=1`;
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
+}
+
+function companionBounds(size, anchor) {
+  const display = anchor
+    ? screen.getDisplayMatching(anchor)
+    : screen.getPrimaryDisplay();
+  const area = display.workArea;
+  const x = anchor ? anchor.x + anchor.width - size.width : area.x + area.width - size.width - 20;
+  const y = anchor ? anchor.y + anchor.height - size.height : area.y + area.height - size.height - 20;
+  return {
+    width: size.width,
+    height: size.height,
+    x: clamp(Math.round(x), area.x, area.x + area.width - size.width),
+    y: clamp(Math.round(y), area.y, area.y + area.height - size.height),
+  };
+}
+
+function createCompanionWindow() {
+  if (companionWindow && !companionWindow.isDestroyed()) return companionWindow;
+  companionWindow = new BrowserWindow({
+    ...companionBounds(COMPANION_COLLAPSED_SIZE),
+    transparent: true,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    hasShadow: false,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+    },
+  });
+  configureDesktopSession(companionWindow);
+  if (process.platform === 'darwin') {
+    companionWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
+  companionWindow.loadURL(companionUrl());
+  companionWindow.on('closed', () => {
+    companionWindow = null;
+    companionExpanded = false;
+  });
+  return companionWindow;
+}
+
+function showCompanionWindow() {
+  const window = createCompanionWindow();
+  companionExpanded = false;
+  window.setBounds(companionBounds(COMPANION_COLLAPSED_SIZE, window.getBounds()));
+  window.showInactive();
+}
+
+function setCompanionExpanded(expanded) {
+  const window = createCompanionWindow();
+  companionExpanded = Boolean(expanded);
+  const size = companionExpanded ? COMPANION_EXPANDED_SIZE : COMPANION_COLLAPSED_SIZE;
+  window.setBounds(companionBounds(size, window.getBounds()), true);
+  window.show();
+  if (companionExpanded) window.focus();
+  return { expanded: companionExpanded, bounds: window.getBounds() };
+}
+
+function moveCompanion(point = {}) {
+  if (!companionWindow || companionWindow.isDestroyed()) return null;
+  const bounds = companionWindow.getBounds();
+  const requestedX = Number.isFinite(Number(point.deltaX))
+    ? bounds.x + Number(point.deltaX)
+    : (Number.isFinite(Number(point.x)) ? Number(point.x) : bounds.x);
+  const requestedY = Number.isFinite(Number(point.deltaY))
+    ? bounds.y + Number(point.deltaY)
+    : (Number.isFinite(Number(point.y)) ? Number(point.y) : bounds.y);
+  const display = screen.getDisplayNearestPoint({ x: requestedX, y: requestedY });
+  const area = display.workArea;
+  companionWindow.setPosition(
+    clamp(Math.round(requestedX), area.x, area.x + area.width - bounds.width),
+    clamp(Math.round(requestedY), area.y, area.y + area.height - bounds.height),
+  );
+  return companionWindow.getBounds();
+}
+
+function openMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createWindow();
+  if (companionWindow && !companionWindow.isDestroyed()) companionWindow.destroy();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  return { opened: true };
+}
+
 function createWindow() {
   const window = new BrowserWindow({
     width: 1440,
@@ -1531,20 +1711,7 @@ function createWindow() {
     },
   });
 
-  const isTrustedAppOrigin = (url = '') => (
-    url.startsWith(PRODUCTION_APP_URL)
-    || (process.argv.includes('--dev') && url.startsWith('http://127.0.0.1:3000'))
-  );
-  window.webContents.session.setPermissionCheckHandler((webContents, permission, requestingOrigin, details = {}) => {
-    if (permission !== 'media') return false;
-    const origin = requestingOrigin || details.requestingUrl || webContents?.getURL?.() || '';
-    return isTrustedAppOrigin(origin);
-  });
-  window.webContents.session.setPermissionRequestHandler((webContents, permission, callback, details = {}) => {
-    const origin = details.requestingUrl || webContents?.getURL?.() || '';
-    const audioOnly = !details.mediaTypes?.length || details.mediaTypes.includes('audio');
-    callback(permission === 'media' && audioOnly && isTrustedAppOrigin(origin));
-  });
+  configureDesktopSession(window);
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
@@ -1592,12 +1759,20 @@ function createWindow() {
   window.once('ready-to-show', () => {
     if (!window.isDestroyed()) window.show();
   });
+  window.on('minimize', (event) => {
+    event.preventDefault();
+    window.hide();
+    showCompanionWindow();
+  });
   window.once('closed', () => {
     for (const child of runningProcesses.values()) {
       if (!child.killed) child.kill();
     }
     runningProcesses.clear();
+    if (mainWindow === window) mainWindow = null;
+    if (companionWindow && !companionWindow.isDestroyed()) companionWindow.destroy();
   });
+  mainWindow = window;
   return window;
 }
 
@@ -1617,6 +1792,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('mira:request-permission', async (_event, permission) => (
     requestSystemPermission(String(permission || ''))
   ));
+  ipcMain.handle('mira:companion-expanded', (_event, expanded) => setCompanionExpanded(expanded));
+  ipcMain.handle('mira:companion-move', (_event, point) => moveCompanion(point));
+  ipcMain.handle('mira:open-main-window', () => openMainWindow());
   ipcMain.handle('mira:provider-status', async () => getProviderStatus());
   ipcMain.handle('mira:configure-deepseek', async (_event, value) => {
     try {
@@ -1703,7 +1881,7 @@ app.whenReady().then(async () => {
   });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    openMainWindow();
   });
 });
 

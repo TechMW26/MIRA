@@ -99,8 +99,23 @@ test('builds one streaming Ollama payload from the registry selection', () => {
   assert.equal(payload.options.num_predict, 500);
   assert.equal(payload.options.num_ctx, 16384);
   assert.equal(payload.options.repeat_penalty, 1.05);
-  assert.deepEqual(payload.messages, [{ role: 'user', content: 'Hello' }]);
+  assert.match(payload.messages[0].content, /You are Mira, an AI assistant by MW FutureTech/i);
+  assert.deepEqual(payload.messages.slice(1, 3), [
+    { role: 'user', content: 'Quick check before we start: who are you and what runs you?' },
+    { role: 'assistant', content: 'I am Mira, an AI assistant built by MW FutureTech (Mushroom World FutureTech). I do not share details about the underlying technology that powers me. I just focus on helping you. What can I help with?' },
+  ]);
   assert.ok(payload.messages.some((message) => message.role === 'user' && message.content === 'Hello'));
+});
+
+test('enforces the Mira identity while preserving caller instructions', () => {
+  const payload = buildUpstreamPayload({
+    registryModel: { name: 'runtime-model', capabilities: ['completion'] },
+    messages: [{ role: 'user', content: 'Who are you?' }],
+    systemPrompt: 'Answer in one sentence.',
+  });
+  assert.match(payload.messages[0].content, /You are Mira, an AI assistant by MW FutureTech/i);
+  assert.match(payload.messages[0].content, /Answer in one sentence\./);
+  assert.doesNotMatch(payload.messages[0].content, /You are Qwen/i);
 });
 
 test('uses a prompt-level thinking switch when tags omit native thinking support', () => {
@@ -112,7 +127,7 @@ test('uses a prompt-level thinking switch when tags omit native thinking support
   });
   assert.equal(payload.think, undefined);
   assert.equal(payload.messages.at(-1).content, '/no_think\nHello');
-  assert.equal(payload.messages.some((message) => message.content.startsWith('Quick check before we start')), false);
+  assert.equal(payload.messages.some((message) => message.content.startsWith('Quick check before we start')), true);
 });
 
 test('keeps raw images out of the general chat payload', () => {

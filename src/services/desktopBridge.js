@@ -36,7 +36,7 @@ export async function getDesktopPermissionStatus(scope = globalThis) {
 }
 
 export async function requestDesktopPermission(permission, scope = globalThis) {
-  const allowed = new Set(['accessibility', 'full-disk-access']);
+  const allowed = new Set(['accessibility', 'full-disk-access', 'screen-capture', 'camera', 'microphone']);
   if (!allowed.has(permission)) throw new Error('Unsupported desktop permission request.');
   const bridge = getDesktopBridge(scope);
   if (!bridge || typeof bridge.requestPermission !== 'function') {

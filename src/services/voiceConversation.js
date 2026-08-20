@@ -7,6 +7,9 @@ const INVISIBLE_UNICODE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\
 const SUPPORTED_VOICE_LETTER = /[\p{Script=Latin}\p{Script=Devanagari}]/u;
 const SPEECH_CHARACTER = /[\p{L}\p{M}\p{N}]/u;
 const ANY_LETTER = /[\p{L}\p{M}]/u;
+const VOICE_HEALTH_TTL_MS = 30_000;
+let cachedVoiceHealth = null;
+let cachedVoiceHealthAt = 0;
 
 export function detectVoiceLanguage(text = '', hintedLanguage = '') {
   if (String(hintedLanguage).toLowerCase().startsWith('hi') || DEVANAGARI.test(String(text))) return 'hi';
@@ -216,7 +219,15 @@ export async function synthesizeVoice(input, language, signal) {
 }
 
 export async function getVoiceHealth(signal) {
+  if (cachedVoiceHealth && Date.now() - cachedVoiceHealthAt < VOICE_HEALTH_TTL_MS) {
+    return cachedVoiceHealth;
+  }
   const response = await fetch('/api/voice-health', { signal, cache: 'no-store' });
   const payload = await response.json().catch(() => ({}));
-  return { ...payload, ready: response.ok && payload.ready !== false };
+  const health = { ...payload, ready: response.ok && payload.ready !== false };
+  if (health.ready) {
+    cachedVoiceHealth = health;
+    cachedVoiceHealthAt = Date.now();
+  }
+  return health;
 }

@@ -28,4 +28,13 @@ export const MIRA_IDENTITY_PRIMER = [
   { role: 'assistant', content: 'I am Mira, an AI assistant built by MW FutureTech (Mushroom World FutureTech). I do not share details about the underlying technology that powers me. I just focus on helping you. What can I help with?' },
 ];
 
+const MIRA_IDENTITY_SIGNATURE = 'You are Mira, an AI assistant by MW FutureTech';
+
+export function composeMiraSystemPrompt(systemPrompt = '') {
+  const prompt = String(systemPrompt || '').trim();
+  if (!prompt) return MIRA_IDENTITY_PROMPT;
+  if (prompt.includes(MIRA_IDENTITY_SIGNATURE)) return prompt;
+  return `${MIRA_IDENTITY_PROMPT}\n\n${prompt}`;
+}
+
 export default MIRA_IDENTITY_PROMPT;

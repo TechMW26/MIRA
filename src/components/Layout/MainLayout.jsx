@@ -12,6 +12,7 @@ export default function MainLayout() {
     showSettings,
     setShowSettings,
     showWorkspace,
+    setShowWorkspace,
   } = useChatContext();
   const workspaceSplitRef = useRef(null);
   const [workspacePercent, setWorkspacePercent] = useState(() => Number(localStorage.getItem('mira_workspace_width_percent')) || 58);
@@ -58,19 +59,19 @@ export default function MainLayout() {
       <Sidebar />
 
       <div className="flex-1 flex flex-col min-w-0 relative z-10">
-        {showWorkspace && (
-          <MiraBloub
-            expression={desktopMiraExpression}
-            expanded
-            variant="desktop"
-          />
-        )}
         <HudOverlay />
 
         <div ref={workspaceSplitRef} className={`flex-1 min-h-0 flex ${showWorkspace ? 'desktop-workspace-split' : 'flex-col'}`}>
-          {showWorkspace && <DesktopWorkspace style={{ flex: `0 0 ${workspacePercent}%` }} />}
+          {showWorkspace && <DesktopWorkspace style={{ flex: `0 0 ${workspacePercent}%` }} onExitWorkspace={() => setShowWorkspace(false)} />}
           {showWorkspace && <div className="desktop-workspace-resizer" onMouseDown={startWorkspaceResize} onKeyDown={resizeWorkspaceWithKeyboard} role="separator" tabIndex={0} aria-orientation="vertical" aria-label="Resize workspace and chat" />}
           <div className={`min-h-0 min-w-0 flex flex-col ${showWorkspace ? 'desktop-chat-pane' : 'flex-1'}`} style={showWorkspace ? { flex: '1 1 0' } : undefined}>
+            {showWorkspace && (
+              <MiraBloub
+                expression={desktopMiraExpression}
+                expanded
+                variant="desktop"
+              />
+            )}
             <ChatWindow onMiraExpressionChange={showWorkspace ? setDesktopMiraExpression : undefined} />
           </div>
         </div>

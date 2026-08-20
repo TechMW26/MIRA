@@ -70,8 +70,9 @@ test('desktop permission requests use only the allowlisted native bridge', async
 
   assert.equal((await getDesktopPermissionStatus(scope)).accessibility, false);
   assert.equal((await requestDesktopPermission('accessibility', scope)).accessibility, true);
-  assert.deepEqual(calls, ['accessibility']);
-  await assert.rejects(requestDesktopPermission('camera', scope), /unsupported/i);
+  assert.equal((await requestDesktopPermission('camera', scope)).accessibility, true);
+  assert.deepEqual(calls, ['accessibility', 'camera']);
+  await assert.rejects(requestDesktopPermission('location', scope), /unsupported/i);
 });
 
 test('outdated desktop shells report an update instead of claiming permissions are unnecessary', async () => {

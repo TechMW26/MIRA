@@ -17,4 +17,8 @@ test('uses conversation context for referential follow-ups', async () => {
     latestMessage: 'Okay, can you do some extensive market analysis for the same please?',
     context: 'Recent subject anchor: Canact\nMIRA: Here are ideas for the Canact stack.',
   }), 'Canact market analysis');
+  assert.equal(await formSearchQuery({
+    latestMessage: 'Do some deep research on their market',
+    context: 'Recent subject anchor: Manor Lords\nMIRA: Manor Lords is a city-building game.',
+  }), 'Manor Lords deep research market');
 });

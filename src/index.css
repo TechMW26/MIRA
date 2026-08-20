@@ -98,6 +98,11 @@
   width: 100%;
   max-width: 42rem;
 }
+.desktop-chat-pane > .mira-identity-layer.is-desktop {
+  inset: 8px 0 auto;
+  height: 104px;
+  z-index: 12;
+}
 .desktop-right-panel {
   max-width: 100%;
 }
@@ -2745,6 +2750,7 @@ body.mira-hud-active {
     0 0 0 1px rgba(255, 255, 255, 0.6);
   animation: mira-bloub-breathe 4.8s ease-in-out infinite;
   transform-origin: 50% 58%;
+  transition: filter 0.55s ease, border-radius 0.55s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .mira-bloub__shine {
@@ -2761,6 +2767,12 @@ body.mira-hud-active {
   inset: 0;
   transform: rotate(var(--bloub-roll));
   transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.mira-bloub[data-hover-state='settling'] .mira-bloub__face,
+.mira-bloub[data-hover-state='settling'] .mira-bloub__eye {
+  transition-duration: 0.58s;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .mira-bloub__eye {
@@ -2812,6 +2824,78 @@ body.mira-hud-active {
   filter: saturate(0.72) brightness(0.92);
 }
 
+.mira-bloub[data-expression='surprised'] .mira-bloub__body,
+.mira-bloub[data-expression='scared'] .mira-bloub__body {
+  animation: mira-bloub-startled 1.7s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.mira-bloub[data-expression='angry'] .mira-bloub__body {
+  animation: mira-bloub-angry 1.9s ease-in-out infinite;
+  filter: brightness(0.96) contrast(1.04);
+}
+
+.mira-bloub[data-expression='confused'] .mira-bloub__body,
+.mira-bloub[data-expression='suspicious'] .mira-bloub__body {
+  animation: mira-bloub-question 2.8s ease-in-out infinite;
+}
+
+.mira-bloub[data-expression='proud'] .mira-bloub__body {
+  animation: mira-bloub-proud 2.6s ease-in-out infinite;
+}
+
+.mira-bloub[data-expression='shy'] .mira-bloub__body {
+  animation: mira-bloub-shy 3.2s ease-in-out infinite;
+}
+
+.mira-bloub[data-expression='unimpressed'] .mira-bloub__body {
+  animation: mira-bloub-unimpressed 4.2s ease-in-out infinite;
+}
+
+.mira-bloub[data-expression='sleepy'] .mira-bloub__body {
+  animation: mira-bloub-sleepy 6.4s ease-in-out infinite;
+  filter: saturate(0.72) brightness(0.94);
+}
+
+.mira-bloub[data-activity='listening'] .mira-bloub__body {
+  animation: mira-bloub-listen 2.1s ease-in-out infinite;
+}
+
+.mira-bloub[data-activity='transcribing'] .mira-bloub__body,
+.mira-bloub[data-activity='thinking'] .mira-bloub__body,
+.mira-bloub[data-activity='planning'] .mira-bloub__body {
+  animation: mira-bloub-think 2.35s ease-in-out infinite;
+}
+
+.mira-bloub[data-activity='searching'] .mira-bloub__body {
+  animation: mira-bloub-search 1.75s ease-in-out infinite;
+}
+
+.mira-bloub[data-activity='executing'] .mira-bloub__body {
+  animation: mira-bloub-work 1.55s ease-in-out infinite;
+}
+
+.mira-bloub[data-activity='synthesizing'] .mira-bloub__body {
+  animation: mira-bloub-synthesize 1.35s ease-in-out infinite;
+}
+
+.mira-bloub[data-activity='responding'] .mira-bloub__body,
+.mira-bloub[data-activity='speaking'] .mira-bloub__body {
+  animation: mira-bloub-speak 1.05s ease-in-out infinite;
+}
+
+.mira-bloub[data-activity='connecting'] .mira-bloub__body {
+  animation: mira-bloub-connect 1.8s ease-in-out infinite;
+}
+
+.mira-bloub[data-activity='thinking'] .mira-bloub__face,
+.mira-bloub[data-activity='planning'] .mira-bloub__face {
+  animation: mira-bloub-face-ponder 2.35s ease-in-out infinite;
+}
+
+.mira-bloub[data-activity='searching'] .mira-bloub__face {
+  animation: mira-bloub-face-scan 1.75s ease-in-out infinite;
+}
+
 .mira-identity-layer.is-home .mira-bloub::after {
   content: '';
   position: absolute;
@@ -2840,6 +2924,97 @@ body.mira-hud-active {
     drop-shadow(0 0 68px rgba(99, 102, 241, 0.25));
 }
 
+body.desktop-companion-mode,
+body.desktop-companion-mode #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+.desktop-companion-pet {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  cursor: grab;
+  -webkit-app-region: no-drag;
+}
+.desktop-companion-pet:active { cursor: grabbing; }
+.desktop-companion-pet .mira-identity-layer.is-companion { inset: 0; }
+
+.desktop-companion-window {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(94, 234, 212, 0.32);
+  border-radius: 24px;
+  background: #01080c;
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.58), 0 0 32px rgba(45, 212, 191, 0.09);
+  -webkit-app-region: no-drag;
+}
+.desktop-companion-window > header {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid rgba(94, 234, 212, 0.18);
+  color: var(--hud-cyan-bright);
+  font: 600 0.72rem/1 'Orbitron', 'Inter', sans-serif;
+  letter-spacing: 0.16em;
+  -webkit-app-region: drag;
+}
+.desktop-companion-window > header > div { display: flex; gap: 4px; }
+.desktop-companion-window > header button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  color: var(--hud-cyan-soft);
+  background: transparent;
+  -webkit-app-region: no-drag;
+}
+.desktop-companion-window > header button:hover {
+  color: var(--hud-cyan-bright);
+  background: rgba(94, 234, 212, 0.1);
+}
+.desktop-companion-chat { min-height: 0; }
+.desktop-companion-chat .desktop-companion-message-stack {
+  max-width: none;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 20px 12px 156px;
+}
+.desktop-companion-empty {
+  display: grid;
+  gap: 7px;
+  margin: auto;
+  padding: 18px;
+  color: var(--hud-cyan-soft);
+  text-align: center;
+}
+.desktop-companion-empty strong {
+  color: var(--hud-cyan-bright);
+  font: 600 0.78rem/1.2 'Orbitron', 'Inter', sans-serif;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.desktop-companion-chat .hud-composer-dock {
+  left: 0;
+  right: 0;
+  padding: 10px !important;
+}
+.desktop-companion-chat .composer-mobile-shell { width: 100%; max-width: none !important; }
+.desktop-companion-chat .hud-tool-strip { display: none; }
+
 @keyframes mira-bloub-breathe {
   0%, 100% { transform: rotate(var(--bloub-roll)) scale(1) skew(0deg, 0deg); border-radius: 49% 51% 48% 52% / 52% 47% 53% 48%; }
   36% { transform: rotate(calc(var(--bloub-roll) + 1.4deg)) scale(1.025, 0.98) skew(-0.7deg, 0.5deg); border-radius: 52% 48% 51% 49% / 48% 53% 47% 52%; }
@@ -2849,6 +3024,92 @@ body.mira-hud-active {
 @keyframes mira-bloub-excited {
   0%, 100% { transform: rotate(var(--bloub-roll)) translateY(0) scale(1); }
   48% { transform: rotate(calc(var(--bloub-roll) + 2deg)) translateY(-5%) scale(1.035, 0.97); }
+}
+
+@keyframes mira-bloub-startled {
+  0%, 68%, 100% { transform: rotate(var(--bloub-roll)) scale(1); }
+  12% { transform: rotate(calc(var(--bloub-roll) - 2deg)) scale(1.08, 0.94); }
+  24% { transform: rotate(calc(var(--bloub-roll) + 1deg)) scale(0.98, 1.04); }
+}
+
+@keyframes mira-bloub-angry {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translateX(0) scale(1.015, 0.985); }
+  42% { transform: rotate(calc(var(--bloub-roll) - 1.8deg)) translateX(-2.2%) scale(1.03, 0.97); }
+  52% { transform: rotate(calc(var(--bloub-roll) + 1.8deg)) translateX(2.2%) scale(1.03, 0.97); }
+}
+
+@keyframes mira-bloub-question {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translateY(0) scale(1); }
+  50% { transform: rotate(calc(var(--bloub-roll) - 5deg)) translateY(-2%) scale(0.99, 1.02); }
+}
+
+@keyframes mira-bloub-proud {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translateY(0) scale(1); }
+  48% { transform: rotate(var(--bloub-roll)) translateY(-3%) scale(1.035, 0.985); }
+}
+
+@keyframes mira-bloub-shy {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translate(0, 0) scale(0.985); }
+  50% { transform: rotate(calc(var(--bloub-roll) - 3deg)) translate(-1.5%, 2%) scale(1); }
+}
+
+@keyframes mira-bloub-unimpressed {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translateY(1%) scale(1.02, 0.98); }
+  50% { transform: rotate(calc(var(--bloub-roll) + 1deg)) translateY(2%) scale(1.01, 0.975); }
+}
+
+@keyframes mira-bloub-sleepy {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translateY(1%) scale(1); }
+  55% { transform: rotate(calc(var(--bloub-roll) - 2deg)) translateY(4%) scale(0.98, 1.015); }
+}
+
+@keyframes mira-bloub-listen {
+  0%, 100% { transform: rotate(var(--bloub-roll)) scale(1); }
+  45% { transform: rotate(calc(var(--bloub-roll) - 2deg)) scale(1.025, 0.985); }
+  68% { transform: rotate(calc(var(--bloub-roll) + 1deg)) scale(0.99, 1.018); }
+}
+
+@keyframes mira-bloub-think {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translate(0, 0) scale(1); }
+  36% { transform: rotate(calc(var(--bloub-roll) - 5deg)) translate(-2%, -1%) scale(0.985, 1.025); }
+  72% { transform: rotate(calc(var(--bloub-roll) + 3deg)) translate(1.5%, 1%) scale(1.02, 0.985); }
+}
+
+@keyframes mira-bloub-search {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translateX(-2%) scale(0.99, 1.01); }
+  50% { transform: rotate(calc(var(--bloub-roll) + 3deg)) translateX(2%) scale(1.015, 0.985); }
+}
+
+@keyframes mira-bloub-work {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translateY(0) scale(1); }
+  50% { transform: rotate(calc(var(--bloub-roll) + 1.5deg)) translateY(-2.5%) scale(1.025, 0.98); }
+}
+
+@keyframes mira-bloub-synthesize {
+  0%, 100% { transform: rotate(var(--bloub-roll)) scale(1); }
+  38% { transform: rotate(calc(var(--bloub-roll) - 2deg)) scale(1.04, 0.97); }
+  72% { transform: rotate(calc(var(--bloub-roll) + 2deg)) scale(0.985, 1.025); }
+}
+
+@keyframes mira-bloub-speak {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translateY(0) scale(1); }
+  50% { transform: rotate(calc(var(--bloub-roll) + 1deg)) translateY(-1.5%) scale(1.035, 0.97); }
+}
+
+@keyframes mira-bloub-connect {
+  0%, 100% { transform: rotate(var(--bloub-roll)) scale(0.97); opacity: 0.86; }
+  50% { transform: rotate(calc(var(--bloub-roll) + 3deg)) scale(1.035); opacity: 1; }
+}
+
+@keyframes mira-bloub-face-ponder {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translate(0, 0); }
+  45% { transform: rotate(calc(var(--bloub-roll) - 4deg)) translate(-1.5%, -1%); }
+  72% { transform: rotate(calc(var(--bloub-roll) + 2deg)) translate(1%, 0.5%); }
+}
+
+@keyframes mira-bloub-face-scan {
+  0%, 100% { transform: rotate(var(--bloub-roll)) translateX(-2%); }
+  50% { transform: rotate(var(--bloub-roll)) translateX(2%); }
 }
 
 @keyframes mira-bloub-blink {

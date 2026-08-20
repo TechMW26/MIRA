@@ -15,7 +15,7 @@ export async function POST(request) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ input, language: String(body?.language || 'auto') }),
       signal: request.signal,
-    });
+    }, { attempts: 2, timeoutMs: 30_000 });
     if (!response.ok) return proxyError(response, 'Speech generation failed.');
     return new Response(response.body, {
       status: 200,

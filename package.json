@@ -1,7 +1,7 @@
 {
   "name": "mira",
   "private": true,
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "MIRA - Multi-Intelligent Responsive Assistant",
   "author": "MW FutureTech",
   "main": "desktop/main.cjs",
@@ -97,7 +97,13 @@
       ],
       "category": "public.app-category.developer-tools",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "MIRA uses the microphone only while voice conversation mode is active."
+        "NSMicrophoneUsageDescription": "MIRA uses the microphone only for voice conversations and audio features you start.",
+        "NSCameraUsageDescription": "MIRA uses the camera only for camera and visual-assistance features you start.",
+        "NSScreenCaptureUsageDescription": "MIRA uses screen recording only when you ask it to inspect or assist with your screen.",
+        "NSAppleEventsUsageDescription": "MIRA uses approved automation to operate apps only when you request it.",
+        "NSDesktopFolderUsageDescription": "MIRA accesses Desktop folders only when you select them as a workspace.",
+        "NSDocumentsFolderUsageDescription": "MIRA accesses Documents folders only when you select them as a workspace.",
+        "NSDownloadsFolderUsageDescription": "MIRA accesses Downloads folders only when you select them as a workspace."
       },
       "entitlements": "desktop/entitlements.mac.plist",
       "entitlementsInherit": "desktop/entitlements.mac.plist",

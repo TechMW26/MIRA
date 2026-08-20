@@ -1,5 +1,9 @@
 import { parseOllamaKeepAlive } from './ollamaConfig.js';
 import { requestManagedChat } from './code-assist.js';
+import {
+  composeMiraSystemPrompt,
+  MIRA_IDENTITY_PRIMER,
+} from '../src/config/systemPrompt.js';
 
 export const config = { maxDuration: 300 };
 
@@ -149,7 +153,8 @@ function normalizeMessages(messages = [], systemPrompt = '') {
 
   const withoutSystem = normalized.filter((message) => message.role !== 'system');
   return [
-    ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+    { role: 'system', content: composeMiraSystemPrompt(systemPrompt) },
+    ...MIRA_IDENTITY_PRIMER,
     ...withoutSystem,
   ];
 }
@@ -276,7 +281,7 @@ export async function managedFallbackResponse(body, signal) {
   try {
     const result = await requestManagedChat({
       messages: body?.messages,
-      systemPrompt: body?.systemPrompt,
+      systemPrompt: composeMiraSystemPrompt(body?.systemPrompt),
       tools: sanitizeTools(body?.tools),
       maxTokens: body?.max_tokens,
       signal: controller.signal,
