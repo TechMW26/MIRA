@@ -4,11 +4,19 @@ const {
   desktopCapturer,
   dialog,
   ipcMain,
+  Notification,
   safeStorage,
   screen,
+  session,
   shell,
   systemPreferences,
 } = require('electron');
+
+// Electron uses hardware acceleration by default. Keep rasterization and
+// texture uploads on the GPU for MIRA's animated transparent desktop surfaces
+// without bypassing Chromium's safety blocklist on unsupported hardware.
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-zero-copy');
 const { execFile, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
@@ -31,9 +39,9 @@ const TRUSTED_PRODUCTION_ORIGINS = new Set([
   'https://www.itsmira.cloud',
   'https://itsmira.cloud',
 ]);
-const PERMISSION_BRIDGE_VERSION = 12;
-const COMPANION_COLLAPSED_SIZE = Object.freeze({ width: 168, height: 168 });
-const COMPANION_EXPANDED_SIZE = Object.freeze({ width: 420, height: 640 });
+const PERMISSION_BRIDGE_VERSION = 13;
+const COMPANION_COLLAPSED_SIZE = Object.freeze({ width: 124, height: 124 });
+const COMPANION_EXPANDED_SIZE = Object.freeze({ width: 390, height: 540 });
 const WORKSPACE_MEMORY_DIRECTORY = '.mira';
 const WORKSPACE_INSTRUCTIONS_FILE = 'MIRA.md';
 const WORKSPACE_HISTORY_FILE = 'history.mira';
@@ -246,6 +254,21 @@ function mediaAccessStatus(mediaType) {
   }
 }
 
+function notificationAccessStatus() {
+  if (!Notification.isSupported()) return 'unavailable';
+  if (process.platform !== 'darwin' || typeof systemPreferences.getNotificationSettings !== 'function') {
+    return 'granted';
+  }
+  try {
+    const status = systemPreferences.getNotificationSettings()?.authorizationStatus;
+    if (['authorized', 'provisional', 'ephemeral'].includes(status)) return 'granted';
+    if (status === 'denied') return 'denied';
+    return status || 'not-determined';
+  } catch {
+    return 'unknown';
+  }
+}
+
 function getSystemPermissionStatus() {
   if (process.platform === 'darwin') {
     return {
@@ -258,6 +281,7 @@ function getSystemPermissionStatus() {
       camera: mediaAccessStatus('camera'),
       microphone: mediaAccessStatus('microphone'),
       location: 'managed-by-web-permission',
+      notifications: notificationAccessStatus(),
     };
   }
   return {
@@ -270,10 +294,24 @@ function getSystemPermissionStatus() {
     camera: process.platform === 'win32' ? mediaAccessStatus('camera') : 'available',
     microphone: process.platform === 'win32' ? mediaAccessStatus('microphone') : 'available',
     location: process.platform === 'win32' ? 'managed-by-web-permission' : 'not-required',
+    notifications: notificationAccessStatus(),
   };
 }
 
 async function requestSystemPermission(permission) {
+  if (permission === 'notifications') {
+    if (!Notification.isSupported()) return getSystemPermissionStatus();
+    if (notificationAccessStatus() !== 'granted') {
+      new Notification({
+        title: 'MIRA',
+        body: 'Notifications are ready. MIRA will let you know when an answer is complete.',
+        silent: true,
+      }).show();
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+    return getSystemPermissionStatus();
+  }
+
   if (permission === 'accessibility') {
     if (process.platform !== 'darwin') return getSystemPermissionStatus();
     const trusted = systemPreferences.isTrustedAccessibilityClient(true);
@@ -336,6 +374,21 @@ async function requestSystemPermission(permission) {
   }
 
   throw new Error('Unsupported system permission request.');
+}
+
+function sanitizeNotificationText(value, maxLength) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+function showMiraNotification(payload = {}) {
+  if (!Notification.isSupported()) return { shown: false, reason: 'unsupported' };
+  const title = sanitizeNotificationText(payload.title, 80) || 'MIRA';
+  const body = sanitizeNotificationText(payload.body, 360);
+  if (!body) return { shown: false, reason: 'empty' };
+  const notification = new Notification({ title, body, silent: Boolean(payload.silent) });
+  notification.once('click', () => openMainWindow());
+  notification.show();
+  return { shown: true };
 }
 
 function safeEnvironment() {
@@ -1696,6 +1749,7 @@ function createCompanionWindow() {
       contextIsolation: true,
       sandbox: true,
       webSecurity: true,
+      backgroundThrottling: false,
     },
   });
   configureDesktopSession(companionWindow);
@@ -1703,7 +1757,9 @@ function createCompanionWindow() {
     companionWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   }
   companionWindow.loadURL(companionUrl());
-  companionWindow.once('ready-to-show', () => {
+  // Transparent pages do not reliably emit ready-to-show on every Electron/
+  // compositor combination. did-finish-load guarantees the pet is revealed.
+  companionWindow.webContents.once('did-finish-load', () => {
     if (!companionWindow?.isDestroyed()) companionWindow.showInactive();
   });
   companionWindow.on('closed', () => {
@@ -1749,6 +1805,56 @@ function moveCompanion(point = {}) {
   return companionWindow.getBounds();
 }
 
+function companionScreenSource(sources, display) {
+  const displayId = String(display?.id ?? '');
+  return sources.find((source) => String(source.display_id || '') === displayId)
+    || sources.find((source) => String(source.id || '').includes(`screen:${displayId}:`))
+    || sources.find((source) => String(source.id || '').startsWith('screen:'))
+    || null;
+}
+
+async function captureCompanionScreen() {
+  const window = createCompanionWindow();
+  const bounds = window.getBounds();
+  const display = screen.getDisplayMatching(bounds);
+  const displaySize = display?.size || { width: 1280, height: 800 };
+  const scale = Math.min(1, 1440 / Math.max(1, displaySize.width), 1000 / Math.max(1, displaySize.height));
+  const thumbnailSize = {
+    width: Math.max(1, Math.round(displaySize.width * scale)),
+    height: Math.max(1, Math.round(displaySize.height * scale)),
+  };
+  const shouldRestoreFocus = companionExpanded && window.isFocused();
+
+  // Keep MIRA itself out of the evidence sent for analysis.
+  window.hide();
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize,
+      fetchWindowIcons: false,
+    });
+    const source = companionScreenSource(sources, display);
+    if (!source || source.thumbnail.isEmpty()) {
+      throw new Error('Screen capture is unavailable. Allow Screen Recording for MIRA in system settings, then try again.');
+    }
+    const image = source.thumbnail.toJPEG(76);
+    if (!image?.length) throw new Error('MIRA could not capture this screen. Please try again.');
+    return {
+      image: `data:image/jpeg;base64,${image.toString('base64')}`,
+      mimeType: 'image/jpeg',
+      sourceName: String(source.name || 'Current screen').slice(0, 120),
+      capturedAt: new Date().toISOString(),
+      size: source.thumbnail.getSize(),
+    };
+  } finally {
+    if (!window.isDestroyed()) {
+      window.showInactive();
+      if (shouldRestoreFocus) window.focus();
+    }
+  }
+}
+
 function openMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createWindow();
   showCompanionWindow();
@@ -1773,6 +1879,7 @@ function createWindow() {
       sandbox: true,
       webSecurity: true,
       webviewTag: true,
+      backgroundThrottling: false,
     },
   });
 
@@ -1839,6 +1946,14 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // The desktop shell renders the trusted production site directly. A PWA
+  // worker left by an older build can otherwise pin the companion to stale
+  // HTML/JS on its first launch after an upgrade. Preserve cookies and local
+  // app data while clearing only worker-managed and HTTP caches.
+  await session.defaultSession.clearStorageData({
+    storages: ['serviceworkers', 'cachestorage'],
+  }).catch(() => {});
+  await session.defaultSession.clearCache().catch(() => {});
   desktopEnvironment().catch(() => {});
   await persistEnvironmentProviderKey().catch(() => {});
   await restoreWorkspace();
@@ -1850,6 +1965,10 @@ app.whenReady().then(async () => {
     platform: process.platform,
     capabilities: DESKTOP_CAPABILITIES,
     workspace: workspaceRoot || null,
+    gpu: {
+      accelerationRequested: true,
+      featureStatus: app.getGPUFeatureStatus(),
+    },
   }));
   ipcMain.handle('mira:permission-status', (event) => {
     requireTrustedIpc(event);
@@ -1867,9 +1986,17 @@ app.whenReady().then(async () => {
     requireTrustedIpc(event);
     return moveCompanion(point);
   });
+  ipcMain.handle('mira:companion-capture-screen', async (event) => {
+    requireTrustedIpc(event);
+    return captureCompanionScreen();
+  });
   ipcMain.handle('mira:open-main-window', (event) => {
     requireTrustedIpc(event);
     return openMainWindow();
+  });
+  ipcMain.handle('mira:notify', (event, payload) => {
+    requireTrustedIpc(event);
+    return showMiraNotification(payload);
   });
   ipcMain.handle('mira:provider-status', async () => getProviderStatus());
   ipcMain.handle('mira:configure-deepseek', async (_event, value) => {

@@ -37,6 +37,7 @@ Use these variables locally in `.env` and in Vercel Project Settings -> Environm
 ```bash
 # Firebase / storage
 VITE_FIREBASE_DATABASE_URL=
+MIRA_AUTH_SECRET=
 BLOB_READ_WRITE_TOKEN=
 
 # Chat server; the model is discovered from /api/tags.
@@ -63,16 +64,17 @@ BRAVE_SEARCH_API_KEY=
 GOOGLE_SEARCH_API_KEY=
 GOOGLE_SEARCH_CX=
 
-# Pollinations image/video generation (server-side key)
+# Pollinations image/video generation and desktop coding fallback (server-side key)
 POLLINATIONS_API_KEY=
 POLLINATIONS_VIDEO_MODEL=wan-pro
 
-# Fast chat completion route; Ollama is retained as automatic fallback.
+# DeepSeek desktop coding/workspace completions only.
+# Web chat, voice, search-query planning, and task workflows use Ollama.
 DEEPSEEK_API_URL=https://api.deepseek.com
 DEEPSEEK_AGENT_MODEL=deepseek-v4-pro
 DEEPSEEK_CHAT_MODEL=deepseek-v4-flash
 DEEPSEEK_API_KEY=
-MIRA_CHAT_PROVIDER=deepseek
+MIRA_DESKTOP_CODING_PROVIDER=deepseek
 ```
 
 ## Deployment (Vercel)

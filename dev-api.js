@@ -36,6 +36,7 @@ loadDotEnv();
 const PORT = Number(process.env.API_PORT || 3002);
 const ROUTES = new Map([
   ['/api/chat', './api/chat.js'],
+  ['/api/auth', './api/auth.js'],
   ['/api/health', './api/health.js'],
   ['/api/analyze', './api/analyze.js'],
   ['/api/analyse', './api/analyse.js'],

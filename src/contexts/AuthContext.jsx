@@ -6,16 +6,19 @@ import {
   signOut,
   updateProfile,
 } from 'firebase/auth';
-import { get, ref, set, update } from 'firebase/database';
+import { ref, set } from 'firebase/database';
 import { auth, db, firebaseAuthConfigured } from '../config/firebase';
+import { isPermanentSessionError, restoreSessionWithRetry } from '../services/authSessionPolicy';
 
 const AuthContext = createContext(null);
-const LEGACY_SESSION_KEY = 'mira_legacy_session';
-const LEGACY_ITERATIONS = 210_000;
-const allowLegacyAuth = import.meta.env.DEV || import.meta.env.VITE_ENABLE_LEGACY_AUTH === 'true';
+const SERVER_SESSION_KEY = 'mira_auth_token';
+const SERVER_USER_KEY = 'mira_auth_user';
+const SERVER_VALIDATED_KEY = 'mira_auth_validated_at';
+const SESSION_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const SESSION_RESTORE_ATTEMPTS = 3;
 
 function publicUser(value) {
-  if (!value) return null;
+  if (!value?.uid) return null;
   return {
     uid: value.uid,
     email: value.email || '',
@@ -24,85 +27,66 @@ function publicUser(value) {
   };
 }
 
-function bytesToHex(bytes) {
-  return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function randomHex(length = 16) {
-  return bytesToHex(crypto.getRandomValues(new Uint8Array(length)));
-}
-
-async function pbkdf2(password, salt, iterations = LEGACY_ITERATIONS) {
-  const material = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits'],
-  );
-  const bits = await crypto.subtle.deriveBits({
-    name: 'PBKDF2',
-    hash: 'SHA-256',
-    salt: new TextEncoder().encode(salt),
-    iterations,
-  }, material, 256);
-  return bytesToHex(new Uint8Array(bits));
-}
-
-async function createLegacyPassword(password) {
-  const salt = randomHex();
-  return `pbkdf2$${LEGACY_ITERATIONS}$${salt}$${await pbkdf2(password, salt)}`;
-}
-
-async function verifyLegacyPassword(password, stored = '') {
-  const parts = String(stored).split('$');
-  if (parts[0] === 'pbkdf2' && parts.length === 4) {
-    const iterations = Math.max(100_000, Number(parts[1]) || LEGACY_ITERATIONS);
-    return await pbkdf2(password, parts[2], iterations) === parts[3];
+async function serverAuth(action, payload = {}, token = '') {
+  let response;
+  try {
+    response = await fetch('/api/auth', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ action, ...payload }),
+      signal: AbortSignal.timeout(12_000),
+    });
+  } catch (cause) {
+    throw Object.assign(new Error('Authentication is temporarily unavailable.'), {
+      code: 'auth/network-request-failed',
+      retryable: true,
+      cause,
+    });
   }
-  // One-time migration path for the previous fixed-salt SHA-256 format.
-  const legacy = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(`${password}mira_salt_2024`),
-  );
-  return bytesToHex(new Uint8Array(legacy)) === stored;
-}
-
-async function emailKey(email) {
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(String(email || '').trim().toLowerCase()),
-  );
-  return bytesToHex(new Uint8Array(digest));
-}
-
-function saveLegacySession(user) {
-  if (!user) {
-    localStorage.removeItem(LEGACY_SESSION_KEY);
-    return;
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw Object.assign(
+      new Error(data.error || 'Authentication is temporarily unavailable.'),
+      {
+        code: data.code || `auth/http-${response.status}`,
+        status: response.status,
+        retryable: response.status === 408 || response.status === 429 || response.status >= 500,
+      },
+    );
   }
-  localStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify({
-    ...publicUser(user),
-    expiresAt: Date.now() + 24 * 60 * 60 * 1000,
-  }));
+  return data;
 }
 
-async function findLegacyUser(email) {
-  const normalizedEmail = String(email || '').trim().toLowerCase();
-  const index = await get(ref(db, `userEmailIndex/${await emailKey(normalizedEmail)}`));
-  if (index.exists()) {
-    const profile = await get(ref(db, `users/${index.val()}`));
-    if (profile.exists()) return { uid: index.val(), ...profile.val() };
+function readCachedServerUser() {
+  try {
+    return publicUser(JSON.parse(localStorage.getItem(SERVER_USER_KEY) || 'null'));
+  } catch {
+    return null;
   }
-  // Transitional lookup for accounts created before the index existed.
-  const users = await get(ref(db, 'users'));
-  let match = null;
-  users.forEach((child) => {
-    if (!match && String(child.val()?.email || '').trim().toLowerCase() === normalizedEmail) {
-      match = { uid: child.key, ...child.val() };
-    }
-  });
-  return match;
+}
+
+function saveServerSession({ token, user: nextUser }) {
+  const current = publicUser(nextUser);
+  if (current) localStorage.setItem(SERVER_USER_KEY, JSON.stringify(current));
+  if (token) localStorage.setItem(SERVER_SESSION_KEY, token);
+  localStorage.setItem(SERVER_VALIDATED_KEY, String(Date.now()));
+  return current;
+}
+
+function clearServerSession() {
+  localStorage.removeItem(SERVER_SESSION_KEY);
+  localStorage.removeItem(SERVER_USER_KEY);
+  localStorage.removeItem(SERVER_VALIDATED_KEY);
+}
+
+async function restoreServerSession(token) {
+  return restoreSessionWithRetry(
+    () => serverAuth('session', {}, token),
+    { attempts: SESSION_RESTORE_ATTEMPTS },
+  );
 }
 
 export function useAuth() {
@@ -124,22 +108,89 @@ export function AuthProvider({ children }) {
         setLoading(false);
       });
     }
-    if (allowLegacyAuth) {
-      try {
-        const session = JSON.parse(localStorage.getItem(LEGACY_SESSION_KEY) || 'null');
-        if (session?.uid && session.expiresAt > Date.now()) setUser(publicUser(session));
-        else localStorage.removeItem(LEGACY_SESSION_KEY);
-      } catch { localStorage.removeItem(LEGACY_SESSION_KEY); }
+    let active = true;
+    let refreshPromise = null;
+    const cachedUser = readCachedServerUser();
+    const initialToken = localStorage.getItem(SERVER_SESSION_KEY) || '';
+    if (initialToken && cachedUser) {
+      setUser(cachedUser);
+      setLoading(false);
+    } else if (!initialToken) {
+      setLoading(false);
     }
-    setLoading(false);
-    return undefined;
+
+    const refreshSession = async ({ force = false } = {}) => {
+      const token = localStorage.getItem(SERVER_SESSION_KEY) || '';
+      if (!token) {
+        if (active) {
+          setUser(null);
+          setLoading(false);
+        }
+        return null;
+      }
+      const lastValidatedAt = Number(localStorage.getItem(SERVER_VALIDATED_KEY) || 0);
+      if (!force && readCachedServerUser() && Date.now() - lastValidatedAt < 60_000) return null;
+      if (refreshPromise) return refreshPromise;
+      refreshPromise = restoreServerSession(token)
+        .then((result) => {
+          const restoredUser = saveServerSession(result);
+          if (active) setUser(restoredUser);
+          return restoredUser;
+        })
+        .catch((sessionError) => {
+          if (isPermanentSessionError(sessionError)) {
+            clearServerSession();
+            if (active) setUser(null);
+          } else {
+            // A temporary API, network, or Firebase outage must never turn into
+            // a local logout. Keep the last verified identity and retry later.
+            const retainedUser = readCachedServerUser();
+            if (active && retainedUser) setUser(retainedUser);
+          }
+          return null;
+        })
+        .finally(() => {
+          refreshPromise = null;
+          if (active) setLoading(false);
+        });
+      return refreshPromise;
+    };
+
+    refreshSession({ force: true });
+    const refreshOnResume = () => refreshSession();
+    const refreshOnVisibility = () => {
+      if (document.visibilityState === 'visible') refreshSession();
+    };
+    const syncAcrossTabs = (event) => {
+      if (event.key === SERVER_USER_KEY && event.newValue) {
+        const syncedUser = readCachedServerUser();
+        if (active && syncedUser) setUser(syncedUser);
+        return;
+      }
+      if (event.key === SERVER_SESSION_KEY && !event.newValue) {
+        if (active) setUser(null);
+      }
+    };
+    const interval = window.setInterval(() => refreshSession(), SESSION_REFRESH_INTERVAL_MS);
+    window.addEventListener('focus', refreshOnResume);
+    window.addEventListener('online', refreshOnResume);
+    window.addEventListener('storage', syncAcrossTabs);
+    document.addEventListener('visibilitychange', refreshOnVisibility);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refreshOnResume);
+      window.removeEventListener('online', refreshOnResume);
+      window.removeEventListener('storage', syncAcrossTabs);
+      document.removeEventListener('visibilitychange', refreshOnVisibility);
+    };
   }, []);
 
   function friendlyError(authError) {
     const code = authError?.code || '';
     if (/invalid-credential|user-not-found|wrong-password/.test(code)) return 'Invalid email or password.';
     if (code.includes('email-already-in-use')) return 'An account with this email already exists.';
-    if (code.includes('weak-password')) return 'Password must be at least 6 characters.';
+    if (code.includes('weak-password')) return 'Password must be at least 8 characters.';
     if (code.includes('operation-not-allowed')) return 'Email/password sign-in is not enabled for this Firebase project.';
     return authError?.message || 'Something went wrong. Please try again.';
   }
@@ -154,20 +205,8 @@ export function AuthProvider({ children }) {
         setUser(current);
         return current;
       }
-      if (!allowLegacyAuth) throw new Error('Secure authentication is not configured. Add VITE_FIREBASE_API_KEY.');
-      const found = await findLegacyUser(email);
-      if (!found || !await verifyLegacyPassword(password, found.password)) {
-        setError('Invalid email or password.');
-        return null;
-      }
-      if (!String(found.password).startsWith('pbkdf2$')) {
-        await update(ref(db, `users/${found.uid}`), {
-          password: await createLegacyPassword(password),
-          passwordMigratedAt: Date.now(),
-        });
-      }
-      const current = publicUser(found);
-      saveLegacySession(current);
+      const result = await serverAuth('login', { email: email.trim(), password });
+      const current = saveServerSession(result);
       setUser(current);
       return current;
     } catch (authError) {
@@ -183,7 +222,7 @@ export function AuthProvider({ children }) {
     setAuthLoading(true);
     try {
       const normalizedEmail = email.trim().toLowerCase();
-      if (password.length < 6) throw new Error('Password must be at least 6 characters.');
+      if (password.length < 8) throw new Error('Password must be at least 8 characters.');
       if (firebaseAuthConfigured && auth) {
         const credential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
         await updateProfile(credential.user, { displayName: String(displayName || '').trim() });
@@ -192,24 +231,8 @@ export function AuthProvider({ children }) {
         setUser(current);
         return current;
       }
-      if (!allowLegacyAuth) throw new Error('Secure authentication is not configured. Add VITE_FIREBASE_API_KEY.');
-      if (await findLegacyUser(normalizedEmail)) {
-        throw Object.assign(new Error('Account exists.'), { code: 'auth/email-already-in-use' });
-      }
-      const uid = crypto.randomUUID();
-      const profile = {
-        email: normalizedEmail,
-        displayName: String(displayName || '').trim(),
-        photoURL: '',
-        password: await createLegacyPassword(password),
-        createdAt: Date.now(),
-      };
-      await update(ref(db), {
-        [`users/${uid}`]: profile,
-        [`userEmailIndex/${await emailKey(normalizedEmail)}`]: uid,
-      });
-      const current = publicUser({ uid, ...profile });
-      saveLegacySession(current);
+      const result = await serverAuth('register', { email: normalizedEmail, password, displayName });
+      const current = saveServerSession(result);
       setUser(current);
       return current;
     } catch (authError) {
@@ -222,7 +245,8 @@ export function AuthProvider({ children }) {
 
   async function logout() {
     if (firebaseAuthConfigured && auth) await signOut(auth);
-    saveLegacySession(null);
+    clearServerSession();
+    localStorage.removeItem('mira_legacy_session');
     localStorage.removeItem('mira_token');
     localStorage.removeItem('mira_user');
     setUser(null);
@@ -236,7 +260,7 @@ export function AuthProvider({ children }) {
     login,
     register,
     logout,
-    secureAuth: firebaseAuthConfigured,
+    secureAuth: true,
   };
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

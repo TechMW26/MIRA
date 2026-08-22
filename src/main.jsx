@@ -23,7 +23,7 @@ async function registerApplicationWorker() {
   });
 }
 
-async function disableDevelopmentWorkers() {
+async function clearApplicationWorkers() {
   const registrations = await navigator.serviceWorker?.getRegistrations?.() || [];
   await Promise.all(registrations.map((registration) => registration.unregister().catch(() => false)));
   const cacheNames = await globalThis.caches?.keys?.() || [];
@@ -35,7 +35,7 @@ async function disableDevelopmentWorkers() {
 }
 
 if (window.location.protocol !== 'file:') {
-  if (import.meta.env.DEV) disableDevelopmentWorkers().catch(() => {});
+  if (window.miraDesktop || import.meta.env.DEV) clearApplicationWorkers().catch(() => {});
   else registerApplicationWorker();
 }
 

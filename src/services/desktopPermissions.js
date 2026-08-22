@@ -1,6 +1,7 @@
-export const DESKTOP_PERMISSION_ONBOARDING_VERSION = 'v2';
+export const DESKTOP_PERMISSION_ONBOARDING_VERSION = 'v3';
 
 const PERMISSIONS = Object.freeze({
+  notifications: { id: 'notifications', title: 'Notifications', description: 'Lets MIRA tell you when an answer or AI task is complete.' },
   microphone: { id: 'microphone', title: 'Microphone', description: 'Required for voice conversations. MIRA releases the microphone when voice mode stops.' },
   camera: { id: 'camera', title: 'Camera', description: 'Allows camera-assisted features only while you actively use them.' },
   location: { id: 'location', title: 'Location', description: 'Enables location-aware answers such as local weather and nearby information.' },
@@ -10,7 +11,7 @@ const PERMISSIONS = Object.freeze({
 });
 
 export function getDesktopPermissionSequence(platform = '') {
-  const shared = ['microphone', 'camera', 'location', 'screen-capture'];
+  const shared = ['notifications', 'microphone', 'camera', 'location', 'screen-capture'];
   const platformPermissions = platform === 'darwin'
     ? ['accessibility', 'full-disk-access']
     : platform === 'win32' ? ['full-disk-access'] : [];

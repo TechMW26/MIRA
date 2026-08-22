@@ -90,7 +90,7 @@ export default function MiraBloub({
   const size = voiceMode
     ? Math.max(170, Math.min(280, Math.min(viewport.width, viewport.height) * 0.78))
     : companionMode
-    ? Math.max(82, Math.min(118, Math.min(viewport.width, viewport.height) * 0.72))
+    ? Math.max(82, Math.min(118, Math.min(viewport.width, viewport.height) * 0.82))
     : desktopMode
     ? Math.max(48, Math.min(66, viewport.width * 0.12))
     : expanded

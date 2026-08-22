@@ -48,7 +48,7 @@ import {
 } from '../services/webSearchControl';
 import { buildEvidenceFallbackAnswer, searchWeb } from '../services/webSearch';
 import { expandCompoundWords } from '../services/searchRelevance.js';
-import { formSearchQuery } from '../services/searchQuery';
+import { formSearchQuery, modelSearchQuery } from '../services/searchQuery';
 import {
   extractBrowserRequest,
   isPotentialBrowserControl,
@@ -75,6 +75,7 @@ import {
 } from '../services/responseQuality';
 import { detectDocumentRequest, sanitizeDocumentContent } from '../utils/documentContent.js';
 import { diagnosticLog, diagnosticWarn } from '../services/diagnostics.js';
+import { sendDesktopNotification } from '../services/desktopBridge.js';
 import { buildSearchToolGuidance, decideRetrievalPolicy } from '../services/retrievalPolicy.js';
 import {
   cleanImagePrompt,
@@ -2942,6 +2943,7 @@ export default function useChat() {
                       [],
                       {
                         desktopCoding: desktopWorkspaceRequest.active,
+                        requestClass: 'task',
                         think: generationOptions.think ?? true,
                         maxTokens: generationOptions.maxTokens,
                         tools: [],
@@ -3023,6 +3025,7 @@ export default function useChat() {
                   images,
                   {
                     desktopCoding: desktopWorkspaceRequest.active,
+                    requestClass: isTaskResult ? 'task' : 'chat',
                     think: shouldThink,
                     tools: isTaskResult
                       ? []
@@ -3050,7 +3053,18 @@ export default function useChat() {
               if (isTaskResult && isCurrentRun()) {
                 setTaskWorkflow((current) => (
                   current?.runId === runId
-                    ? { ...current, phase: 'completed', status: 'completed', updatedAt: Date.now() }
+                    ? (() => {
+                      const failedSteps = (current.steps || []).filter((step) => step.status === 'error').length;
+                      return {
+                        ...current,
+                        phase: failedSteps ? 'partial' : 'completed',
+                        status: failedSteps ? 'partial' : 'completed',
+                        error: failedSteps
+                          ? `${failedSteps} workflow step${failedSteps === 1 ? '' : 's'} could not be completed.`
+                          : '',
+                        updatedAt: Date.now(),
+                      };
+                    })()
                     : current
                 ));
               }
@@ -3238,9 +3252,13 @@ export default function useChat() {
             setStreamingContent('');
             setThinkingContent('');
             try {
-              const fallbackQuery = await getLatestMessageSearchQuery(requestedWebSearchQuery)
+              // The model has already resolved conversation references and
+              // supplied a search-engine-ready tool argument. Preserve that
+              // decision exactly; the query planner and deterministic cleanup
+              // exist only for requests without a usable model tool query.
+              const fallbackQuery = modelSearchQuery(requestedWebSearchQuery)
+                || await getLatestMessageSearchQuery()
                 || buildContextualSearchQuery(content)
-                || requestedWebSearchQuery
                 || content;
               const fallbackFreshnessRequested = needsFreshInformation(content) || needsFreshInformation(fallbackQuery);
               const fallbackData = await searchWeb({
@@ -3509,6 +3527,10 @@ export default function useChat() {
             refreshConversationTitle(convId, titleTranscript).catch(() => {});
             await persistProjectTurn(titleSource);
             await persistWorkspaceTurn(titleSource);
+            sendDesktopNotification({
+              title: 'MIRA',
+              body: fullText,
+            }).catch(() => {});
           }
         }
       } catch (err) {
@@ -3527,6 +3549,7 @@ export default function useChat() {
           }).catch((persistErr) => {
             console.warn('Failed to persist terminal chat error:', persistErr?.message);
           });
+          sendDesktopNotification({ title: 'MIRA needs your attention', body: failureText }).catch(() => {});
         }
       } finally {
         if (lockedConversationId) {

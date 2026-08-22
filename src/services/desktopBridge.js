@@ -84,6 +84,7 @@ export function isDesktopPermissionGranted(permission, status = {}) {
     camera: 'camera',
     microphone: 'microphone',
     location: 'location',
+    notifications: 'notifications',
   })[permission];
   const value = status?.[key];
   if (permission === 'accessibility') return value === true || value === 'not-required';
@@ -92,7 +93,7 @@ export function isDesktopPermissionGranted(permission, status = {}) {
 }
 
 export async function requestDesktopPermission(permission, scope = globalThis) {
-  const allowed = new Set(['accessibility', 'full-disk-access', 'screen-capture', 'camera', 'microphone', 'location']);
+  const allowed = new Set(['accessibility', 'full-disk-access', 'screen-capture', 'camera', 'microphone', 'location', 'notifications']);
   if (!allowed.has(permission)) throw new Error('Unsupported desktop permission request.');
   const bridge = getDesktopBridge(scope);
   if (!bridge || typeof bridge.requestPermission !== 'function') {
@@ -114,6 +115,18 @@ export async function requestDesktopPermission(permission, scope = globalThis) {
     }
   }
   return await bridge.requestPermission(permission);
+}
+
+export async function sendDesktopNotification({ title = 'MIRA', body = '', silent = false } = {}, scope = globalThis) {
+  const bridge = getDesktopBridge(scope);
+  if (!bridge || typeof bridge.notify !== 'function') return { shown: false, reason: 'web' };
+  const cleanBody = String(body || '').replace(/\s+/g, ' ').trim();
+  if (!cleanBody) return { shown: false, reason: 'empty' };
+  try {
+    return await bridge.notify({ title: String(title || 'MIRA'), body: cleanBody, silent: Boolean(silent) });
+  } catch {
+    return { shown: false, reason: 'failed' };
+  }
 }
 
 export async function getDesktopProviderStatus(scope = globalThis) {

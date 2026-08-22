@@ -1,13 +1,18 @@
 import { extractSearchSubject } from './searchRelevance.js';
 
-function cleanQuery(value = '') {
+export function cleanSearchQuery(value = '') {
   return String(value || '')
     .replace(/^```(?:text)?|```$/gi, '')
     .replace(/^(?:query|search query)\s*:\s*/i, '')
+    .trim()
     .replace(/^["'`]+|["'`]+$/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 220);
+}
+
+export function modelSearchQuery(value = '') {
+  return cleanSearchQuery(value);
 }
 
 function contextAnchor(context = '') {
@@ -21,7 +26,7 @@ function contextAnchor(context = '') {
 }
 
 export function fallbackSearchQuery(latestMessage = '', context = '') {
-  const exact = cleanQuery(latestMessage)
+  const exact = cleanSearchQuery(latestMessage)
     .replace(/^(?:okay|ok|alright|right)[,!.\s]+/i, '')
     .replace(/^(?:please\s+)?(?:can|could|would)\s+you\s+/i, '')
     .replace(/^(?:please\s+)?(?:perform|prepare|give|provide)\s+(?:me\s+)?/i, '')
@@ -49,5 +54,18 @@ export function fallbackSearchQuery(latestMessage = '', context = '') {
 export async function formSearchQuery({ latestMessage = '', context = '' } = {}) {
   const latest = String(latestMessage || '').trim();
   if (!latest) return '';
-  return fallbackSearchQuery(latest, context);
+  const fallback = fallbackSearchQuery(latest, context);
+  try {
+    const response = await fetch('/api/search-query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ latestMessage: latest, context: String(context || '') }),
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!response.ok) return fallback;
+    const result = await response.json().catch(() => ({}));
+    return cleanSearchQuery(result?.query) || fallback;
+  } catch {
+    return fallback;
+  }
 }

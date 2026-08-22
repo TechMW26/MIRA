@@ -1,7 +1,7 @@
-const VERSION = 'v2';
+const VERSION = 'v3';
 
 function sequenceForPlatform(platform) {
-  const shared = ['microphone', 'camera', 'location', 'screen-capture'];
+  const shared = ['notifications', 'microphone', 'camera', 'location', 'screen-capture'];
   if (platform === 'darwin') return [...shared, 'accessibility', 'full-disk-access'];
   if (platform === 'win32') return [...shared, 'full-disk-access'];
   return shared;
@@ -15,6 +15,7 @@ function statusKey(permission) {
     camera: 'camera',
     microphone: 'microphone',
     location: 'location',
+    notifications: 'notifications',
   })[permission];
 }
 

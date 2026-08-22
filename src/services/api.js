@@ -487,12 +487,15 @@ async function requestChat({
   onChunk,
   endpoint = '/api/chat',
   desktopCoding = false,
+  requestClass = 'chat',
 }) {
   const controller = new AbortController();
   activeChatAbortController = controller;
 
   try {
-    const maxAttempts = 2;
+    // Task steps already have workflow-level retries. Retrying here as well
+    // multiplied one transient outage into six near-simultaneous requests.
+    const maxAttempts = requestClass === 'task' ? 1 : 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const requestId = createRequestId();
       activeChatRequestId = requestId;
@@ -511,7 +514,10 @@ async function requestChat({
         const response = await raceWithTimeout(
           fetch(endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              ...(desktopCoding ? { 'X-Mira-Desktop': '1' } : {}),
+            },
             signal: attemptController.signal,
             body: JSON.stringify({
               requestId,
@@ -523,6 +529,7 @@ async function requestChat({
               ...(Array.isArray(tools) && tools.length > 0 ? { tools } : {}),
               ...(typeof think === 'boolean' ? { think } : {}),
               ...(desktopCoding ? { desktopCoding: true } : {}),
+              ...(requestClass === 'task' ? { requestClass: 'task' } : {}),
             }),
           }),
           getResponseHeadersTimeout(),
@@ -676,6 +683,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
   maxTokens,
   voice = false,
   desktopCoding = false,
+  requestClass = 'chat',
 } = {}) {
   let latestAnswer = '';
   let latestThinking = '';
@@ -717,6 +725,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
       maxTokens,
       endpoint: voice ? '/api/voice-chat' : '/api/chat',
       desktopCoding,
+      requestClass,
       onChunk: ({ answerFull, thinkingFull }) => {
         const split = splitThinkingFromRaw(answerFull || '');
         const mergedThinking = [thinkingFull || '', split.thinking || '']

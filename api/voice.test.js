@@ -128,33 +128,33 @@ test('voice chat streams from the self-hosted non-vision model with Mira and con
   });
 });
 
-test('voice chat uses the fast DeepSeek route before a cold Ollama host', async () => {
-  const originalFetch = globalThis.fetch;
+test('voice chat stays on Ollama even when a DeepSeek key is configured', async () => {
   const originalKey = process.env.DEEPSEEK_API_KEY;
   process.env.DEEPSEEK_API_KEY = 'deepseek-server-secret';
-  let upstream;
-  globalThis.fetch = async (url, options) => {
-    upstream = { url: String(url), options };
-    return Response.json({
-      model: 'deepseek-v4-flash',
-      choices: [{ message: { content: 'Hello from fast voice.' } }],
-    });
-  };
   try {
-    const response = await chat(new Request('http://localhost/api/voice-chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
-    }));
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get('x-mira-provider'), 'deepseek');
-    assert.match(await response.text(), /Hello from fast voice/);
-    assert.match(upstream.url, /api\.deepseek\.com\/chat\/completions$/);
-    const body = JSON.parse(upstream.options.body);
-    assert.deepEqual(body.thinking, { type: 'disabled' });
-    assert.match(body.messages[0].content, /live spoken conversation/i);
+    await withOllamaEnvironment(async () => {
+      const requestedUrls = [];
+      globalThis.fetch = async (url) => {
+        requestedUrls.push(String(url));
+        if (String(url).endsWith('/api/tags')) {
+          return Response.json({ models: [{ name: 'voice-model', capabilities: ['completion'] }] });
+        }
+        return new Response('{"message":{"content":"Hello from Ollama voice."},"done":true}\n', {
+          status: 200,
+          headers: { 'Content-Type': 'application/x-ndjson' },
+        });
+      };
+      const response = await chat(new Request('http://localhost/api/voice-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
+      }));
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('x-mira-provider'), 'ollama');
+      assert.match(await response.text(), /Hello from Ollama voice/);
+      assert.equal(requestedUrls.some((url) => /deepseek/i.test(url)), false);
+    });
   } finally {
-    globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.DEEPSEEK_API_KEY;
     else process.env.DEEPSEEK_API_KEY = originalKey;
   }

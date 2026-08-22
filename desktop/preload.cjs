@@ -1,5 +1,69 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const { VERSION: permissionVersion, runSequentialPermissionQueue } = require('./permissionOnboarding.cjs');
+
+// Sandboxed Electron preloads can only require a small built-in module set.
+// Keep this queue self-contained so a relative require cannot prevent the
+// entire desktop bridge from being exposed.
+const permissionVersion = 'v3';
+
+function permissionSequence(platform) {
+  const shared = ['notifications', 'microphone', 'camera', 'location', 'screen-capture'];
+  if (platform === 'darwin') return [...shared, 'accessibility', 'full-disk-access'];
+  if (platform === 'win32') return [...shared, 'full-disk-access'];
+  return shared;
+}
+
+function permissionStatusKey(permission) {
+  return ({
+    accessibility: 'accessibility',
+    'full-disk-access': 'fullDiskAccess',
+    'screen-capture': 'screenCapture',
+    camera: 'camera',
+    microphone: 'microphone',
+    location: 'location',
+    notifications: 'notifications',
+  })[permission];
+}
+
+function permissionGranted(permission, status = {}) {
+  const value = status[permissionStatusKey(permission)];
+  if (permission === 'accessibility') return value === true || value === 'not-required';
+  if (permission === 'screen-capture') return ['granted', 'available', 'not-required'].includes(value);
+  return value === true || value === 'granted' || value === 'not-required';
+}
+
+async function runSequentialPermissionQueue({
+  platform,
+  getStatus,
+  request,
+  waitForSettingsReturn = async () => {},
+  attempts = 2,
+} = {}) {
+  const unresolved = [];
+  const completed = [];
+  for (const permission of permissionSequence(platform)) {
+    let status = await getStatus();
+    if (permissionGranted(permission, status)) {
+      completed.push(permission);
+      continue;
+    }
+    let acknowledgedSettings = false;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const result = await request(permission, attempt).catch((error) => ({
+        permissionError: error?.message || String(error || 'Permission request failed.'),
+      }));
+      if (result?.settingsOpened) {
+        acknowledgedSettings = permission === 'full-disk-access';
+        await waitForSettingsReturn(permission);
+      }
+      const refreshedStatus = await getStatus().catch(() => ({}));
+      status = { ...refreshedStatus, ...(result || {}) };
+      if (permissionGranted(permission, status) || acknowledgedSettings) break;
+    }
+    if (permissionGranted(permission, status) || acknowledgedSettings) completed.push(permission);
+    else unresolved.push(permission);
+  }
+  return { completed, unresolved };
+}
 
 const capabilities = Object.freeze([
   'filesystem.read',
@@ -30,7 +94,7 @@ const capabilities = Object.freeze([
 ]);
 
 contextBridge.exposeInMainWorld('miraDesktop', Object.freeze({
-  bridgeVersion: 12,
+  bridgeVersion: 14,
   platform: process.platform,
   capabilities,
   chooseWorkspace: () => ipcRenderer.invoke('mira:choose-workspace'),
@@ -43,7 +107,9 @@ contextBridge.exposeInMainWorld('miraDesktop', Object.freeze({
   requestCodeAssist: (payload) => ipcRenderer.invoke('mira:code-assist', payload),
   setCompanionExpanded: (expanded) => ipcRenderer.invoke('mira:companion-expanded', Boolean(expanded)),
   moveCompanion: (point) => ipcRenderer.invoke('mira:companion-move', point),
+  captureCompanionScreen: () => ipcRenderer.invoke('mira:companion-capture-screen'),
   openMainWindow: () => ipcRenderer.invoke('mira:open-main-window'),
+  notify: (payload) => ipcRenderer.invoke('mira:notify', payload),
   onCompanionState: (listener) => {
     if (typeof listener !== 'function') return () => {};
     const handler = (_event, payload) => listener(payload);

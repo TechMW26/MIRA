@@ -8,6 +8,7 @@ export const TOOL_NAMES = Object.freeze({
   TASK: 'task.run',
   IMAGE: 'image.generate',
   VIDEO: 'video.generate',
+  DESKTOP_SCREEN_CONTEXT: 'desktop.screen_context',
   FILE_READ: 'filesystem.read',
   FILE_LIST: 'filesystem.list',
   FILE_WRITE: 'filesystem.write',

@@ -13,6 +13,7 @@ import {
   requestDesktopAgentChat,
   requestDesktopCodeAssist,
   requestDesktopPermission,
+  sendDesktopNotification,
   saveDesktopWorkspaceFile,
   subscribeDesktopSaveShortcut,
 } from './desktopBridge.js';
@@ -122,7 +123,26 @@ test('desktop permission requests use only the allowlisted native bridge', async
   };
   assert.equal((await requestDesktopPermission('location', locationScope)).platform, 'darwin');
   assert.deepEqual(calls, ['accessibility', 'camera']);
-  await assert.rejects(requestDesktopPermission('notifications', scope), /unsupported/i);
+  assert.equal((await requestDesktopPermission('notifications', scope)).accessibility, true);
+  assert.deepEqual(calls, ['accessibility', 'camera', 'notifications']);
+});
+
+test('notifications cross only the desktop preload bridge', async () => {
+  assert.deepEqual(await sendDesktopNotification({ body: 'Finished' }, { window: {} }), { shown: false, reason: 'web' });
+  const calls = [];
+  const scope = {
+    window: {
+      miraDesktop: {
+        invokeTool: async () => ({ ok: true }),
+        notify: async (payload) => {
+          calls.push(payload);
+          return { shown: true };
+        },
+      },
+    },
+  };
+  assert.deepEqual(await sendDesktopNotification({ body: '  Answer\n complete  ' }, scope), { shown: true });
+  assert.equal(calls[0].body, 'Answer complete');
 });
 
 test('outdated desktop shells report an update instead of claiming permissions are unnecessary', async () => {

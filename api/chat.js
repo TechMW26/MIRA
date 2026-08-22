@@ -27,6 +27,7 @@ const ALLOWED_TOOL_NAMES = new Set([
   'task.run',
   'image.generate',
   'video.generate',
+  'desktop.screen_context',
   'filesystem.read',
   'filesystem.list',
   'filesystem.write',
@@ -52,14 +53,16 @@ const ALLOWED_TOOL_NAMES = new Set([
 const ACTIVE_CHAT_REQUESTS = new Map();
 const MODEL_REGISTRY_CACHE = { expiresAt: 0, selected: null };
 const MODEL_REGISTRY_CACHE_TTL_MS = 60 * 1000;
-const MODEL_FAILURE_COOLDOWN_MS = 2 * 60 * 1000;
-const MODEL_FAILURES = new Map();
 const RETRYABLE_UPSTREAM_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const DEEPSEEK_FAILURE_COOLDOWN_MS = 30 * 1000;
 let deepSeekUnavailableUntil = 0;
 
-function prefersDeepSeekChat() {
-  return String(process.env.MIRA_CHAT_PROVIDER || 'deepseek').trim().toLowerCase() !== 'ollama';
+function prefersDeepSeekDesktopCoding() {
+  return String(
+    process.env.MIRA_DESKTOP_CODING_PROVIDER
+    || process.env.MIRA_CHAT_PROVIDER
+    || 'deepseek',
+  ).trim().toLowerCase() !== 'pollinations';
 }
 
 export function getContextTokens(value = process.env.OLLAMA_CONTEXT_TOKENS) {
@@ -155,17 +158,12 @@ export function selectRegistryModel(models = [], preferredModel = '', {
   };
 }
 
-function activeModelFailures(now = Date.now()) {
-  for (const [name, expiresAt] of MODEL_FAILURES) {
-    if (expiresAt <= now) MODEL_FAILURES.delete(name);
-  }
-  return [...MODEL_FAILURES.keys()];
-}
-
 function markModelFailure(model) {
   const name = registryModelName(model);
   if (!name) return;
-  MODEL_FAILURES.set(name, Date.now() + MODEL_FAILURE_COOLDOWN_MS);
+  // A provider failure belongs to the current request only. The previous
+  // process-wide cooldown allowed one user's transient 503 to quarantine all
+  // completion models for every later task handled by the same function.
   if (MODEL_REGISTRY_CACHE.selected?.name === name) {
     MODEL_REGISTRY_CACHE.selected = null;
     MODEL_REGISTRY_CACHE.expiresAt = 0;
@@ -203,7 +201,7 @@ async function fetchRegistryModel(signal, { forceRefresh = false, excludedNames 
       .filter(Boolean);
     const selected = selectRegistryModel(payload?.models, process.env.OLLAMA_CHAT_MODEL, {
       residentNames,
-      excludedNames: [...new Set([...activeModelFailures(now), ...excludedNames])],
+      excludedNames,
     });
     if (!selected) {
       const unavailableError = new Error('No completion model is currently available.');
@@ -215,7 +213,7 @@ async function fetchRegistryModel(signal, { forceRefresh = false, excludedNames 
     return selected;
   } catch (error) {
     if (signal?.aborted) throw error;
-    const blocked = new Set([...activeModelFailures(), ...excludedNames]);
+    const blocked = new Set(excludedNames);
     if (MODEL_REGISTRY_CACHE.selected && !blocked.has(MODEL_REGISTRY_CACHE.selected.name)) {
       return MODEL_REGISTRY_CACHE.selected;
     }
@@ -413,13 +411,19 @@ export async function POST(req) {
   const guarded = guardRequest(req, { limit: 24, windowMs: 60_000, key: 'chat' });
   if (guarded) return guarded;
   let requestId = '';
+  let body = null;
+  let requestController = null;
+  let removeClientAbortListener = () => {};
+  let managedFallbackAttempted = false;
   let upstreamStartTimedOut = false;
   let upstreamStartTimer = null;
   try {
     const contentLength = Number(req.headers?.get?.('content-length') || 0);
     if (contentLength > MAX_BODY_BYTES) return jsonResponse({ error: 'Request body is too large.' }, 413);
 
-    const body = await req.json();
+    body = await req.json();
+    const desktopCodingRequest = body?.desktopCoding === true
+      && req.headers?.get?.('x-mira-desktop') === '1';
     requestId = String(body?.requestId || '').trim();
     if (body?.action === 'cancel') {
       const controller = ACTIVE_CHAT_REQUESTS.get(requestId);
@@ -441,13 +445,37 @@ export async function POST(req) {
     }
 
     const controller = new AbortController();
+    requestController = controller;
     if (requestId) ACTIVE_CHAT_REQUESTS.set(requestId, controller);
     const onClientAbort = () => controller.abort();
+    removeClientAbortListener = () => req.signal?.removeEventListener?.('abort', onClientAbort);
     if (req.signal?.aborted) onClientAbort();
     else req.signal?.addEventListener?.('abort', onClientAbort, { once: true });
 
+    const finishEarlyResponse = (response) => {
+      removeClientAbortListener();
+      if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+      return response;
+    };
+
+    const tryManagedFallback = async () => {
+      if (
+        !desktopCodingRequest
+        || managedFallbackAttempted
+        || !String(process.env.POLLINATIONS_API_KEY || '').trim()
+      ) return null;
+      managedFallbackAttempted = true;
+      try {
+        return await managedFallbackResponse(body, controller.signal);
+      } catch (error) {
+        if (controller.signal.aborted || req.signal?.aborted) throw error;
+        return null;
+      }
+    };
+
     if (
-      prefersDeepSeekChat()
+      desktopCodingRequest
+      && prefersDeepSeekDesktopCoding()
       && String(process.env.DEEPSEEK_API_KEY || '').trim()
       && Date.now() >= deepSeekUnavailableUntil
     ) {
@@ -459,18 +487,26 @@ export async function POST(req) {
         deepSeekUnavailableUntil = 0;
         clearTimeout(upstreamStartTimer);
         upstreamStartTimer = null;
-        req.signal?.removeEventListener?.('abort', onClientAbort);
-        if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
-        return response;
+        return finishEarlyResponse(response);
       } catch (error) {
         if (controller.signal.aborted || req.signal?.aborted) throw error;
         deepSeekUnavailableUntil = Date.now() + DEEPSEEK_FAILURE_COOLDOWN_MS;
-        // The private model host remains a provider-independent fallback when
-        // DeepSeek is rate-limited, unavailable, or not configured correctly.
+        // Pollinations is the secondary provider for desktop coding only.
+        const managedResponse = await tryManagedFallback();
+        if (managedResponse) return finishEarlyResponse(managedResponse);
       }
     }
-    // Give Ollama its own startup budget. A failed fast-provider attempt must
-    // not consume the cold-start/failover window before Ollama is contacted.
+    if (desktopCodingRequest) {
+      const managedResponse = await tryManagedFallback();
+      if (managedResponse) return finishEarlyResponse(managedResponse);
+      return finishEarlyResponse(jsonResponse({
+        error: 'Desktop coding completion providers are temporarily unavailable.',
+        code: 'desktop_coding_unavailable',
+        retryable: true,
+      }, 503));
+    }
+
+    // Web chat and web task workflows use Ollama exclusively.
     upstreamStartTimer = setTimeout(() => {
       upstreamStartTimedOut = true;
       controller.abort();
@@ -523,15 +559,7 @@ export async function POST(req) {
     if (!upstream?.ok) {
       clearTimeout(upstreamStartTimer);
       upstreamStartTimer = null;
-      req.signal?.removeEventListener?.('abort', onClientAbort);
-      if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
-      if (body?.desktopCoding === true) {
-        try {
-          return await managedFallbackResponse(body, req.signal);
-        } catch {
-          // Return a provider-neutral error when both coding providers fail.
-        }
-      }
+      finishEarlyResponse(null);
       const timedOut = lastUpstreamError?.code === 'upstream_connect_timeout';
       return jsonResponse({
         error: timedOut
@@ -589,6 +617,10 @@ export async function POST(req) {
     });
   } catch (error) {
     if (upstreamStartTimer) clearTimeout(upstreamStartTimer);
+    removeClientAbortListener();
+    if (requestController && !requestController.signal.aborted && req.signal?.aborted) {
+      requestController.abort();
+    }
     if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
     if (upstreamStartTimedOut) {
       return jsonResponse({
@@ -598,8 +630,8 @@ export async function POST(req) {
     }
     if (error?.code === 'no_available_model') {
       return jsonResponse({
-        error: 'The model service is recovering. Please retry shortly.',
-        code: 'model_cooldown',
+        error: 'No Ollama completion model is currently available.',
+        code: 'no_completion_model',
         retryable: true,
       }, 503);
     }

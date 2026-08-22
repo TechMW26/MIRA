@@ -171,7 +171,11 @@ function retryableTaskError(error) {
 }
 
 async function waitForRetry(attempt) {
-  await new Promise((resolve) => setTimeout(resolve, Math.min(1200, 250 * (2 ** (attempt - 1)))));
+  // Provider recovery and rate-limit windows need breathing room. The old
+  // 250/500ms loop simply hit the same unhealthy server state three times.
+  const baseDelay = Math.min(3000, 1000 * (2 ** (attempt - 1)));
+  const jitter = Math.floor(Math.random() * 250);
+  await new Promise((resolve) => setTimeout(resolve, baseDelay + jitter));
 }
 
 async function executeStepWithRetry({ operation, onPhase, step, total, title }) {

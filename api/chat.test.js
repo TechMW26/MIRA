@@ -13,7 +13,7 @@ import {
   selectRegistryModel,
 } from './chat.js';
 
-test('returns a stream-compatible DeepSeek response for fast general chat', async () => {
+test('returns a stream-compatible DeepSeek response for desktop coding fallback', async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.DEEPSEEK_API_KEY;
   process.env.DEEPSEEK_API_KEY = 'deepseek-server-secret';
@@ -219,6 +219,23 @@ test('forwards allowlisted tools when Ollama tags omit tool capability metadata'
   assert.deepEqual(payload.tools.map((tool) => tool.function.name), ['weather.lookup']);
 });
 
+test('accepts the desktop screen-context schema for the native companion relay', () => {
+  const tools = sanitizeTools([{
+    type: 'function',
+    function: {
+      name: 'desktop.screen_context',
+      description: 'Inspect the current desktop screen.',
+      parameters: {
+        type: 'object',
+        properties: { focus: { type: 'string' } },
+        required: ['focus'],
+      },
+    },
+  }]);
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].function.name, 'desktop.screen_context');
+});
+
 test('fails over to another registry model when the preferred upstream is unhealthy', async () => {
   const originalFetch = globalThis.fetch;
   const originalUrl = process.env.OLLAMA_API_URL;
@@ -257,6 +274,104 @@ test('fails over to another registry model when the preferred upstream is unheal
     assert.equal(response.headers.get('x-mira-model-failover'), '1');
     assert.deepEqual(attempted, ['small', 'large']);
     assert.match(await response.text(), /Recovered on alternate model/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl === undefined) delete process.env.OLLAMA_API_URL;
+    else process.env.OLLAMA_API_URL = originalUrl;
+  }
+});
+
+test('routes web task workflows only through Ollama even when desktop provider keys exist', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalUrl = process.env.OLLAMA_API_URL;
+  const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  const originalPollinationsKey = process.env.POLLINATIONS_API_KEY;
+  process.env.OLLAMA_API_URL = 'http://ollama-web.test:11434/api/chat';
+  process.env.DEEPSEEK_API_KEY = 'desktop-only-deepseek-key';
+  process.env.POLLINATIONS_API_KEY = 'desktop-only-pollinations-key';
+  const requestedUrls = [];
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    requestedUrls.push(target);
+    if (target.endsWith('/api/tags')) {
+      return new Response(JSON.stringify({ models: [
+        { name: 'web-model', capabilities: ['completion', 'thinking'] },
+      ] }), { status: 200 });
+    }
+    if (target.endsWith('/api/ps')) {
+      return new Response(JSON.stringify({ models: [{ name: 'web-model' }] }), { status: 200 });
+    }
+    if (target === 'http://ollama-web.test:11434/api/chat') {
+      return new Response(`${JSON.stringify({ message: { content: 'Ollama task result.' }, done: true })}\n`, {
+        status: 200,
+        headers: { 'content-type': 'application/x-ndjson' },
+      });
+    }
+    throw new Error(`Unexpected provider request: ${target}`);
+  };
+
+  try {
+    const freshModule = await import(`./chat.js?web-ollama-only=${Date.now()}`);
+    const response = await freshModule.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-real-ip': 'web-task-routing-test' },
+      body: JSON.stringify({
+        requestClass: 'task',
+        messages: [{ role: 'user', content: 'Execute a task step.' }],
+        think: true,
+      }),
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-mira-provider'), 'ollama');
+    assert.match(await response.text(), /Ollama task result/);
+    assert.equal(requestedUrls.some((url) => /deepseek|pollinations/i.test(url)), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl === undefined) delete process.env.OLLAMA_API_URL;
+    else process.env.OLLAMA_API_URL = originalUrl;
+    if (originalDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
+    if (originalPollinationsKey === undefined) delete process.env.POLLINATIONS_API_KEY;
+    else process.env.POLLINATIONS_API_KEY = originalPollinationsKey;
+  }
+});
+
+test('does not quarantine Ollama models across independent requests after transient 503s', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalUrl = process.env.OLLAMA_API_URL;
+  process.env.OLLAMA_API_URL = 'http://ollama-recovery.test:11434/api/chat';
+  let chatAttempts = 0;
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.endsWith('/api/tags')) {
+      return new Response(JSON.stringify({ models: [
+        { name: 'primary', size: 6_000_000_000, capabilities: ['completion', 'thinking'] },
+        { name: 'secondary', size: 8_000_000_000, capabilities: ['completion'] },
+      ] }), { status: 200 });
+    }
+    if (target.endsWith('/api/ps')) return new Response(JSON.stringify({ models: [] }), { status: 200 });
+    chatAttempts += 1;
+    if (chatAttempts <= 2) return new Response(JSON.stringify({ error: 'temporary load failure' }), { status: 503 });
+    return new Response(`${JSON.stringify({ message: { content: 'Recovered on the next task attempt.' }, done: true })}\n`, {
+      status: 200,
+      headers: { 'content-type': 'application/x-ndjson' },
+    });
+  };
+
+  try {
+    const freshModule = await import(`./chat.js?cross-request-recovery=${Date.now()}`);
+    const makeRequest = (suffix) => new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-real-ip': `ollama-recovery-${suffix}` },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Run this step.' }], requestClass: 'task' }),
+    });
+    const failed = await freshModule.POST(makeRequest('first'));
+    assert.equal(failed.status, 503);
+    const recovered = await freshModule.POST(makeRequest('second'));
+    assert.equal(recovered.status, 200);
+    assert.equal(recovered.headers.get('x-mira-provider'), 'ollama');
+    assert.match(await recovered.text(), /Recovered on the next task attempt/);
+    assert.equal(chatAttempts, 3);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalUrl === undefined) delete process.env.OLLAMA_API_URL;

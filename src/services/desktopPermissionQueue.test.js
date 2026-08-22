@@ -21,6 +21,7 @@ test('desktop preload permission queue waits and retries strictly in order', asy
   });
   assert.deepEqual(result.unresolved, []);
   assert.deepEqual(calls, [
+    'notifications:1:request',
     'microphone:1:request',
     'microphone:2:request',
     'camera:1:request',
@@ -32,6 +33,7 @@ test('desktop preload permission queue waits and retries strictly in order', asy
 
 test('desktop preload queue preserves a successful browser-managed grant', async () => {
   const status = {
+    notifications: 'granted',
     microphone: 'granted',
     camera: 'granted',
     location: 'managed-by-web-permission',
