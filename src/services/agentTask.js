@@ -1,16 +1,18 @@
 import { fallbackSearchQuery } from './searchQuery.js';
 
 const MAX_TASK_STEPS = 5;
-const MAX_RESEARCH_STEPS = 2;
+const MAX_RESEARCH_STEPS = 4;
 const MAX_CONTEXT_CHARS = 14000;
 const MAX_STEP_RESULT_CHARS = 5000;
 const MAX_STEP_ATTEMPTS = 3;
 const FALLBACK_START = '=== USER-SAFE TASK FALLBACK ===';
 const FALLBACK_END = '=== END USER-SAFE TASK FALLBACK ===';
+const RECOVERY_MARKER = '=== TASK MODEL RECOVERY USED ===';
 
 const RESEARCH_WORKFLOW_PATTERN = /\b(research|investigate|deep\s+dive|due\s+diligence|literature\s+review|market\s+analysis|competitive\s+analysis|compare\s+(?:current|latest)|evaluate\s+(?:current|latest)|verify\s+across\s+sources)\b/i;
 const PLANNING_WORKFLOW_PATTERN = /\b(plan|roadmap|strategy|step[-\s]?by[-\s]?step|break\s+(?:it\s+)?down|split\s+into\s+steps|phases?|milestones?|end[-\s]?to[-\s]?end|implementation\s+plan|execution\s+plan|action\s+plan|first.+then|and\s+then)\b/i;
 const EXTERNAL_EVIDENCE_PATTERN = /\b(web|internet|online|sources?|citations?|evidence|data\s+sources?|current|latest|recent|today|market|news|pricing|availability|verify|fact[-\s]?check)\b/i;
+const MULTILINGUAL_RESEARCH_PATTERN = /(?:रिसर्च|शोध|गहराई\s+से|पता\s+लगाओ|जाँच\s+पड़ताल|जांच\s+पड़ताल|इंटरनेट\s+पर|वेब\s+पर|ताज़ा|ताजा|वर्तमान|नवीनतम|深入研究|调查|研究一下|詳しく調べ|調査|深掘り|심층\s*조사|조사해|연구해|بحث\s+متعمق|ابحث\s+بعمق|تحقق|исследуй|расследуй|проведи\s+исследование|গভীর\s+গবেষণা|তদন্ত)|\b(?:investiga|investigar|recherche|pesquisa|ricerca|recherchieren|untersuchen|onderzoek|araştır|araştırma|recherche approfondie)\b/iu;
 
 function compact(value = '', limit = MAX_CONTEXT_CHARS) {
   const normalized = String(value || '').replace(/\s+/g, ' ').trim();
@@ -29,7 +31,7 @@ export function shouldRunAgentTask({
   if (!value || simpleGreeting || mediaIntent || websiteInspection) return false;
   const explicitResearch = RESEARCH_WORKFLOW_PATTERN.test(value);
   const explicitPlanning = PLANNING_WORKFLOW_PATTERN.test(value);
-  if (explicitResearch || explicitPlanning) return true;
+  if (explicitResearch || MULTILINGUAL_RESEARCH_PATTERN.test(value) || explicitPlanning) return true;
   if (requiresResearch && complexity !== 'low' && /\b(compare|recommend|assess|analy[sz]e|report|options?|tradeoffs?|pros?\s+and\s+cons?)\b/i.test(value)) {
     return true;
   }
@@ -38,7 +40,7 @@ export function shouldRunAgentTask({
 
 export function agentTaskRequiresResearch(goal = '', explicit = false) {
   const value = String(goal || '').trim();
-  return Boolean(explicit || RESEARCH_WORKFLOW_PATTERN.test(value) || EXTERNAL_EVIDENCE_PATTERN.test(value));
+  return Boolean(explicit || RESEARCH_WORKFLOW_PATTERN.test(value) || EXTERNAL_EVIDENCE_PATTERN.test(value) || MULTILINGUAL_RESEARCH_PATTERN.test(value));
 }
 
 function extractJsonArray(text = '') {
@@ -131,12 +133,18 @@ export function buildAgentPlanPrompt({ goal = '', context = '', requiresResearch
 function formatSearchEvidence(payload = {}, query = '') {
   const results = Array.isArray(payload?.results) ? payload.results.slice(0, 8) : [];
   if (!results.length) return `No relevant live evidence was returned for: ${query}`;
-  return results.map((result, index) => [
+  const evidence = results.map((result, index) => [
     `${index + 1}. ${compact(result?.title || 'Untitled source', 240)}`,
     result?.publishedAt ? `Published: ${result.publishedAt}` : '',
+    result?.accessStatus && result.accessStatus !== 'ok' ? `Page access: ${result.accessStatus}` : '',
     compact(result?.snippet || '', 1200),
     result?.url ? `Source: ${result.url}` : '',
   ].filter(Boolean).join('\n')).join('\n\n');
+  const restricted = Array.isArray(payload?.research?.restricted) ? payload.research.restricted : [];
+  if (!restricted.length) return evidence;
+  return `${evidence}\n\nRestricted pages (do not pretend these were read):\n${restricted
+    .map((item) => `- ${item.url}: ${item.status}`)
+    .join('\n')}`;
 }
 
 function buildStepPrompt({ goal, context, plan, step, index, results }) {
@@ -157,6 +165,40 @@ function resolveTaskSearchQuery(query, goal, context) {
   return fallbackSearchQuery(requested, context) || fallbackSearchQuery(goal, context) || requested;
 }
 
+function broadResearchQuery(goal = '', context = '') {
+  const corpus = `${goal} ${context}`.replace(/\s+/g, ' ').trim();
+  const domain = /\b(?:civic|citizen|community|public participation)\b/i.test(corpus)
+    ? 'civic engagement app'
+    : /\b(?:rating|ratings|reputation|social score|trust score)\b/i.test(corpus)
+      ? 'social reputation app'
+      : /\b(?:app|application|platform|software|product)\b/i.test(corpus)
+        ? 'mobile app'
+        : /\b(?:business|company|startup|service)\b/i.test(corpus)
+          ? 'digital product'
+          : 'industry';
+  const outcome = /\b(?:engag|retention|active users?|participation|sticky|habit)\w*/i.test(corpus)
+    ? 'gamification retention benchmarks'
+    : /\b(?:market|competitor|competitive|benchmark|position)\w*/i.test(corpus)
+      ? 'market benchmarks competitors'
+      : /\b(?:trust|safety|abuse|moderation|privacy)\w*/i.test(corpus)
+        ? 'trust safety best practices'
+        : 'research trends benchmarks';
+  return `${domain} ${outcome}`;
+}
+
+export function buildTaskSearchQueries({ query = '', goal = '', context = '', instruction = '' } = {}) {
+  const primary = resolveTaskSearchQuery(query, goal, context);
+  const instructionQuery = resolveTaskSearchQuery(
+    [instruction, goal].filter(Boolean).join(' '),
+    context,
+  );
+  return Array.from(new Set([
+    primary,
+    broadResearchQuery(goal, context),
+    instructionQuery,
+  ].map((value) => compact(value, 220)).filter(Boolean))).slice(0, MAX_STEP_ATTEMPTS);
+}
+
 function retryableTaskError(error) {
   if (error?.name === 'AbortError') return false;
   const message = String(error?.message || error || '').toLowerCase();
@@ -164,7 +206,11 @@ function retryableTaskError(error) {
 }
 
 async function waitForRetry(attempt) {
-  await new Promise((resolve) => setTimeout(resolve, Math.min(1200, 250 * (2 ** (attempt - 1)))));
+  // Provider recovery and rate-limit windows need breathing room. The old
+  // 250/500ms loop simply hit the same unhealthy server state three times.
+  const baseDelay = Math.min(3000, 1000 * (2 ** (attempt - 1)));
+  const jitter = Math.floor(Math.random() * 250);
+  await new Promise((resolve) => setTimeout(resolve, baseDelay + jitter));
 }
 
 async function executeStepWithRetry({ operation, onPhase, step, total, title }) {
@@ -191,6 +237,26 @@ async function executeStepWithRetry({ operation, onPhase, step, total, title }) 
     }
   }
   throw lastError || new Error('The task step could not be completed.');
+}
+
+function buildReasonStepFallback({ goal, context, step, results }) {
+  const completed = results
+    .filter((result) => result.status === 'done' && String(result.text || '').trim())
+    .map((result) => compact(result.text, MAX_STEP_RESULT_CHARS));
+  if (completed.length) {
+    return [
+      `${step.title}: evidence-backed working result`,
+      ...completed,
+      `Apply these findings directly to the goal: ${compact(goal, 500)}`,
+    ].join('\n\n');
+  }
+  const knownContext = compact(context, MAX_STEP_RESULT_CHARS);
+  return [
+    `${step.title}: working result`,
+    `Goal: ${compact(goal, 700)}`,
+    knownContext ? `Known project context: ${knownContext}` : '',
+    `Required outcome: ${compact(step.instruction, 700)}`,
+  ].filter(Boolean).join('\n\n');
 }
 
 function buildTaskFallback(goal, plan, results) {
@@ -222,6 +288,10 @@ export function extractAgentTaskFallback(handoff = '') {
   return value.slice(start + FALLBACK_START.length, end).trim();
 }
 
+export function agentTaskUsedRecovery(handoff = '') {
+  return String(handoff || '').includes(RECOVERY_MARKER);
+}
+
 export async function runAgentTask({
   goal = '',
   context = '',
@@ -234,6 +304,8 @@ export async function runAgentTask({
   if (!String(goal || '').trim()) throw new Error('A task goal is required.');
   if (typeof generate !== 'function') throw new Error('The task planning model is unavailable.');
   const useResearch = agentTaskRequiresResearch(goal, requiresResearch);
+  let generationUnavailable = false;
+  let usedGenerationRecovery = false;
 
   onPhase?.({ phase: 'planning' });
   let plan;
@@ -246,6 +318,8 @@ export async function runAgentTask({
     plan = parseAgentPlan(planText, { goal, requiresResearch: useResearch });
   } catch (error) {
     if (error?.name === 'AbortError') throw error;
+    generationUnavailable = retryableTaskError(error);
+    usedGenerationRecovery = generationUnavailable;
     plan = fallbackAgentPlan(goal, useResearch);
   }
   onPhase?.({
@@ -268,20 +342,42 @@ export async function runAgentTask({
         total: plan.length,
         title: step.title,
         onPhase,
-        operation: async () => {
+        operation: async (attempt) => {
           if (step.tool === 'web.search' && typeof search === 'function') {
-            const resolvedQuery = resolveTaskSearchQuery(step.query, goal, context);
-            const evidence = await search(resolvedQuery, { freshness });
+            const queries = buildTaskSearchQueries({
+              query: step.query,
+              goal,
+              context,
+              instruction: step.instruction,
+            });
+            const resolvedQuery = queries[Math.min(attempt - 1, queries.length - 1)]
+              || resolveTaskSearchQuery(step.query, goal, context);
+            const evidence = await search(resolvedQuery, { freshness, deepResearch: true });
             if (!Array.isArray(evidence?.results) || evidence.results.length === 0) {
               throw new Error('Web search returned no useful evidence.');
             }
             return formatSearchEvidence(evidence, resolvedQuery);
           }
-          return await generate(buildStepPrompt({ goal, context, plan, step, index, results }), {
-            phase: 'executing',
-            think: true,
-            maxTokens: 2400,
-          });
+          if (generationUnavailable) {
+            usedGenerationRecovery = true;
+            return buildReasonStepFallback({ goal, context, step, results });
+          }
+          try {
+            return await generate(buildStepPrompt({ goal, context, plan, step, index, results }), {
+              phase: 'executing',
+              think: false,
+              maxTokens: 1600,
+            });
+          } catch (error) {
+            if (!retryableTaskError(error)) throw error;
+            generationUnavailable = true;
+            usedGenerationRecovery = true;
+            // A temporarily cold or overloaded local model must not invalidate
+            // evidence that earlier steps already gathered. The workflow can
+            // still produce a useful handoff and the normal final synthesis
+            // will refine it whenever Ollama is available.
+            return buildReasonStepFallback({ goal, context, step, results });
+          }
         },
       });
       results.push({ status: 'done', text: compact(result, MAX_STEP_RESULT_CHARS) });
@@ -312,6 +408,7 @@ export async function runAgentTask({
     `Original goal: ${compact(goal)}`,
     'Completed internal work:',
     ...plan.map((step, index) => `\n${index + 1}. ${step.title}\n${results[index]?.text || 'No result.'}`),
+    usedGenerationRecovery ? `\n${RECOVERY_MARKER}` : '',
     `\n${FALLBACK_START}\n${fallback}\n${FALLBACK_END}`,
     '\nFinal response requirement: answer the original goal directly using the completed work. Resolve inconsistencies, preserve source URLs for citations when useful, omit process chatter, and do not mention internal plans or tools.',
   ].join('\n');

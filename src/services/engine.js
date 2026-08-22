@@ -73,9 +73,16 @@ const SEARCH_SIGNALS = [
   /\b(availability|in stock|sold out|shipping|delivery)\b/i,
   /\b(who\s+(makes|manufactures|produces|produced|created|built|developed|owns|founded)|which\s+company|what\s+company|manufacturer|producer|maker|company\s+behind|brand\s+behind|official\s+website)\b/i,
   /\b(law|legal|regulation|regulatory|tax|visa|immigration|medication|drug\s+interaction|dosage|diagnosis|treatment\s+guideline)\b/i,
+  /(?:खोजो|सर्च\s*करो|इंटरनेट|वेब\s*पर|ऑनलाइन|ताज़ा|ताजा|आज|अभी|वर्तमान|नवीनतम|कीमत|मौसम|खबर|समाचार|जाँचो|जांचो)/iu,
+  /\b(?:buscar|busca|internet|en línea|actual|últim[oa]s?|hoy|precio|clima|noticias)\b/iu,
+  /\b(?:rechercher|internet|en ligne|actuel|derni[eè]r|aujourd'hui|prix|météo|actualités)\b/iu,
+  /\b(?:suchen|suche|internet|online|aktuell|neueste|heute|preis|wetter|nachrichten|cerca|cercare|ultimo|oggi|prezzo|meteo|notizie|pesquisa|pesquisar|agora|preço|notícias)\b/iu,
+  /(?:搜索|查找|网上|互联网|最新|今天|价格|天气|新闻|検索|調べて|インターネット|ウェブ|最新|今日|価格|天気|ニュース|검색|찾아|인터넷|최신|오늘|가격|날씨|뉴스)/u,
+  /(?:ابحث|بحث|الإنترنت|الويب|أحدث|اليوم|السعر|الطقس|الأخبار|поиск|найди|интернет|последние|сегодня|цена|погода|новости)/iu,
+  /(?:অনুসন্ধান|খুঁজে|ইন্টারনেট|ওয়েব|সর্বশেষ|আজ|দাম|আবহাওয়া|খবর)/u,
 ];
 
-const FRESH_INFORMATION_SIGNAL = /\b(latest|most recent|newest|current|currently|today|tonight|right now|rn|just announced|breaking|recent|recently|this week|this month|this year|live|real[- ]?time|up[- ]?to[- ]?date|202[5-9]|203\d)\b/i;
+const FRESH_INFORMATION_SIGNAL = /\b(latest|most recent|newest|current|currently|today|tonight|right now|rn|just announced|breaking|recent|recently|this week|this month|this year|live|real[- ]?time|up[- ]?to[- ]?date|202[5-9]|203\d)\b|(?:ताज़ा|ताजा|आज|अभी|वर्तमान|नवीनतम|इस\s+(?:हफ्ते|महीने|साल))|\b(?:actual|últim[oa]s?|hoy|maintenant|actuel|derni[eè]r|aktuell|neueste|heute|ultimo|oggi|agora)\b|(?:最新|今天|今日|최신|오늘|أحدث|اليوم|последние|сегодня|সর্বশেষ|আজ)/iu;
 
 export function needsFreshInformation(text = '') {
   return FRESH_INFORMATION_SIGNAL.test(String(text || ''));
@@ -91,6 +98,10 @@ const RESEARCH_INTENT_SIGNALS = [
   /\b(do\s+some\s+digging|dig\s+(?:into|on|up)|digging\s+(?:into|on)|look\s+(?:into|up)|investigate|research\s+(?:this|that|on|about)|deep\s+dive|background\s+check|find\s+(?:details|info|information)|pull\s+details)\b/i,
   /\b(check\s+(?:what|who)\s+(?:this|that)\s+is|find\s+(?:what|who)\s+(?:this|that)\s+is|verify\s+(?:this|that)|cross[-\s]?check\s+(?:this|that))\b/i,
   /\b(?:find|fetch|gather)\s+(?:me\s+)?(?:more\s+)?(?:info|information|details|background)\b/i,
+  /(?:रिसर्च|शोध|गहराई\s+से|पता\s+लगाओ|जानकारी\s+(?:ढूँढो|ढूंढो)|वेब\s+पर\s+(?:खोजो|देखो)|जाँच\s+पड़ताल|जांच\s+पड़ताल)/iu,
+  /\b(?:investiga|investigar|recherche approfondie|recherch(?:e|er)|pesquisa|pesquisar)\b/iu,
+  /\b(?:recherchieren|untersuchen|ricerca|ricercare|onderzoek|araştır|araştırma)\b/iu,
+  /(?:深入研究|调查|研究一下|詳しく調べ|調査|深掘り|심층\s*조사|조사해|연구해|بحث\s+متعمق|ابحث\s+بعمق|تحقق|исследуй|расследуй|проведи\s+исследование|গভীর\s+গবেষণা|তদন্ত)/iu,
 ];
 
 // Informational intent — user is asking ABOUT a topic. This is the broad

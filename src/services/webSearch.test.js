@@ -2,11 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildEvidenceFallbackAnswer,
+  buildDeepResearchQueries,
   buildSearchRetryQueries,
   cleanSearchEvidenceText,
   isSearchResultRelevant,
   searchWeb,
 } from './webSearch.js';
+
+test('builds bounded deep-research queries for official presence, socials, and reputation', () => {
+  const queries = buildDeepResearchQueries('Research Acme Labs');
+  assert.equal(queries.length, 3);
+  assert.ok(queries.some((query) => /official website.*LinkedIn/i.test(query)));
+  assert.ok(queries.some((query) => /reviews.*complaints.*credibility/i.test(query)));
+});
 
 test('builds simpler fallback queries for empty search results', () => {
   const queries = buildSearchRetryQueries('What is the most expensive yacht in India?');

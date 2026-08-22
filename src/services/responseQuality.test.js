@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assessResponseQuality, humanizeAssistantText, polishAssistantAnswer } from './responseQuality.js';
+import {
+  assessResponseQuality,
+  humanizeAssistantText,
+  polishAssistantAnswer,
+  removeResponseRepetition,
+} from './responseQuality.js';
 
 const yachtSearch = {
   results: [{
@@ -91,4 +96,33 @@ test('removes a redundant grounded summary label and repairs a run-on sources he
     { grounded: true },
   );
   assert.equal(result, 'AlgaeTree captures carbon.\n\n### Sources\n\n- [Article](https://example.com)');
+});
+
+test('removes repeated model-loop paragraphs and their trailing fragment', () => {
+  const repeated = 'Maine project context se samjha hai ki Canact ek social platform hai. Isme profile verification facial biometrics ke through hoti hai.';
+  const result = removeResponseRepetition([
+    'Canact users ko profiles, polls, ratings aur nearby interactions deta hai.',
+    repeated,
+    repeated,
+    repeated,
+    'Maine project context se',
+  ].join('\n\n'));
+
+  assert.equal(
+    result,
+    `Canact users ko profiles, polls, ratings aur nearby interactions deta hai.\n\n${repeated}`,
+  );
+});
+
+test('keeps intentional repetition inside fenced code', () => {
+  const result = removeResponseRepetition([
+    'This explanation is deliberately long enough to be considered for repetition detection.',
+    '```txt\nrepeat me\nrepeat me\n```',
+    'This explanation is deliberately long enough to be considered for repetition detection.',
+  ].join('\n\n'));
+
+  assert.equal(
+    result,
+    'This explanation is deliberately long enough to be considered for repetition detection.\n\n```txt\nrepeat me\nrepeat me\n```',
+  );
 });

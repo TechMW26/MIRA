@@ -1,4 +1,5 @@
 export const config = { maxDuration: 120 };
+import { guardRequest } from './_requestSecurity.js';
 
 const MCP_URL = String(process.env.MIRA_BROWSER_MCP_URL || '').trim();
 const MCP_TOKEN = String(process.env.MIRA_BROWSER_MCP_TOKEN || '').trim();
@@ -27,6 +28,8 @@ function parseMcpResponse(raw = '') {
 }
 
 export async function POST(req) {
+  const guarded = guardRequest(req, { limit: 10, windowMs: 60_000, key: 'browser-mcp' });
+  if (guarded) return guarded;
   if (!MCP_URL) {
     return new Response(JSON.stringify({ error: 'MIRA_BROWSER_MCP_URL is not configured.' }), {
       status: 503,

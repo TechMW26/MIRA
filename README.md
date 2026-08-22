@@ -37,6 +37,7 @@ Use these variables locally in `.env` and in Vercel Project Settings -> Environm
 ```bash
 # Firebase / storage
 VITE_FIREBASE_DATABASE_URL=
+MIRA_AUTH_SECRET=
 BLOB_READ_WRITE_TOKEN=
 
 # Chat server; the model is discovered from /api/tags.
@@ -44,12 +45,14 @@ OLLAMA_API_URL=http://50.35.188.73:20005/api/chat
 # Optional internal override; must match a completion model from /api/tags.
 OLLAMA_CHAT_MODEL=
 OLLAMA_MAX_TOKENS=12000
+# Maximum context; each request uses the smallest sufficient 2K/4K/8K/16K tier.
 OLLAMA_CONTEXT_TOKENS=16384
 OLLAMA_TEMPERATURE=0.2
 OLLAMA_TOP_P=0.85
 OLLAMA_REPEAT_PENALTY=1.05
 OLLAMA_KEEP_ALIVE=-1
 OLLAMA_VISION_KEEP_ALIVE=0
+OLLAMA_CONNECT_TIMEOUT_MS=28000
 OLLAMA_START_TIMEOUT_MS=50000
 
 # Gemini fallback only. Primary vision is discovered from Ollama /api/tags.
@@ -61,9 +64,17 @@ BRAVE_SEARCH_API_KEY=
 GOOGLE_SEARCH_API_KEY=
 GOOGLE_SEARCH_CX=
 
-# Pollinations image/video generation (server-side key)
+# Pollinations image/video generation and desktop coding fallback (server-side key)
 POLLINATIONS_API_KEY=
 POLLINATIONS_VIDEO_MODEL=wan-pro
+
+# DeepSeek desktop coding/workspace completions only.
+# Web chat, voice, search-query planning, and task workflows use Ollama.
+DEEPSEEK_API_URL=https://api.deepseek.com
+DEEPSEEK_AGENT_MODEL=deepseek-v4-pro
+DEEPSEEK_CHAT_MODEL=deepseek-v4-flash
+DEEPSEEK_API_KEY=
+MIRA_DESKTOP_CODING_PROVIDER=deepseek
 ```
 
 ## Deployment (Vercel)
@@ -79,7 +90,7 @@ POLLINATIONS_VIDEO_MODEL=wan-pro
 - **Backend:** Vercel Serverless Functions (Edge Runtime)
 - **Database:** Firebase Realtime Database
 - **Auth:** Custom auth via Firebase RTB (SHA-256 hashed passwords)
-- **AI:** One dynamically discovered Ollama-compatible chat model; Gemini is isolated to image analysis
+- **AI:** DeepSeek Flash for fast chat, dynamically discovered Ollama models as fallback, DeepSeek Pro plus Pollinations for coding workspaces, Pollinations for media generation, and Gemini isolated to image-analysis fallback
 
 ## Internet Search Orchestration
 

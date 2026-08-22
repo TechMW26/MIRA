@@ -13,8 +13,67 @@ import {
   runTransaction,
 } from 'firebase/database';
 import { buildProjectContextTurn } from './projectContext.js';
+import { fetchFirebaseSnapshot } from './firebaseRest.js';
 
 const PROJECT_RUN_LEASE_MS = 6 * 60 * 1000;
+const DATABASE_URL = import.meta.env.VITE_FIREBASE_DATABASE_URL
+  || 'https://mira-3ffa4-default-rtdb.asia-southeast1.firebasedatabase.app';
+
+function readSubscriptionCache(key) {
+  try {
+    const value = JSON.parse(globalThis.localStorage?.getItem(key) || 'null');
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSubscriptionCache(key, value) {
+  try {
+    globalThis.localStorage?.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage is an optional resilience layer; live data remains authoritative.
+  }
+}
+
+function resilientOnValue(reference, onSnapshot, label, fallbackPath = '') {
+  let active = true;
+  let received = false;
+  let recoveryPromise = null;
+  const recover = () => {
+    if (!active || received || recoveryPromise) return;
+    recoveryPromise = (fallbackPath
+      ? fetchFirebaseSnapshot(DATABASE_URL, fallbackPath)
+      : get(reference))
+      .then((snapshot) => {
+        if (active && !received) {
+          received = true;
+          clearTimeout(fallbackTimer);
+          onSnapshot(snapshot);
+        }
+      })
+      .catch((error) => console.warn(`${label} recovery failed:`, error?.message || error))
+      .finally(() => { recoveryPromise = null; });
+  };
+  const fallbackTimer = setTimeout(recover, 2_500);
+  const unsubscribe = onValue(
+    reference,
+    (snapshot) => {
+      received = true;
+      clearTimeout(fallbackTimer);
+      if (active) onSnapshot(snapshot);
+    },
+    (error) => {
+      console.warn(`${label} subscription failed:`, error?.message || error);
+      recover();
+    },
+  );
+  return () => {
+    active = false;
+    clearTimeout(fallbackTimer);
+    unsubscribe();
+  };
+}
 
 function publicUserProfile(uid, profile = {}) {
   return {
@@ -61,15 +120,19 @@ export async function createConversation(uid, title = 'New Chat') {
 }
 
 export function subscribeConversations(uid, callback) {
-  const convRef = query(ref(db, `conversations/${uid}`), orderByChild('updatedAt'));
-  onValue(convRef, (snap) => {
+  const cacheKey = `mira-conversations-${uid}`;
+  const cached = readSubscriptionCache(cacheKey);
+  if (cached.length) callback(cached);
+  const convRef = ref(db, `conversations/${uid}`);
+  return resilientOnValue(convRef, (snap) => {
     const convs = [];
     snap.forEach((child) => {
       convs.push({ id: child.key, ...child.val() });
     });
-    callback(convs.reverse());
-  });
-  return () => off(convRef);
+    convs.sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0));
+    writeSubscriptionCache(cacheKey, convs);
+    callback(convs);
+  }, 'Conversation', `conversations/${uid}`);
 }
 
 export async function updateConversation(uid, convId, data) {
@@ -89,26 +152,26 @@ export async function updateConversationTitle(uid, convId, title) {
 export async function deleteConversation(uid, convId) {
   try {
     const messagesSnap = await get(ref(db, `messages/${convId}`));
-    const pathnames = [];
+    const mediaItems = [];
     if (messagesSnap.exists()) {
       messagesSnap.forEach((child) => {
         const message = child.val() || {};
         const images = Array.isArray(message?.generatedMedia?.images) ? message.generatedMedia.images : [];
         for (const image of images) {
           const pathname = String(image?.pathname || '').trim();
-          if (pathname) pathnames.push(pathname);
+          if (pathname) mediaItems.push({ pathname, deleteToken: String(image?.deleteToken || '') });
         }
       });
     }
 
-    if (pathnames.length > 0) {
+    if (mediaItems.length > 0) {
       await fetch('/api/media', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'delete',
           userId: uid,
-          pathnames: [...new Set(pathnames)],
+          items: Array.from(new Map(mediaItems.map((item) => [item.pathname, item])).values()),
         }),
       });
     }
@@ -310,6 +373,9 @@ export async function createProject(uid, name, description = '') {
 }
 
 export function subscribeProjects(uid, callback) {
+  const cacheKey = `mira-projects-${uid}`;
+  const cached = readSubscriptionCache(cacheKey);
+  if (cached.length) callback(cached);
   const projRef = ref(db, `projects/${uid}`);
   const accessRef = ref(db, `userProjectAccess/${uid}`);
   let owned = [];
@@ -333,19 +399,21 @@ export function subscribeProjects(uid, callback) {
         isOwner: project.ownerUid === uid,
       });
     });
-    callback([...projects.values()].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)));
+    const next = [...projects.values()].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+    writeSubscriptionCache(cacheKey, next);
+    callback(next);
   };
 
-  onValue(projRef, (snap) => {
+  const unsubscribeOwned = resilientOnValue(projRef, (snap) => {
     const projects = [];
     snap.forEach((child) => {
       projects.push({ id: child.key, ...child.val() });
     });
     owned = projects;
     emit();
-  });
+  }, 'Project', `projects/${uid}`);
 
-  onValue(accessRef, (snap) => {
+  const unsubscribeAccess = resilientOnValue(accessRef, (snap) => {
     const nextIds = new Set();
     snap.forEach((child) => nextIds.add(child.key));
     sharedUnsubs.forEach((unsubscribe, projectId) => {
@@ -358,19 +426,19 @@ export function subscribeProjects(uid, callback) {
     nextIds.forEach((projectId) => {
       if (sharedUnsubs.has(projectId)) return;
       const sharedRef = ref(db, `sharedProjects/${projectId}`);
-      const unsubscribe = onValue(sharedRef, (projectSnap) => {
+      const unsubscribe = resilientOnValue(sharedRef, (projectSnap) => {
         if (projectSnap.exists()) shared.set(projectId, projectSnap.val());
         else shared.delete(projectId);
         emit();
-      });
+      }, 'Shared project', `sharedProjects/${projectId}`);
       sharedUnsubs.set(projectId, unsubscribe);
     });
     emit();
-  });
+  }, 'Project access', `userProjectAccess/${uid}`);
 
   return () => {
-    off(projRef);
-    off(accessRef);
+    unsubscribeOwned();
+    unsubscribeAccess();
     sharedUnsubs.forEach((unsubscribe) => unsubscribe());
   };
 }
@@ -414,7 +482,7 @@ export async function inviteProjectMember(ownerUid, projectId, email) {
   if (!invited) throw new Error('No existing MIRA account uses that email.');
 
   const project = await ensureSharedProject(ownerUid, projectId);
-  if (project.ownerUid !== ownerUid) throw new Error('Only the project owner can invite collaborators.');
+  if (project.ownerUid !== ownerUid) throw new Error('Only the project owner can Invite.');
   if (invited.uid === ownerUid) throw new Error('You already own this project.');
   if (project.members?.[invited.uid]) throw new Error('That account already has access.');
 
@@ -651,6 +719,75 @@ export async function updateProject(uid, projectId, data) {
     update(ref(db, `projects/${ownerUid}/${projectId}`), next),
     update(ref(db, `sharedProjects/${projectId}`), next),
   ]);
+}
+
+async function requireProjectAccess(uid, projectId) {
+  const access = await get(ref(db, `userProjectAccess/${uid}/${projectId}`));
+  const ownerUid = access.val()?.ownerUid || uid;
+  const project = await ensureSharedProject(ownerUid, projectId);
+  if (project.ownerUid !== uid && !project.members?.[uid]) {
+    throw new Error('You do not have access to this project.');
+  }
+  return project;
+}
+
+export async function updateProjectInstructions(uid, projectId, instructions) {
+  const project = await requireProjectAccess(uid, projectId);
+  if (project.ownerUid !== uid) throw new Error('Only the project owner can change project instructions.');
+  const value = String(instructions || '').replace(/\u0000/g, '').trim().slice(0, 12000);
+  const now = Date.now();
+  await update(ref(db), {
+    [`projects/${project.ownerUid}/${projectId}/instructions`]: value || null,
+    [`projects/${project.ownerUid}/${projectId}/updatedAt`]: now,
+    [`sharedProjects/${projectId}/instructions`]: value || null,
+    [`sharedProjects/${projectId}/updatedAt`]: now,
+    [`projectContexts/${projectId}/projectProfile/instructions`]: value || null,
+    [`projectContexts/${projectId}/projectProfile/updatedAt`]: now,
+  });
+}
+
+export async function addProjectReferenceDocument(uid, projectId, document) {
+  const project = await requireProjectAccess(uid, projectId);
+  const documentId = push(ref(db, `projectContexts/${projectId}/projectProfile/documents`)).key;
+  const name = String(document?.name || 'Untitled document').trim().slice(0, 240);
+  const type = String(document?.type || '').trim().slice(0, 160);
+  const summary = String(document?.text || '')
+    .replace(/\u0000/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 16000);
+  if (!summary) throw new Error(`No readable text was found in ${name}.`);
+  const now = Date.now();
+  const uploadedBy = publicUserProfile(uid, await getUserProfile(uid) || {});
+  const metadata = { id: documentId, name, type, size: Number(document?.size || 0), uploadedAt: now, uploadedBy };
+  await update(ref(db), {
+    [`projects/${project.ownerUid}/${projectId}/referenceDocuments/${documentId}`]: metadata,
+    [`projects/${project.ownerUid}/${projectId}/updatedAt`]: now,
+    [`sharedProjects/${projectId}/referenceDocuments/${documentId}`]: metadata,
+    [`sharedProjects/${projectId}/updatedAt`]: now,
+    [`projectContexts/${projectId}/projectProfile/documents/${documentId}`]: { ...metadata, summary },
+    [`projectContexts/${projectId}/projectProfile/updatedAt`]: now,
+  });
+  return metadata;
+}
+
+export async function removeProjectReferenceDocument(uid, projectId, documentId) {
+  const project = await requireProjectAccess(uid, projectId);
+  const documentSnap = await get(ref(db, `sharedProjects/${projectId}/referenceDocuments/${documentId}`));
+  if (!documentSnap.exists()) return;
+  const uploaderUid = documentSnap.val()?.uploadedBy?.uid;
+  if (project.ownerUid !== uid && uploaderUid !== uid) {
+    throw new Error('Only the project owner or uploader can remove this document.');
+  }
+  const now = Date.now();
+  await update(ref(db), {
+    [`projects/${project.ownerUid}/${projectId}/referenceDocuments/${documentId}`]: null,
+    [`projects/${project.ownerUid}/${projectId}/updatedAt`]: now,
+    [`sharedProjects/${projectId}/referenceDocuments/${documentId}`]: null,
+    [`sharedProjects/${projectId}/updatedAt`]: now,
+    [`projectContexts/${projectId}/projectProfile/documents/${documentId}`]: null,
+    [`projectContexts/${projectId}/projectProfile/updatedAt`]: now,
+  });
 }
 
 export async function updateProjectConversation(projectId, convId, data) {

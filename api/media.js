@@ -1,4 +1,6 @@
 import { put, del } from '@vercel/blob';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { guardRequest } from './_requestSecurity.js';
 
 const RETENTION_DAYS = 30;
 const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
@@ -38,6 +40,24 @@ function buildImagePath({ userId, conversationId, messageId }) {
   const cid = safeId(conversationId) || 'chat';
   const mid = safeId(messageId) || 'msg';
   return `generated/${uid}/${cid}/${ts}-${mid}.jpg`;
+}
+
+function mediaSigningSecret() {
+  return String(process.env.MIRA_MEDIA_SIGNING_SECRET || process.env.BLOB_READ_WRITE_TOKEN || '').trim();
+}
+
+export function signMediaPath(pathname) {
+  const secret = mediaSigningSecret();
+  if (!secret || !pathname) return '';
+  return createHmac('sha256', secret).update(String(pathname)).digest('base64url');
+}
+
+export function verifyMediaPath(pathname, token) {
+  const expected = signMediaPath(pathname);
+  if (!expected || !token) return false;
+  const left = Buffer.from(expected);
+  const right = Buffer.from(String(token));
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 async function fetchGeneratedImage(req, {
@@ -117,6 +137,7 @@ async function handlePersistImage(req, body) {
   });
 
   const expiresAt = Date.now() + RETENTION_MS;
+  const deleteToken = signMediaPath(pathname);
   return json({
     image: {
       url: blob.url,
@@ -129,6 +150,7 @@ async function handlePersistImage(req, body) {
       createdAt: Date.now(),
       expiresAt,
       mode,
+      ...(deleteToken ? { deleteToken } : {}),
       ...(referenceImage ? { referenceImage } : {}),
     },
   });
@@ -136,13 +158,16 @@ async function handlePersistImage(req, body) {
 
 async function handleDelete(body) {
   const userId = safeId(body?.userId || '');
-  const items = Array.isArray(body?.pathnames) ? body.pathnames : [];
+  const items = Array.isArray(body?.items)
+    ? body.items
+    : (Array.isArray(body?.pathnames) ? body.pathnames.map((pathname) => ({ pathname })) : []);
   if (!userId || items.length === 0) return json({ deleted: 0 });
 
   const ownPrefix = `generated/${userId}/`;
   const toDelete = items
-    .map((value) => String(value || ''))
-    .filter((value) => value.startsWith(ownPrefix));
+    .map((value) => ({ pathname: String(value?.pathname || ''), token: String(value?.deleteToken || value?.token || '') }))
+    .filter((value) => value.pathname.startsWith(ownPrefix) && verifyMediaPath(value.pathname, value.token))
+    .map((value) => value.pathname);
 
   if (toDelete.length === 0) return json({ deleted: 0 });
 
@@ -151,6 +176,8 @@ async function handleDelete(body) {
 }
 
 export async function POST(req) {
+  const guarded = guardRequest(req, { limit: 16, windowMs: 60_000, key: 'media' });
+  if (guarded) return guarded;
   try {
     const body = await req.json();
     const action = String(body?.action || '').trim();

@@ -1,0 +1,17 @@
+node_modules
+release
+dist
+dev-dist
+/desktop
+/Mira-Logo.png
+MIRA-macOS-arm64.dmg
+MIRA-macOS-arm64.zip
+MIRA-Windows-x64-Setup.exe
+MIRA-Windows-x64-Portable.exe
+MIRA-macOS-arm64-*.dmg
+MIRA-macOS-arm64-*.zip
+MIRA-Windows-x64-Setup-*.exe
+MIRA-Windows-x64-Portable-*.exe
+/MIRA-*-macOS-*.dmg
+/MIRA-*-macOS-*.zip
+/MIRA-*-Windows.exe

@@ -1,26 +1,395 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
-const { execFile } = require('node:child_process');
+const {
+  app,
+  BrowserWindow,
+  desktopCapturer,
+  dialog,
+  ipcMain,
+  Notification,
+  safeStorage,
+  screen,
+  session,
+  shell,
+  systemPreferences,
+} = require('electron');
+
+// Electron uses hardware acceleration by default. Keep rasterization and
+// texture uploads on the GPU for MIRA's animated transparent desktop surfaces
+// without bypassing Chromium's safety blocklist on unsupported hardware.
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-zero-copy');
+const { execFile, spawn } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { promisify } = require('node:util');
+const { sendToWindow } = require('./windowMessaging.cjs');
+const {
+  requestDeepSeekChat,
+  requestDeepSeekCompletion,
+  validateDeepSeekKey,
+} = require('./aiProviders.cjs');
 
 const execFileAsync = promisify(execFile);
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+const MAX_PREVIEW_BYTES = 40 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 const PRODUCTION_APP_URL = 'https://www.itsmira.cloud';
+const TRUSTED_PRODUCTION_ORIGINS = new Set([
+  'https://www.itsmira.cloud',
+  'https://itsmira.cloud',
+]);
+const PERMISSION_BRIDGE_VERSION = 13;
+const COMPANION_COLLAPSED_SIZE = Object.freeze({ width: 124, height: 124 });
+const COMPANION_EXPANDED_SIZE = Object.freeze({ width: 390, height: 540 });
+const WORKSPACE_MEMORY_DIRECTORY = '.mira';
+const WORKSPACE_INSTRUCTIONS_FILE = 'MIRA.md';
+const WORKSPACE_HISTORY_FILE = 'history.mira';
+const WORKSPACE_LEGACY_HISTORY_FILE = 'history.jsonl';
+const MAX_WORKSPACE_MEMORY_BYTES = 2 * 1024 * 1024;
+const MAX_WORKSPACE_MEMORY_EVENTS = 500;
 const DESKTOP_CAPABILITIES = Object.freeze([
   'filesystem.read',
   'filesystem.list',
   'filesystem.write',
+  'filesystem.replace',
   'filesystem.search',
+  'filesystem.preview',
+  'workspace.index',
+  'workspace.search',
+  'workspace.validate',
+  'workspace.start',
   'shell.run',
+  'shell.cancel',
   'test.run',
   'git.status',
   'git.diff',
+  'git.info',
+  'git.pull',
+  'git.push',
+  'git.commit',
+  'git.remote.set',
+  'change.list',
+  'change.undo',
+  'change.redo',
+  'approval.status',
+  'approval.set',
 ]);
 
 let workspaceRoot = '';
+let desktopEnvironmentPromise = null;
+let workspaceCommandTrust = false;
+let workspaceVectorIndex = null;
+let workspaceMemoryWriteQueue = Promise.resolve();
+const appliedChanges = [];
+const undoneChanges = [];
+const runningProcesses = new Map();
+let mainWindow = null;
+let companionWindow = null;
+let companionExpanded = false;
+let deepSeekStorageError = '';
+
+function workspaceStatePath() {
+  return path.join(app.getPath('userData'), 'workspace-state.json');
+}
+
+function providerSecretsPath() {
+  return path.join(app.getPath('userData'), 'provider-secrets.json');
+}
+
+function normalizeProviderKey(value) {
+  return String(value || '').trim().replace(/^['"]|['"]$/g, '').replace(/\s+/g, '');
+}
+
+async function readDevelopmentProviderKey() {
+  if (app.isPackaged) return '';
+  for (const filename of ['.env.local', '.env']) {
+    try {
+      const source = await fs.readFile(path.join(__dirname, '..', filename), 'utf8');
+      const line = source.split(/\r?\n/).find((entry) => /^\s*DEEPSEEK_API_KEY\s*=/.test(entry));
+      if (line) return normalizeProviderKey(line.slice(line.indexOf('=') + 1));
+    } catch {
+      // Local environment files are optional.
+    }
+  }
+  return '';
+}
+
+async function readStoredDeepSeekKey() {
+  if (!safeStorage.isEncryptionAvailable()) {
+    deepSeekStorageError = 'secure_storage_unavailable';
+    return '';
+  }
+  try {
+    const stored = JSON.parse(await fs.readFile(providerSecretsPath(), 'utf8'));
+    if (!stored?.deepseek) {
+      deepSeekStorageError = '';
+      return '';
+    }
+    const key = normalizeProviderKey(safeStorage.decryptString(Buffer.from(stored.deepseek, 'base64')));
+    deepSeekStorageError = '';
+    return key;
+  } catch (error) {
+    deepSeekStorageError = error?.code === 'ENOENT' ? '' : 'stored_credential_unreadable';
+    return '';
+  }
+}
+
+function providerReconnectError() {
+  const error = new Error('Reconnect the DeepSeek coding provider under System access.');
+  error.code = 'provider_reconnect_required';
+  return error;
+}
+
+async function getDeepSeekKey() {
+  return normalizeProviderKey(process.env.DEEPSEEK_API_KEY)
+    || await readDevelopmentProviderKey()
+    || await readStoredDeepSeekKey();
+}
+
+async function writeStoredDeepSeekKey(key) {
+  await fs.mkdir(path.dirname(providerSecretsPath()), { recursive: true });
+  await fs.writeFile(providerSecretsPath(), JSON.stringify({
+    deepseek: safeStorage.encryptString(key).toString('base64'),
+  }), { encoding: 'utf8', mode: 0o600 });
+  deepSeekStorageError = '';
+}
+
+async function saveDeepSeekKey(value) {
+  const key = normalizeProviderKey(value);
+  if (!key) throw new Error('Enter a DeepSeek API key.');
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure credential storage is unavailable on this system.');
+  }
+  await validateDeepSeekKey(key);
+  await writeStoredDeepSeekKey(key);
+}
+
+async function persistEnvironmentProviderKey() {
+  if (!safeStorage.isEncryptionAvailable() || await readStoredDeepSeekKey()) return;
+  const environmentKey = normalizeProviderKey(process.env.DEEPSEEK_API_KEY);
+  const key = environmentKey || (!app.isPackaged ? await readDevelopmentProviderKey() : '');
+  if (!key) return;
+  await validateDeepSeekKey(key);
+  await writeStoredDeepSeekKey(key);
+}
+
+async function getProviderStatus() {
+  const environmentKey = normalizeProviderKey(process.env.DEEPSEEK_API_KEY) || await readDevelopmentProviderKey();
+  const storedKey = environmentKey ? '' : await readStoredDeepSeekKey();
+  return {
+    deepseekConfigured: Boolean(environmentKey || storedKey),
+    deepseekNeedsReconnect: !environmentKey && deepSeekStorageError === 'stored_credential_unreadable',
+    deepseekModel: process.env.DEEPSEEK_AGENT_MODEL || 'deepseek-v4-pro',
+    source: environmentKey ? 'environment' : storedKey ? 'secure-storage' : 'none',
+  };
+}
+
+function desktopAssistPrompt(task, body = {}) {
+  if (task === 'commit') {
+    return `Write one conventional, imperative Git commit subject under 72 characters. Return only the subject.\n\nGit status:\n${String(body.status || '').slice(0, 4_000)}\n\nDiff:\n${String(body.diff || '').slice(0, 24_000)}`;
+  }
+  if (task === 'github-comment') {
+    return `Write a concise GitHub pull-request or review summary with a short heading, key changes, and validation. Return markdown only.\n\nGit status:\n${String(body.status || '').slice(0, 4_000)}\n\nDiff:\n${String(body.diff || '').slice(0, 24_000)}`;
+  }
+  if (task === 'workspace-synthesis') {
+    return `Answer the workspace request from the supplied local evidence. Be direct and factual. Never mention internal tools, routing, or provider failures.\n\nUser request:\n${String(body.request || '').slice(0, 4_000)}\n\nLocal workspace evidence:\n${String(body.evidence || '').slice(0, 90_000)}`;
+  }
+  throw new Error('Unsupported desktop code-assistance task.');
+}
+
+async function runDesktopCodeAssist(body = {}) {
+  const key = await getDeepSeekKey();
+  if (!key) {
+    if (deepSeekStorageError === 'stored_credential_unreadable') throw providerReconnectError();
+    throw new Error('Configure the DeepSeek coding provider under System access.');
+  }
+  const task = String(body.task || 'completion');
+  if (task === 'completion') {
+    const suggestion = await requestDeepSeekCompletion({
+      apiKey: key,
+      prefix: String(body.prefix || '').slice(-80_000),
+      suffix: String(body.suffix || '').slice(0, 30_000),
+      maxTokens: 320,
+    });
+    if (!suggestion) throw new Error('The coding provider returned no completion.');
+    return { suggestion };
+  }
+  const result = await requestDeepSeekChat({
+    apiKey: key,
+    systemPrompt: 'You are MIRA’s desktop coding assistant. Return only the requested result and never expose credentials.',
+    messages: [{ role: 'user', content: desktopAssistPrompt(task, body) }],
+    maxTokens: task === 'commit' ? 120 : task === 'github-comment' ? 600 : 2_000,
+    think: task === 'workspace-synthesis',
+    tools: [],
+  });
+  if (!result.answer) throw new Error('The coding provider returned no result.');
+  return { suggestion: result.answer };
+}
+
+async function rememberWorkspace(root) {
+  await fs.mkdir(path.dirname(workspaceStatePath()), { recursive: true });
+  await fs.writeFile(workspaceStatePath(), JSON.stringify({ root }), 'utf8');
+}
+
+async function restoreWorkspace() {
+  try {
+    const stored = JSON.parse(await fs.readFile(workspaceStatePath(), 'utf8'));
+    const root = await fs.realpath(String(stored?.root || ''));
+    const stat = await fs.stat(root);
+    if (stat.isDirectory()) {
+      workspaceRoot = root;
+      workspaceCommandTrust = true;
+    }
+  } catch {
+    workspaceRoot = '';
+  }
+}
+
+function mediaAccessStatus(mediaType) {
+  try {
+    return systemPreferences.getMediaAccessStatus(mediaType);
+  } catch {
+    return 'unknown';
+  }
+}
+
+function notificationAccessStatus() {
+  if (!Notification.isSupported()) return 'unavailable';
+  if (process.platform !== 'darwin' || typeof systemPreferences.getNotificationSettings !== 'function') {
+    return 'granted';
+  }
+  try {
+    const status = systemPreferences.getNotificationSettings()?.authorizationStatus;
+    if (['authorized', 'provisional', 'ephemeral'].includes(status)) return 'granted';
+    if (status === 'denied') return 'denied';
+    return status || 'not-determined';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function getSystemPermissionStatus() {
+  if (process.platform === 'darwin') {
+    return {
+      available: true,
+      bridgeVersion: PERMISSION_BRIDGE_VERSION,
+      platform: 'darwin',
+      accessibility: systemPreferences.isTrustedAccessibilityClient(false),
+      fullDiskAccess: 'managed-in-system-settings',
+      screenCapture: mediaAccessStatus('screen'),
+      camera: mediaAccessStatus('camera'),
+      microphone: mediaAccessStatus('microphone'),
+      location: 'managed-by-web-permission',
+      notifications: notificationAccessStatus(),
+    };
+  }
+  return {
+    available: true,
+    bridgeVersion: PERMISSION_BRIDGE_VERSION,
+    platform: process.platform,
+    accessibility: 'not-required',
+    fullDiskAccess: process.platform === 'win32' ? 'managed-in-system-settings' : 'not-required',
+    screenCapture: process.platform === 'win32' ? 'granted' : 'not-required',
+    camera: process.platform === 'win32' ? mediaAccessStatus('camera') : 'available',
+    microphone: process.platform === 'win32' ? mediaAccessStatus('microphone') : 'available',
+    location: process.platform === 'win32' ? 'managed-by-web-permission' : 'not-required',
+    notifications: notificationAccessStatus(),
+  };
+}
+
+async function requestSystemPermission(permission) {
+  if (permission === 'notifications') {
+    if (!Notification.isSupported()) return getSystemPermissionStatus();
+    if (notificationAccessStatus() !== 'granted') {
+      new Notification({
+        title: 'MIRA',
+        body: 'Notifications are ready. MIRA will let you know when an answer is complete.',
+        silent: true,
+      }).show();
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+    return getSystemPermissionStatus();
+  }
+
+  if (permission === 'accessibility') {
+    if (process.platform !== 'darwin') return getSystemPermissionStatus();
+    const trusted = systemPreferences.isTrustedAccessibilityClient(true);
+    if (!trusted) {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+    }
+    return { ...getSystemPermissionStatus(), settingsOpened: !trusted };
+  }
+
+  if (permission === 'full-disk-access') {
+    if (process.platform === 'darwin') {
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles');
+    } else if (process.platform === 'win32') {
+      await shell.openExternal('ms-settings:privacy-broadfilesystemaccess');
+    }
+    return getSystemPermissionStatus();
+  }
+
+  if (permission === 'camera' || permission === 'microphone') {
+    if (process.platform === 'darwin') {
+      const allowed = await systemPreferences.askForMediaAccess(permission);
+      if (!allowed) {
+        const pane = permission === 'camera' ? 'Privacy_Camera' : 'Privacy_Microphone';
+        await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
+        return { ...getSystemPermissionStatus(), settingsOpened: true };
+      }
+    } else if (process.platform === 'win32') {
+      await shell.openExternal(`ms-settings:privacy-${permission === 'camera' ? 'webcam' : 'microphone'}`);
+      return { ...getSystemPermissionStatus(), settingsOpened: true };
+    }
+    return getSystemPermissionStatus();
+  }
+
+  if (permission === 'screen-capture') {
+    if (process.platform === 'darwin') {
+      try {
+        await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 1, height: 1 },
+          fetchWindowIcons: false,
+        });
+      } catch {}
+      const granted = mediaAccessStatus('screen') === 'granted';
+      if (!granted) await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+      return { ...getSystemPermissionStatus(), settingsOpened: !granted };
+    } else if (process.platform === 'win32') {
+      return getSystemPermissionStatus();
+    }
+    return getSystemPermissionStatus();
+  }
+
+  if (permission === 'location') {
+    if (process.platform === 'darwin') {
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices');
+    } else if (process.platform === 'win32') {
+      await shell.openExternal('ms-settings:privacy-location');
+    }
+    return { ...getSystemPermissionStatus(), settingsOpened: true };
+  }
+
+  throw new Error('Unsupported system permission request.');
+}
+
+function sanitizeNotificationText(value, maxLength) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+function showMiraNotification(payload = {}) {
+  if (!Notification.isSupported()) return { shown: false, reason: 'unsupported' };
+  const title = sanitizeNotificationText(payload.title, 80) || 'MIRA';
+  const body = sanitizeNotificationText(payload.body, 360);
+  if (!body) return { shown: false, reason: 'empty' };
+  const notification = new Notification({ title, body, silent: Boolean(payload.silent) });
+  notification.once('click', () => openMainWindow());
+  notification.show();
+  return { shown: true };
+}
 
 function safeEnvironment() {
   const allowed = {};
@@ -29,6 +398,27 @@ function safeEnvironment() {
     allowed[key] = value;
   }
   return allowed;
+}
+
+async function desktopEnvironment() {
+  if (desktopEnvironmentPromise) return desktopEnvironmentPromise;
+  desktopEnvironmentPromise = (async () => {
+    const environment = safeEnvironment();
+    if (process.platform !== 'darwin') return environment;
+    try {
+      const result = await execFileAsync('/bin/zsh', ['-ilc', 'printf %s "$PATH"'], {
+        env: environment,
+        encoding: 'utf8',
+        timeout: 10_000,
+        maxBuffer: 64 * 1024,
+      });
+      const loginPath = String(result.stdout || '').trim();
+      return loginPath ? { ...environment, PATH: loginPath } : environment;
+    } catch {
+      return environment;
+    }
+  })();
+  return desktopEnvironmentPromise;
 }
 
 function isInside(root, target) {
@@ -44,7 +434,182 @@ async function ensureWorkspace(window) {
   });
   if (result.canceled || !result.filePaths[0]) throw new Error('No workspace was selected.');
   workspaceRoot = await fs.realpath(result.filePaths[0]);
+  // Selecting a workspace is the explicit trust boundary for this app
+  // session. In-workspace edits and non-destructive commands should not keep
+  // interrupting an agent run with identical approval prompts.
+  workspaceCommandTrust = true;
+  await rememberWorkspace(workspaceRoot);
   return workspaceRoot;
+}
+
+function workspaceMemoryPaths(root = workspaceRoot) {
+  const directory = path.join(root, WORKSPACE_MEMORY_DIRECTORY);
+  return {
+    directory,
+    instructions: path.join(directory, WORKSPACE_INSTRUCTIONS_FILE),
+    history: path.join(directory, WORKSPACE_HISTORY_FILE),
+    legacyHistory: path.join(directory, WORKSPACE_LEGACY_HISTORY_FILE),
+    gitignore: path.join(directory, '.gitignore'),
+  };
+}
+
+async function ensureWorkspaceMemory(root = workspaceRoot) {
+  if (!root) return null;
+  const paths = workspaceMemoryPaths(root);
+  await fs.mkdir(paths.directory, { recursive: true, mode: 0o700 });
+  await fs.chmod(paths.directory, 0o700).catch(() => {});
+  try {
+    await fs.access(paths.instructions);
+  } catch {
+    await fs.writeFile(paths.instructions, [
+      '# MIRA workspace context',
+      '',
+      'Add durable project instructions, conventions, decisions, and constraints below.',
+      'MIRA reads this file whenever this workspace is opened.',
+      '',
+      '## Instructions',
+      '',
+      '- Preserve existing project conventions.',
+      '',
+    ].join('\n'), 'utf8');
+  }
+  try {
+    await fs.access(paths.gitignore);
+  } catch {
+    await fs.writeFile(
+      paths.gitignore,
+      `${WORKSPACE_HISTORY_FILE}\n${WORKSPACE_LEGACY_HISTORY_FILE}\n`,
+      { encoding: 'utf8', mode: 0o600 },
+    );
+  }
+  return paths;
+}
+
+async function readLegacyWorkspaceEvents(historyPath) {
+  try {
+    const stat = await fs.stat(historyPath);
+    if (!stat.isFile() || stat.size === 0) return [];
+    const bytes = Math.min(stat.size, MAX_WORKSPACE_MEMORY_BYTES);
+    const handle = await fs.open(historyPath, 'r');
+    const buffer = Buffer.alloc(bytes);
+    try {
+      await handle.read(buffer, 0, bytes, stat.size - bytes);
+    } finally {
+      await handle.close();
+    }
+    const source = buffer.toString('utf8');
+    const lines = source.split('\n');
+    if (stat.size > bytes) lines.shift();
+    return lines
+      .filter(Boolean)
+      .slice(-120)
+      .map((line) => {
+        try { return JSON.parse(line); } catch { return null; }
+      })
+      .filter(Boolean);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+function encryptWorkspaceEvents(events) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure workspace history storage is unavailable on this system.');
+  }
+  const source = JSON.stringify({ version: 1, events });
+  return JSON.stringify({
+    version: 1,
+    cipher: 'electron-safe-storage',
+    payload: safeStorage.encryptString(source).toString('base64'),
+  });
+}
+
+function decryptWorkspaceEvents(source) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure workspace history storage is unavailable on this system.');
+  }
+  const envelope = JSON.parse(String(source || ''));
+  if (envelope?.cipher !== 'electron-safe-storage' || !envelope?.payload) {
+    throw new Error('The MIRA workspace history file is invalid.');
+  }
+  const decoded = safeStorage.decryptString(Buffer.from(envelope.payload, 'base64'));
+  const parsed = JSON.parse(decoded);
+  return Array.isArray(parsed?.events) ? parsed.events.filter(Boolean) : [];
+}
+
+async function writeWorkspaceEvents(paths, inputEvents) {
+  let events = (Array.isArray(inputEvents) ? inputEvents : [])
+    .filter(Boolean)
+    .slice(-MAX_WORKSPACE_MEMORY_EVENTS);
+  let encrypted = encryptWorkspaceEvents(events);
+  while (Buffer.byteLength(encrypted) > MAX_WORKSPACE_MEMORY_BYTES && events.length > 1) {
+    events = events.slice(Math.max(1, Math.floor(events.length / 8)));
+    encrypted = encryptWorkspaceEvents(events);
+  }
+  const temporary = `${paths.history}.${process.pid}.tmp`;
+  await fs.writeFile(temporary, encrypted, { encoding: 'utf8', mode: 0o600 });
+  await fs.rename(temporary, paths.history);
+  await fs.chmod(paths.history, 0o600).catch(() => {});
+  return events;
+}
+
+async function readRecentWorkspaceEvents(paths) {
+  try {
+    const source = await fs.readFile(paths.history, 'utf8');
+    return decryptWorkspaceEvents(source).slice(-120);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+
+  const legacyEvents = await readLegacyWorkspaceEvents(paths.legacyHistory);
+  if (!legacyEvents.length) return [];
+  await writeWorkspaceEvents(paths, legacyEvents);
+  await fs.unlink(paths.legacyHistory).catch(() => {});
+  return legacyEvents.slice(-120);
+}
+
+async function getWorkspaceMemory() {
+  const paths = await ensureWorkspaceMemory();
+  if (!paths) return null;
+  const [instructions, events] = await Promise.all([
+    fs.readFile(paths.instructions, 'utf8'),
+    readRecentWorkspaceEvents(paths),
+  ]);
+  return {
+    workspace: workspaceRoot,
+    instructions,
+    events,
+    files: {
+      instructions: `${WORKSPACE_MEMORY_DIRECTORY}/${WORKSPACE_INSTRUCTIONS_FILE}`,
+      history: `${WORKSPACE_MEMORY_DIRECTORY}/${WORKSPACE_HISTORY_FILE}`,
+    },
+  };
+}
+
+function cleanWorkspaceMemoryText(value, limit = 24_000) {
+  return String(value || '').replace(/\u0000/g, '').slice(0, limit);
+}
+
+async function appendWorkspaceEventNow(event, targetWorkspace) {
+  const paths = await ensureWorkspaceMemory(targetWorkspace);
+  if (!paths) return;
+  const payload = {
+    ...event,
+    at: Number(event?.at) || Date.now(),
+  };
+  if (payload.user != null) payload.user = cleanWorkspaceMemoryText(payload.user);
+  if (payload.assistant != null) payload.assistant = cleanWorkspaceMemoryText(payload.assistant, 48_000);
+  if (payload.path != null) payload.path = cleanWorkspaceMemoryText(payload.path, 2_000);
+  const events = await readRecentWorkspaceEvents(paths);
+  await writeWorkspaceEvents(paths, [...events, payload]);
+}
+
+function appendWorkspaceEvent(event) {
+  const targetWorkspace = workspaceRoot;
+  const operation = workspaceMemoryWriteQueue.then(() => appendWorkspaceEventNow(event, targetWorkspace));
+  workspaceMemoryWriteQueue = operation.catch(() => {});
+  return operation;
 }
 
 async function resolveWorkspacePath(window, input = '.') {
@@ -100,34 +665,652 @@ function looksDestructive(command, args) {
     || /git\s+(reset\s+--hard|clean\s+-|push\s+.*--force)/.test(preview);
 }
 
-async function approve(window, title, detail, destructive = false) {
+function isAllowedLocalPreviewUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return ['http:', 'https:'].includes(url.protocol)
+      && ['localhost', '127.0.0.1', '0.0.0.0', '::1'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function approve(window, title, detail, destructive = false, allowWorkspaceSession = false) {
+  const buttons = allowWorkspaceSession && !destructive
+    ? ['Cancel', 'Allow once', 'Allow for workspace session']
+    : ['Cancel', 'Allow once'];
   const result = await dialog.showMessageBox(window, {
     type: destructive ? 'warning' : 'question',
     title,
     message: destructive ? 'MIRA is requesting a potentially destructive operation.' : 'MIRA is requesting permission.',
     detail,
-    buttons: ['Cancel', 'Allow once'],
-    defaultId: 0,
+    buttons,
+    defaultId: 1,
     cancelId: 0,
     noLink: true,
   });
-  if (result.response !== 1) throw new Error('The operation was not approved.');
+  if (result.response === 0) throw new Error('The operation was not approved.');
+  return result.response === 2 ? 'workspace-session' : 'once';
+}
+
+const INDEXABLE_EXTENSIONS = new Set([
+  '.c', '.cc', '.cpp', '.cs', '.css', '.go', '.h', '.hpp', '.html', '.java', '.js', '.jsx',
+  '.json', '.kt', '.kts', '.md', '.mjs', '.cjs', '.php', '.py', '.rb', '.rs', '.scss',
+  '.sh', '.sql', '.svelte', '.swift', '.toml', '.ts', '.tsx', '.txt', '.vue', '.xml',
+  '.yaml', '.yml',
+]);
+const INDEX_IGNORED_DIRECTORIES = new Set([
+  '.git', '.next', '.nuxt', '.output', '.turbo', '.vercel', 'build', 'coverage', 'dist',
+  'node_modules', 'release', 'target', 'vendor',
+]);
+const INDEX_IGNORED_FILES = new Set(['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock']);
+const EMBEDDING_DIMENSIONS = 384;
+const MAX_INDEX_FILES = 2500;
+const MAX_INDEX_CHUNKS = 6000;
+const MAX_INDEX_FILE_BYTES = 512 * 1024;
+const MAX_SEMANTIC_CHUNKS = 512;
+const SEMANTIC_BATCH_SIZE = 32;
+
+function codeAssistEndpoint() {
+  return process.argv.includes('--dev')
+    ? 'http://127.0.0.1:3002/api/code-assist'
+    : `${PRODUCTION_APP_URL}/api/code-assist`;
+}
+
+async function requestSemanticEmbeddings(input) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25_000);
+  try {
+    const response = await fetch(codeAssistEndpoint(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task: 'embedding', input }),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !Array.isArray(payload?.embeddings)) {
+      throw new Error(payload?.error || `Embedding request failed (${response.status}).`);
+    }
+    return { embeddings: payload.embeddings, model: String(payload.model || 'default') };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function encodeVector(vector) {
+  return Buffer.from(Int8Array.from(vector, (entry) => Math.max(-127, Math.min(127, Math.round(entry * 127))))).toString('base64');
+}
+
+function decodeVector(vector) {
+  return Array.from(Buffer.from(vector, 'base64'), (entry) => (entry > 127 ? entry - 256 : entry) / 127);
+}
+
+async function attachSemanticEmbeddings(index) {
+  if (!index?.chunks?.length) return index;
+  const count = Math.min(index.chunks.length, MAX_SEMANTIC_CHUNKS);
+  const selectedIndexes = Array.from({ length: count }, (_, position) => (
+    Math.min(index.chunks.length - 1, Math.floor((position * index.chunks.length) / count))
+  ));
+  const batches = [];
+  for (let start = 0; start < selectedIndexes.length; start += SEMANTIC_BATCH_SIZE) {
+    batches.push(selectedIndexes.slice(start, start + SEMANTIC_BATCH_SIZE));
+  }
+  let model = '';
+  let embedded = 0;
+  let nextBatch = 0;
+  let semanticUnavailable = false;
+  const worker = async () => {
+    while (!semanticUnavailable && nextBatch < batches.length) {
+      const batch = batches[nextBatch++];
+      try {
+        const result = await requestSemanticEmbeddings(batch.map((chunkIndex) => {
+          const chunk = index.chunks[chunkIndex];
+          return `${chunk.path}\n${chunk.text.slice(0, 6_000)}`;
+        }));
+        model ||= result.model;
+        result.embeddings.forEach((vector, position) => {
+          if (!Array.isArray(vector)) return;
+          index.chunks[batch[position]].semanticVector = vector;
+          embedded += 1;
+        });
+      } catch {
+        semanticUnavailable = true;
+        // The deterministic local vector remains available offline.
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, batches.length) }, () => worker()));
+  index.semanticModel = model;
+  index.semanticChunks = embedded;
+  index.embeddingMode = embedded ? (embedded === index.chunks.length ? 'semantic' : 'hybrid') : 'local';
+  return index;
+}
+
+async function persistWorkspaceIndex(cacheDirectory, cachePath, index) {
+  try {
+    await fs.mkdir(cacheDirectory, { recursive: true });
+    await fs.writeFile(cachePath, JSON.stringify({
+      ...index,
+      root: undefined,
+      chunks: index.chunks.map((chunk) => ({
+        ...chunk,
+        vector: encodeVector(chunk.vector),
+        semanticVector: chunk.semanticVector ? encodeVector(chunk.semanticVector) : undefined,
+      })),
+    }), 'utf8');
+  } catch {}
+}
+
+function hashToken(token) {
+  let hash = 2166136261;
+  for (let index = 0; index < token.length; index += 1) {
+    hash ^= token.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function embedLocalText(value = '') {
+  const vector = new Float32Array(EMBEDDING_DIMENSIONS);
+  const tokens = String(value).toLowerCase().match(/[a-z_$][\w$-]{1,}|\d+(?:\.\d+)?/g) || [];
+  for (const token of tokens) {
+    const tokenHash = hashToken(token);
+    const index = tokenHash % EMBEDDING_DIMENSIONS;
+    vector[index] += (tokenHash & 1) ? 1 : -1;
+    if (token.length >= 5) {
+      for (let offset = 0; offset <= token.length - 3; offset += 1) {
+        const gramHash = hashToken(token.slice(offset, offset + 3));
+        vector[gramHash % EMBEDDING_DIMENSIONS] += (gramHash & 1) ? 0.2 : -0.2;
+      }
+    }
+  }
+  let magnitude = 0;
+  for (const entry of vector) magnitude += entry * entry;
+  magnitude = Math.sqrt(magnitude) || 1;
+  return Array.from(vector, (entry) => entry / magnitude);
+}
+
+function vectorSimilarity(left, right) {
+  let score = 0;
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    score += left[index] * right[index];
+  }
+  return score;
+}
+
+async function collectIndexFiles(root) {
+  const files = [];
+  async function visit(directory) {
+    if (files.length >= MAX_INDEX_FILES) return;
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (files.length >= MAX_INDEX_FILES) break;
+      if (entry.name.startsWith('.') && entry.name !== '.github') continue;
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!INDEX_IGNORED_DIRECTORIES.has(entry.name)) await visit(target);
+        continue;
+      }
+      if (!entry.isFile() || INDEX_IGNORED_FILES.has(entry.name)) continue;
+      if (!INDEXABLE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+      const stat = await fs.stat(target);
+      if (stat.size <= MAX_INDEX_FILE_BYTES) files.push({ target, size: stat.size, mtimeMs: stat.mtimeMs });
+    }
+  }
+  await visit(root);
+  return files;
+}
+
+function chunkSource(relativePath, source) {
+  const lines = String(source).split('\n');
+  const chunks = [];
+  for (let start = 0; start < lines.length && chunks.length < MAX_INDEX_CHUNKS; start += 80) {
+    const text = lines.slice(start, start + 100).join('\n').slice(0, 12_000);
+    if (!text.trim()) continue;
+    chunks.push({
+      path: relativePath,
+      startLine: start + 1,
+      endLine: Math.min(lines.length, start + 100),
+      text,
+      vector: embedLocalText(`${relativePath} ${relativePath} ${text}`),
+    });
+  }
+  return chunks;
+}
+
+async function buildWorkspaceIndex(window, force = false) {
+  const root = await ensureWorkspace(window);
+  if (!force && workspaceVectorIndex?.root === root) return workspaceVectorIndex;
+  const files = await collectIndexFiles(root);
+  const fingerprint = crypto.createHash('sha256').update(files
+    .map((file) => `${path.relative(root, file.target)}:${file.size}:${Math.round(file.mtimeMs)}`)
+    .sort()
+    .join('\n')).digest('hex');
+  const cacheDirectory = path.join(app.getPath('userData'), 'workspace-indexes');
+  const cachePath = path.join(cacheDirectory, `${crypto.createHash('sha256').update(root).digest('hex')}.json`);
+  if (!force) {
+    try {
+      const cached = JSON.parse(await fs.readFile(cachePath, 'utf8'));
+      if (cached?.fingerprint === fingerprint && Array.isArray(cached.chunks)) {
+        workspaceVectorIndex = {
+          ...cached,
+          root,
+          chunks: cached.chunks.map((chunk) => ({
+            ...chunk,
+            vector: decodeVector(chunk.vector),
+            semanticVector: chunk.semanticVector ? decodeVector(chunk.semanticVector) : undefined,
+          })),
+        };
+        if (!workspaceVectorIndex.semanticChunks) {
+          await attachSemanticEmbeddings(workspaceVectorIndex);
+          await persistWorkspaceIndex(cacheDirectory, cachePath, workspaceVectorIndex);
+        }
+        return workspaceVectorIndex;
+      }
+    } catch {}
+  }
+  const chunks = [];
+  const extensions = {};
+  let project = null;
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+    project = {
+      name: String(manifest.name || path.basename(root)),
+      scripts: Object.keys(manifest.scripts || {}).slice(0, 30),
+      dependencies: [...Object.keys(manifest.dependencies || {}), ...Object.keys(manifest.devDependencies || {})].slice(0, 120),
+    };
+  } catch {}
+  for (const file of files) {
+    if (chunks.length >= MAX_INDEX_CHUNKS) break;
+    const relativePath = path.relative(root, file.target).split(path.sep).join('/');
+    const extension = path.extname(file.target).toLowerCase() || 'text';
+    extensions[extension] = (extensions[extension] || 0) + 1;
+    const source = await fs.readFile(file.target, 'utf8');
+    chunks.push(...chunkSource(relativePath, source).slice(0, MAX_INDEX_CHUNKS - chunks.length));
+  }
+  workspaceVectorIndex = {
+    root,
+    fingerprint,
+    createdAt: Date.now(),
+    files: files.length,
+    chunks,
+    extensions,
+    project,
+  };
+  await attachSemanticEmbeddings(workspaceVectorIndex);
+  await persistWorkspaceIndex(cacheDirectory, cachePath, workspaceVectorIndex);
+  return workspaceVectorIndex;
+}
+
+function workspaceIndexSummary(index) {
+  const languages = Object.entries(index.extensions)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 12)
+    .map(([extension, count]) => `${extension}:${count}`);
+  return {
+    indexedFiles: index.files,
+    indexedChunks: index.chunks.length,
+    embedding: index.embeddingMode === 'semantic'
+      ? `semantic-${index.semanticModel || 'managed'}-${EMBEDDING_DIMENSIONS}d`
+      : index.embeddingMode === 'hybrid'
+        ? `hybrid-semantic-local-${EMBEDDING_DIMENSIONS}d`
+        : `local-feature-vector-${EMBEDDING_DIMENSIONS}d`,
+    semanticChunks: Number(index.semanticChunks || 0),
+    embeddingMode: index.embeddingMode || 'local',
+    languages,
+    project: index.project,
+    createdAt: new Date(index.createdAt).toISOString(),
+  };
+}
+
+async function previewWorkspaceFile(window, relativePath) {
+  const target = await resolveWorkspacePath(window, relativePath);
+  const stat = await fs.stat(target);
+  if (!stat.isFile() || stat.size > MAX_PREVIEW_BYTES) throw new Error('Preview files must be under 40 MB.');
+  const extension = path.extname(target).toLowerCase();
+  const mime = ({
+    '.avif': 'image/avif', '.gif': 'image/gif', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg',
+    '.png': 'image/png', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.pdf': 'application/pdf',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.glb': 'model/gltf-binary', '.gltf': 'model/gltf+json', '.obj': 'model/obj', '.stl': 'model/stl',
+    '.mp4': 'video/mp4', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+  })[extension] || 'application/octet-stream';
+  const kind = /^image\//.test(mime) ? 'image'
+    : mime === 'application/pdf' ? 'pdf'
+      : extension === '.docx' ? 'document'
+        : /^model\//.test(mime) ? 'model'
+          : /^video\//.test(mime) ? 'video'
+            : /^audio\//.test(mime) ? 'audio'
+              : 'binary';
+  const buffer = await fs.readFile(target);
+  return JSON.stringify({
+    path: path.relative(workspaceRoot, target).split(path.sep).join('/'),
+    name: path.basename(target),
+    extension,
+    kind,
+    mime,
+    size: stat.size,
+    dataUrl: `data:${mime};base64,${buffer.toString('base64')}`,
+  });
 }
 
 async function runExecutable({ command, args = [], cwd = '.', timeout = PROCESS_TIMEOUT_MS }) {
   const executable = normalizeExecutable(command);
   const normalizedArgs = normalizeProcessArgs(args);
-  const result = await execFileAsync(executable, normalizedArgs, {
-    cwd,
-    env: safeEnvironment(),
-    encoding: 'utf8',
-    timeout,
-    maxBuffer: MAX_OUTPUT_BYTES,
-    windowsHide: true,
-    shell: false,
+  try {
+    const result = await execFileAsync(executable, normalizedArgs, {
+      cwd,
+      env: await desktopEnvironment(),
+      encoding: 'utf8',
+      timeout,
+      maxBuffer: MAX_OUTPUT_BYTES,
+      windowsHide: true,
+      shell: false,
+    });
+    const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+    return output || 'Command completed successfully.';
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new Error(`Executable "${executable}" was not found. Install it or add it to your login PATH, then restart MIRA.`);
+    }
+    const detail = [error?.stdout, error?.stderr].filter(Boolean).join('\n').trim();
+    const wrapped = new Error(detail || error?.message || `Command failed: ${executable}`);
+    wrapped.code = error?.code;
+    wrapped.stdout = error?.stdout;
+    wrapped.stderr = error?.stderr;
+    throw wrapped;
+  }
+}
+
+async function runExecutableStreaming({
+  command,
+  args = [],
+  cwd = '.',
+  timeout = PROCESS_TIMEOUT_MS,
+  onOutput,
+  requestId = '',
+  environmentOverrides = {},
+  retainRecentOutput = false,
+}) {
+  const executable = normalizeExecutable(command);
+  const normalizedArgs = normalizeProcessArgs(args);
+  const environment = await desktopEnvironment();
+  return await new Promise((resolve, reject) => {
+    const child = spawn(executable, normalizedArgs, {
+      cwd,
+      env: { ...environment, ...environmentOverrides },
+      windowsHide: true,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (requestId) runningProcesses.set(requestId, child);
+    let output = '';
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (requestId) runningProcesses.delete(requestId);
+      if (error) reject(error);
+      else resolve(output.trim() || 'Command completed successfully.');
+    };
+    const append = (chunk) => {
+      const text = String(chunk || '');
+      if (!text) return;
+      output += text;
+      onOutput?.(text);
+      if (Buffer.byteLength(output, 'utf8') > MAX_OUTPUT_BYTES) {
+        if (retainRecentOutput) output = output.slice(-Math.floor(MAX_OUTPUT_BYTES / 2));
+        else {
+          child.kill();
+          finish(new Error('Command output exceeded the 2 MB safety limit.'));
+        }
+      }
+    };
+    const timer = timeout > 0 ? setTimeout(() => {
+      child.kill();
+      finish(new Error(`Command timed out after ${Math.round(timeout / 1000)} seconds.`));
+    }, timeout) : null;
+    child.stdout.on('data', append);
+    child.stderr.on('data', append);
+    child.once('error', (error) => {
+      if (error?.code === 'ENOENT') finish(new Error(`Executable "${executable}" was not found. Install it or add it to your login PATH, then restart MIRA.`));
+      else finish(error);
+    });
+    child.once('close', (code, signal) => {
+      if (settled) return;
+      if (code === 0) finish();
+      else {
+        const error = new Error(output.trim() || `Command exited with code ${code ?? signal ?? 'unknown'}.`);
+        error.code = code;
+        finish(error);
+      }
+    });
   });
-  const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
-  return output || 'Command completed successfully.';
+}
+
+async function pathExists(target) {
+  try { await fs.access(target); return true; } catch { return false; }
+}
+
+async function detectWorkspaceValidationCommands(root) {
+  const commands = [];
+  if (await pathExists(path.join(root, '.git'))) {
+    commands.push({ command: 'git', args: ['diff', '--check'], label: 'Git whitespace validation' });
+  }
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+    const scripts = new Set(Object.keys(manifest.scripts || {}));
+    const packageManager = await pathExists(path.join(root, 'pnpm-lock.yaml')) ? 'pnpm'
+      : await pathExists(path.join(root, 'yarn.lock')) ? 'yarn'
+        : 'npm';
+    for (const script of ['typecheck', 'lint', 'test', 'build']) {
+      if (scripts.has(script)) commands.push({
+        command: packageManager,
+        args: ['run', script],
+        label: `${packageManager} ${script}`,
+      });
+    }
+  } catch {}
+  if (await pathExists(path.join(root, 'pyproject.toml'))
+    || await pathExists(path.join(root, 'pytest.ini'))
+    || await pathExists(path.join(root, 'setup.cfg'))) {
+    commands.push({ command: 'python3', args: ['-m', 'pytest'], label: 'Python tests' });
+  }
+  if (await pathExists(path.join(root, 'Cargo.toml'))) {
+    commands.push({ command: 'cargo', args: ['test'], label: 'Rust tests' });
+  }
+  if (await pathExists(path.join(root, 'go.mod'))) {
+    commands.push({ command: 'go', args: ['test', './...'], label: 'Go tests' });
+  }
+  if (await pathExists(path.join(root, 'pom.xml'))) {
+    commands.push({ command: 'mvn', args: ['test'], label: 'Maven tests' });
+  }
+  if (await pathExists(path.join(root, 'gradlew'))) {
+    commands.push({ command: './gradlew', args: ['test'], label: 'Gradle tests' });
+  }
+  return commands.slice(0, 8);
+}
+
+async function detectWorkspaceStartCommand(root) {
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+    const scripts = new Set(Object.keys(manifest.scripts || {}));
+    const script = ['dev', 'start', 'serve', 'preview'].find((candidate) => scripts.has(candidate));
+    if (script) {
+      const packageManager = await pathExists(path.join(root, 'pnpm-lock.yaml')) ? 'pnpm'
+        : await pathExists(path.join(root, 'yarn.lock')) ? 'yarn'
+          : 'npm';
+      return { command: packageManager, args: ['run', script], label: `${packageManager} ${script}` };
+    }
+  } catch {}
+  if (await pathExists(path.join(root, 'manage.py'))) {
+    return { command: 'python3', args: ['manage.py', 'runserver'], label: 'Django development server' };
+  }
+  if (await pathExists(path.join(root, 'Cargo.toml'))) {
+    return { command: 'cargo', args: ['run'], label: 'Cargo application' };
+  }
+  if (await pathExists(path.join(root, 'go.mod'))) {
+    return { command: 'go', args: ['run', '.'], label: 'Go application' };
+  }
+  throw new Error('No development-server command was detected. Add a dev, start, serve, or preview script, or run an explicit terminal command.');
+}
+
+async function launchBackgroundCommand(window, {
+  command,
+  args,
+  cwd,
+  requestId,
+  environmentOverrides = {},
+}) {
+  const preview = commandPreview(command, args);
+  sendToWindow(window, 'mira:terminal-output', {
+    requestId,
+    chunk: `$ ${preview}\n`,
+    reset: false,
+    agent: true,
+  });
+  let exited = false;
+  let earlyFailure = null;
+  const processPromise = runExecutableStreaming({
+    command,
+    args,
+    cwd,
+    requestId,
+    timeout: 0,
+    environmentOverrides,
+    retainRecentOutput: true,
+    onOutput: (chunk) => sendToWindow(window, 'mira:terminal-output', {
+      requestId,
+      chunk,
+      agent: true,
+    }),
+  });
+  processPromise.then(() => {
+    exited = true;
+  }, (error) => {
+    exited = true;
+    earlyFailure = error;
+    sendToWindow(window, 'mira:terminal-output', {
+      requestId,
+      chunk: `\nProcess stopped: ${error?.message || 'Unknown command error.'}\n`,
+      agent: true,
+    });
+  }).finally(() => {
+    sendToWindow(window, 'mira:terminal-output', {
+      requestId,
+      chunk: '',
+      agent: true,
+      done: true,
+    });
+  });
+  await Promise.race([
+    processPromise.then(() => undefined, () => undefined),
+    new Promise((resolve) => setTimeout(resolve, 750)),
+  ]);
+  if (earlyFailure) throw earlyFailure;
+  if (exited) throw new Error(`The server command exited before becoming ready: ${preview}`);
+  return JSON.stringify({ started: true, requestId, command: preview, cwd: path.relative(workspaceRoot, cwd) || '.' });
+}
+
+async function readOptionalFile(target) {
+  try {
+    return { existed: true, content: await fs.readFile(target, 'utf8') };
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { existed: false, content: '' };
+    throw error;
+  }
+}
+
+function summarizeChanges() {
+  return JSON.stringify({
+    applied: appliedChanges.map(({ id, path: filePath, timestamp }) => ({ id, path: filePath, timestamp })),
+    redo: undoneChanges.map(({ id, path: filePath, timestamp }) => ({ id, path: filePath, timestamp })),
+  });
+}
+
+async function applyJournalState(change, direction) {
+  const useBefore = direction === 'undo';
+  const shouldExist = useBefore ? change.beforeExisted : true;
+  const content = useBefore ? change.before : change.after;
+  if (shouldExist) {
+    await fs.mkdir(path.dirname(change.target), { recursive: true });
+    await fs.writeFile(change.target, content, 'utf8');
+  } else {
+    await fs.rm(change.target, { force: true });
+  }
+}
+
+function summarizeLineChanges(beforeValue = '', afterValue = '', limit = 120) {
+  const before = String(beforeValue).split('\n');
+  const after = String(afterValue).split('\n');
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < before.length - prefix
+    && suffix < after.length - prefix
+    && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) suffix += 1;
+  const trim = (lines) => {
+    if (lines.length <= limit) return lines;
+    return [...lines.slice(0, limit), `… ${lines.length - limit} more lines`];
+  };
+  return {
+    removals: trim(before.slice(prefix, before.length - suffix)),
+    additions: trim(after.slice(prefix, after.length - suffix)),
+  };
+}
+
+async function gitInfo(window) {
+  const cwd = await ensureWorkspace(window);
+  const read = async (args) => {
+    try { return await runExecutable({ command: 'git', args, cwd, timeout: 60_000 }); }
+    catch { return ''; }
+  };
+  const [branch, upstream, remote, status] = await Promise.all([
+    read(['branch', '--show-current']),
+    read(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']),
+    read(['remote', 'get-url', 'origin']),
+    read(['status', '--short']),
+  ]);
+  return JSON.stringify({
+    branch: branch === 'Command completed successfully.' ? '' : branch,
+    upstream: upstream === 'Command completed successfully.' ? '' : upstream,
+    remote: remote === 'Command completed successfully.' ? '' : remote,
+    status: status === 'Command completed successfully.' ? '' : status,
+  });
+}
+
+async function saveWorkspaceFile(window, requestedPath, requestedContent, source = 'editor') {
+  const target = await resolveWorkspacePath(window, requestedPath);
+  const content = String(requestedContent ?? '');
+  if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error('Desktop writes are limited to 2 MB per file.');
+  const before = await readOptionalFile(target);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, content, 'utf8');
+  const relativePath = path.relative(workspaceRoot, target);
+  const changeId = `${Date.now()}:${relativePath}`;
+  appliedChanges.push({
+    id: changeId,
+    path: relativePath,
+    target,
+    before: before.content,
+    beforeExisted: before.existed,
+    after: content,
+    timestamp: Date.now(),
+  });
+  if (appliedChanges.length > 50) appliedChanges.shift();
+  undoneChanges.length = 0;
+  workspaceVectorIndex = null;
+  await appendWorkspaceEvent({ type: 'change', path: relativePath, source });
+  return JSON.stringify({
+    changed: true,
+    changeId,
+    path: relativePath,
+    undoAvailable: true,
+    ...summarizeLineChanges(before.content, content),
+  });
 }
 
 async function invokeDesktopTool(window, call = {}) {
@@ -140,6 +1323,10 @@ async function invokeDesktopTool(window, call = {}) {
     const stat = await fs.stat(target);
     if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw new Error('The requested file is not a readable text file under 2 MB.');
     return await fs.readFile(target, 'utf8');
+  }
+
+  if (name === 'filesystem.preview') {
+    return await previewWorkspaceFile(window, args.path);
   }
 
   if (name === 'filesystem.list') {
@@ -163,10 +1350,47 @@ async function invokeDesktopTool(window, call = {}) {
     const target = await resolveWorkspacePath(window, args.path);
     const content = String(args.content ?? '');
     if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error('Desktop writes are limited to 2 MB per file.');
-    await approve(window, 'Allow file write?', `Write ${path.relative(workspaceRoot, target) || path.basename(target)}`);
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, content, 'utf8');
-    return `Wrote ${path.relative(workspaceRoot, target)}.`;
+    if (!workspaceCommandTrust) {
+      const approval = await approve(
+        window,
+        'Allow file write?',
+        `Write ${path.relative(workspaceRoot, target) || path.basename(target)}`,
+        false,
+        true,
+      );
+      if (approval === 'workspace-session') workspaceCommandTrust = true;
+    }
+    return await saveWorkspaceFile(window, args.path, content, 'agent');
+  }
+
+  if (name === 'filesystem.replace') {
+    const target = await resolveWorkspacePath(window, args.path);
+    const oldText = String(args.oldText ?? '');
+    const newText = String(args.newText ?? '');
+    if (!oldText || Buffer.byteLength(oldText, 'utf8') > MAX_FILE_BYTES) {
+      throw new Error('A non-empty exact text match under 2 MB is required.');
+    }
+    const source = await fs.readFile(target, 'utf8');
+    const occurrences = source.split(oldText).length - 1;
+    if (occurrences === 0) throw new Error('The exact text to replace was not found. Read the latest file and try again.');
+    if (!args.replaceAll && occurrences !== 1) {
+      throw new Error(`The exact text occurs ${occurrences} times. Provide a more specific match or set replaceAll.`);
+    }
+    const content = args.replaceAll
+      ? source.split(oldText).join(newText)
+      : source.replace(oldText, newText);
+    if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error('Desktop writes are limited to 2 MB per file.');
+    if (!workspaceCommandTrust) {
+      const approval = await approve(
+        window,
+        'Allow precise file edit?',
+        `Edit ${path.relative(workspaceRoot, target) || path.basename(target)}`,
+        false,
+        true,
+      );
+      if (approval === 'workspace-session') workspaceCommandTrust = true;
+    }
+    return await saveWorkspaceFile(window, args.path, content, 'agent');
   }
 
   if (name === 'filesystem.search') {
@@ -183,6 +1407,123 @@ async function invokeDesktopTool(window, call = {}) {
     }
   }
 
+  if (name === 'workspace.index') {
+    const index = await buildWorkspaceIndex(window, Boolean(args.force));
+    return JSON.stringify(workspaceIndexSummary(index));
+  }
+
+  if (name === 'workspace.search') {
+    const query = String(args.query || '').trim();
+    if (!query || query.length > 2000) throw new Error('A valid workspace search query is required.');
+    const index = await buildWorkspaceIndex(window, false);
+    const queryVector = embedLocalText(query);
+    let semanticQueryVector = null;
+    if (index.semanticChunks) {
+      try {
+        semanticQueryVector = (await requestSemanticEmbeddings([query])).embeddings[0] || null;
+      } catch {}
+    }
+    const limit = Math.max(1, Math.min(20, Number(args.limit) || 8));
+    const results = index.chunks
+      .map((chunk) => ({
+        ...chunk,
+        score: semanticQueryVector && chunk.semanticVector
+          ? vectorSimilarity(semanticQueryVector, chunk.semanticVector)
+          : vectorSimilarity(queryVector, chunk.vector),
+      }))
+      .filter((chunk) => chunk.score > 0.01)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, limit)
+      .map(({ vector: _vector, text, ...result }) => ({
+        ...result,
+        score: Number(result.score.toFixed(4)),
+        excerpt: text.slice(0, 2400),
+      }));
+    return JSON.stringify({ query, ...workspaceIndexSummary(index), results });
+  }
+
+  if (name === 'workspace.start') {
+    const cwd = await ensureWorkspace(window);
+    const start = await detectWorkspaceStartCommand(cwd);
+    const preview = commandPreview(start.command, start.args);
+    if (!workspaceCommandTrust) {
+      const approval = await approve(
+        window,
+        'Start workspace server?',
+        `${preview}\n\nWorking directory: .`,
+        false,
+        true,
+      );
+      if (approval === 'workspace-session') workspaceCommandTrust = true;
+    }
+    const requestId = `agent:server:${Date.now()}`;
+    return await launchBackgroundCommand(window, {
+      command: start.command,
+      args: start.args,
+      cwd,
+      requestId,
+      environmentOverrides: { BROWSER: 'none', CI: '0' },
+    });
+  }
+
+  if (name === 'workspace.validate') {
+    const cwd = await ensureWorkspace(window);
+    const commands = await detectWorkspaceValidationCommands(cwd);
+    if (!commands.length) return JSON.stringify({ passed: true, commands: [], note: 'No automatic validation commands were detected.' });
+    const previews = commands.map(({ command, args: commandArgs }) => commandPreview(command, commandArgs));
+    if (!workspaceCommandTrust) {
+      const approval = await approve(
+        window,
+        'Run workspace regression suite?',
+        `${previews.join('\n')}\n\nWorking directory: .`,
+        false,
+        true,
+      );
+      if (approval === 'workspace-session') workspaceCommandTrust = true;
+    }
+    const requestId = `agent:validate:${Date.now()}`;
+    const results = [];
+    try {
+      for (const validation of commands) {
+        const preview = commandPreview(validation.command, validation.args);
+        sendToWindow(window, 'mira:terminal-output', {
+          requestId,
+          chunk: `$ ${preview}\n`,
+          reset: false,
+          agent: true,
+        });
+        try {
+          const output = await runExecutableStreaming({
+            command: validation.command,
+            args: validation.args,
+            cwd,
+            requestId,
+            environmentOverrides: { CI: '1' },
+            onOutput: (chunk) => sendToWindow(window, 'mira:terminal-output', {
+              requestId,
+              chunk,
+              agent: true,
+            }),
+          });
+          results.push({ command: preview, passed: true, output: output.slice(-8000) });
+        } catch (error) {
+          results.push({ command: preview, passed: false, output: String(error?.message || 'Validation failed.').slice(-8000) });
+          const failure = new Error(`Regression command failed: ${preview}\n${error?.message || ''}`.trim());
+          failure.results = results;
+          throw failure;
+        }
+      }
+      return JSON.stringify({ passed: true, commands: results });
+    } finally {
+      sendToWindow(window, 'mira:terminal-output', {
+        requestId,
+        chunk: '',
+        agent: true,
+        done: true,
+      });
+    }
+  }
+
   if (name === 'git.status') {
     return await runExecutable({ command: 'git', args: ['status', '--short', '--branch'], cwd: await ensureWorkspace(window), timeout: 60_000 });
   }
@@ -191,21 +1532,336 @@ async function invokeDesktopTool(window, call = {}) {
     return await runExecutable({ command: 'git', args: ['diff', ...(args.staged ? ['--staged'] : [])], cwd: await ensureWorkspace(window), timeout: 60_000 });
   }
 
+  if (name === 'git.info') return await gitInfo(window);
+
+  if (name === 'git.remote.set') {
+    const url = String(args.url || '').trim();
+    if (!/^(?:https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?|git@github\.com:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?)$/.test(url)) {
+      throw new Error('A valid GitHub HTTPS or SSH repository URL is required.');
+    }
+    const cwd = await ensureWorkspace(window);
+    await approve(window, 'Connect GitHub repository?', `Set origin to ${url}`);
+    try {
+      await runExecutable({ command: 'git', args: ['rev-parse', '--is-inside-work-tree'], cwd, timeout: 60_000 });
+    } catch {
+      await runExecutable({ command: 'git', args: ['init'], cwd, timeout: 60_000 });
+    }
+    let hasOrigin = true;
+    try { await runExecutable({ command: 'git', args: ['remote', 'get-url', 'origin'], cwd, timeout: 60_000 }); }
+    catch { hasOrigin = false; }
+    await runExecutable({ command: 'git', args: ['remote', hasOrigin ? 'set-url' : 'add', 'origin', url], cwd, timeout: 60_000 });
+    return await gitInfo(window);
+  }
+
+  if (name === 'git.pull') {
+    const cwd = await ensureWorkspace(window);
+    await approve(window, 'Pull Git changes?', 'Run git pull --ff-only in the open workspace.');
+    return await runExecutable({ command: 'git', args: ['pull', '--ff-only'], cwd, timeout: PROCESS_TIMEOUT_MS });
+  }
+
+  if (name === 'git.push') {
+    const cwd = await ensureWorkspace(window);
+    const info = JSON.parse(await gitInfo(window));
+    if (!info.remote) throw new Error('Connect a GitHub origin before pushing.');
+    if (!info.branch) throw new Error('Create or check out a branch before pushing.');
+    await approve(window, 'Push Git changes?', `Push branch ${info.branch} to ${info.remote}`);
+    const pushArgs = info.upstream ? ['push'] : ['push', '--set-upstream', 'origin', info.branch];
+    return await runExecutable({ command: 'git', args: pushArgs, cwd, timeout: PROCESS_TIMEOUT_MS });
+  }
+
+  if (name === 'git.commit') {
+    const message = String(args.message || '').trim();
+    if (!message || message.length > 200 || /[\r\n]/.test(message)) {
+      throw new Error('A one-line commit message between 1 and 200 characters is required.');
+    }
+    const cwd = await ensureWorkspace(window);
+    await approve(window, 'Commit workspace changes?', `Stage all current workspace changes and commit them as:\n\n${message}`);
+    await runExecutable({ command: 'git', args: ['add', '--all'], cwd, timeout: 60_000 });
+    return await runExecutable({ command: 'git', args: ['commit', '-m', message], cwd, timeout: PROCESS_TIMEOUT_MS });
+  }
+
+  if (name === 'change.list') return summarizeChanges();
+
+  if (name === 'approval.status') {
+    return JSON.stringify({ workspaceCommandsTrusted: workspaceCommandTrust });
+  }
+
+  if (name === 'approval.set') {
+    workspaceCommandTrust = Boolean(args.workspaceCommandsTrusted);
+    return JSON.stringify({ workspaceCommandsTrusted: workspaceCommandTrust });
+  }
+
+  if (name === 'shell.cancel') {
+    const requestId = String(args.requestId || '');
+    const child = runningProcesses.get(requestId);
+    if (!child) return 'No matching command is running.';
+    child.kill();
+    return 'Command stopped.';
+  }
+
+  if (name === 'change.undo' || name === 'change.redo') {
+    const source = name === 'change.undo' ? appliedChanges : undoneChanges;
+    const destination = name === 'change.undo' ? undoneChanges : appliedChanges;
+    const change = source[source.length - 1];
+    if (!change) throw new Error(name === 'change.undo' ? 'There are no MIRA changes to undo.' : 'There are no MIRA changes to redo.');
+    const requestedId = String(args.id || '').trim();
+    if (requestedId && change.id !== requestedId) {
+      throw new Error('This change is no longer the latest reversible change. Review the newest change set first.');
+    }
+    source.pop();
+    await applyJournalState(change, name === 'change.undo' ? 'undo' : 'redo');
+    workspaceVectorIndex = null;
+    destination.push(change);
+    return JSON.stringify({ changed: true, path: change.path, action: name === 'change.undo' ? 'undone' : 'redone' });
+  }
+
   if (name === 'shell.run' || name === 'test.run') {
     const command = normalizeExecutable(args.command);
     const processArgs = normalizeProcessArgs(args.args);
     const cwd = await resolveWorkspacePath(window, args.cwd || '.');
     const preview = commandPreview(command, processArgs);
-    await approve(
-      window,
-      name === 'test.run' ? 'Allow test command?' : 'Allow command?',
-      `${preview}\n\nWorking directory: ${path.relative(workspaceRoot, cwd) || '.'}`,
-      looksDestructive(command, processArgs),
-    );
-    return await runExecutable({ command, args: processArgs, cwd });
+    const destructive = looksDestructive(command, processArgs);
+    if (!workspaceCommandTrust || destructive) {
+      const approval = await approve(
+        window,
+        name === 'test.run' ? 'Allow test command?' : 'Allow command?',
+        `${preview}\n\nWorking directory: ${path.relative(workspaceRoot, cwd) || '.'}`,
+        destructive,
+        true,
+      );
+      if (approval === 'workspace-session') workspaceCommandTrust = true;
+    }
+    const requestedId = /^[A-Za-z0-9:_-]{1,100}$/.test(String(args.requestId || ''))
+      ? String(args.requestId)
+      : '';
+    const requestId = requestedId || `agent:${Date.now()}`;
+    if (name === 'shell.run' && args.background) {
+      return await launchBackgroundCommand(window, {
+        command,
+        args: processArgs,
+        cwd,
+        requestId,
+        environmentOverrides: { BROWSER: 'none', CI: '0' },
+      });
+    }
+    if (!requestedId) {
+      sendToWindow(window, 'mira:terminal-output', { requestId, chunk: `$ ${preview}\n`, reset: false, agent: true });
+    }
+    try {
+      return await runExecutableStreaming({
+        command,
+        args: processArgs,
+        cwd,
+        requestId,
+        environmentOverrides: name === 'test.run' ? { CI: '1' } : {},
+        onOutput: (chunk) => sendToWindow(window, 'mira:terminal-output', { requestId, chunk, agent: !requestedId }),
+      });
+    } finally {
+      if (!requestedId) sendToWindow(window, 'mira:terminal-output', { requestId, chunk: '', agent: true, done: true });
+    }
   }
 
   throw new Error('Unsupported desktop operation.');
+}
+
+function isTrustedAppOrigin(url = '') {
+  try {
+    const origin = new URL(String(url || '')).origin;
+    if (TRUSTED_PRODUCTION_ORIGINS.has(origin)) return true;
+    return process.argv.includes('--dev')
+      && ['http://127.0.0.1:3000', 'http://localhost:3000'].includes(origin);
+  } catch {
+    return false;
+  }
+}
+
+function requireTrustedIpc(event) {
+  const frameUrl = event?.senderFrame?.url || event?.sender?.getURL?.() || '';
+  if (!isTrustedAppOrigin(frameUrl) || (event?.senderFrame && event.senderFrame !== event.sender?.mainFrame)) {
+    throw new Error('Blocked an IPC request from an untrusted renderer.');
+  }
+}
+
+function configureDesktopSession(window) {
+  const session = window.webContents.session;
+  session.setPermissionCheckHandler((webContents, permission, requestingOrigin, details = {}) => {
+    if (!['media', 'display-capture', 'geolocation'].includes(permission)) return false;
+    const origin = requestingOrigin || details.requestingUrl || webContents?.getURL?.() || '';
+    return isTrustedAppOrigin(origin);
+  });
+  session.setPermissionRequestHandler((webContents, permission, callback, details = {}) => {
+    const origin = details.requestingUrl || webContents?.getURL?.() || '';
+    callback(['media', 'display-capture', 'geolocation'].includes(permission) && isTrustedAppOrigin(origin));
+  });
+  session.setDisplayMediaRequestHandler(async (request, callback) => {
+    if (!isTrustedAppOrigin(request.securityOrigin || request.frame?.url || '')) {
+      callback({});
+      return;
+    }
+    try {
+      const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
+      callback(sources[0] ? { video: sources[0] } : {});
+    } catch {
+      callback({});
+    }
+  }, { useSystemPicker: true });
+}
+
+function companionUrl() {
+  const base = process.argv.includes('--dev') ? 'http://127.0.0.1:3000' : PRODUCTION_APP_URL;
+  return `${base}/?desktopCompanion=1`;
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
+}
+
+function companionBounds(size, anchor) {
+  const display = anchor
+    ? screen.getDisplayMatching(anchor)
+    : screen.getPrimaryDisplay();
+  const area = display.workArea;
+  const x = anchor ? anchor.x + anchor.width - size.width : area.x + area.width - size.width - 20;
+  const y = anchor ? anchor.y + anchor.height - size.height : area.y + area.height - size.height - 20;
+  return {
+    width: size.width,
+    height: size.height,
+    x: clamp(Math.round(x), area.x, area.x + area.width - size.width),
+    y: clamp(Math.round(y), area.y, area.y + area.height - size.height),
+  };
+}
+
+function createCompanionWindow() {
+  if (companionWindow && !companionWindow.isDestroyed()) return companionWindow;
+  companionWindow = new BrowserWindow({
+    ...companionBounds(COMPANION_COLLAPSED_SIZE),
+    transparent: true,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    hasShadow: false,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      backgroundThrottling: false,
+    },
+  });
+  configureDesktopSession(companionWindow);
+  if (process.platform === 'darwin') {
+    companionWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
+  companionWindow.loadURL(companionUrl());
+  // Transparent pages do not reliably emit ready-to-show on every Electron/
+  // compositor combination. did-finish-load guarantees the pet is revealed.
+  companionWindow.webContents.once('did-finish-load', () => {
+    if (!companionWindow?.isDestroyed()) companionWindow.showInactive();
+  });
+  companionWindow.on('closed', () => {
+    companionWindow = null;
+    companionExpanded = false;
+  });
+  return companionWindow;
+}
+
+function showCompanionWindow() {
+  const window = createCompanionWindow();
+  companionExpanded = false;
+  window.setBounds(companionBounds(COMPANION_COLLAPSED_SIZE, window.getBounds()));
+  window.showInactive();
+  sendToWindow(window, 'mira:companion-state', { expanded: false });
+}
+
+function setCompanionExpanded(expanded) {
+  const window = createCompanionWindow();
+  companionExpanded = Boolean(expanded);
+  const size = companionExpanded ? COMPANION_EXPANDED_SIZE : COMPANION_COLLAPSED_SIZE;
+  window.setBounds(companionBounds(size, window.getBounds()), true);
+  window.show();
+  if (companionExpanded) window.focus();
+  return { expanded: companionExpanded, bounds: window.getBounds() };
+}
+
+function moveCompanion(point = {}) {
+  if (!companionWindow || companionWindow.isDestroyed()) return null;
+  const bounds = companionWindow.getBounds();
+  const requestedX = Number.isFinite(Number(point.deltaX))
+    ? bounds.x + Number(point.deltaX)
+    : (Number.isFinite(Number(point.x)) ? Number(point.x) : bounds.x);
+  const requestedY = Number.isFinite(Number(point.deltaY))
+    ? bounds.y + Number(point.deltaY)
+    : (Number.isFinite(Number(point.y)) ? Number(point.y) : bounds.y);
+  const display = screen.getDisplayNearestPoint({ x: requestedX, y: requestedY });
+  const area = display.workArea;
+  companionWindow.setPosition(
+    clamp(Math.round(requestedX), area.x, area.x + area.width - bounds.width),
+    clamp(Math.round(requestedY), area.y, area.y + area.height - bounds.height),
+  );
+  return companionWindow.getBounds();
+}
+
+function companionScreenSource(sources, display) {
+  const displayId = String(display?.id ?? '');
+  return sources.find((source) => String(source.display_id || '') === displayId)
+    || sources.find((source) => String(source.id || '').includes(`screen:${displayId}:`))
+    || sources.find((source) => String(source.id || '').startsWith('screen:'))
+    || null;
+}
+
+async function captureCompanionScreen() {
+  const window = createCompanionWindow();
+  const bounds = window.getBounds();
+  const display = screen.getDisplayMatching(bounds);
+  const displaySize = display?.size || { width: 1280, height: 800 };
+  const scale = Math.min(1, 1440 / Math.max(1, displaySize.width), 1000 / Math.max(1, displaySize.height));
+  const thumbnailSize = {
+    width: Math.max(1, Math.round(displaySize.width * scale)),
+    height: Math.max(1, Math.round(displaySize.height * scale)),
+  };
+  const shouldRestoreFocus = companionExpanded && window.isFocused();
+
+  // Keep MIRA itself out of the evidence sent for analysis.
+  window.hide();
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize,
+      fetchWindowIcons: false,
+    });
+    const source = companionScreenSource(sources, display);
+    if (!source || source.thumbnail.isEmpty()) {
+      throw new Error('Screen capture is unavailable. Allow Screen Recording for MIRA in system settings, then try again.');
+    }
+    const image = source.thumbnail.toJPEG(76);
+    if (!image?.length) throw new Error('MIRA could not capture this screen. Please try again.');
+    return {
+      image: `data:image/jpeg;base64,${image.toString('base64')}`,
+      mimeType: 'image/jpeg',
+      sourceName: String(source.name || 'Current screen').slice(0, 120),
+      capturedAt: new Date().toISOString(),
+      size: source.thumbnail.getSize(),
+    };
+  } finally {
+    if (!window.isDestroyed()) {
+      window.showInactive();
+      if (shouldRestoreFocus) window.focus();
+    }
+  }
+}
+
+function openMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createWindow();
+  showCompanionWindow();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  return { opened: true };
 }
 
 function createWindow() {
@@ -222,38 +1878,214 @@ function createWindow() {
       contextIsolation: true,
       sandbox: true,
       webSecurity: true,
+      webviewTag: true,
+      backgroundThrottling: false,
     },
   });
 
+  configureDesktopSession(window);
+
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https:\/\//i.test(url)) shell.openExternal(url);
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
+  window.webContents.on('before-input-event', (event, input) => {
+    const saveShortcut = input.type === 'keyDown'
+      && String(input.key || '').toLowerCase() === 's'
+      && (input.meta || input.control)
+      && !input.alt;
+    if (!saveShortcut) return;
+    event.preventDefault();
+    sendToWindow(window, 'mira:save-current-file');
+  });
+  window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    if (!isAllowedLocalPreviewUrl(params.src)) {
+      event.preventDefault();
+      return;
+    }
+    delete webPreferences.preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.webSecurity = true;
+  });
+  window.webContents.on('did-attach-webview', (_event, contents) => {
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isAllowedLocalPreviewUrl(url)) return { action: 'allow' };
+      if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+      return { action: 'deny' };
+    });
+    contents.on('will-navigate', (event, url) => {
+      if (!isAllowedLocalPreviewUrl(url)) event.preventDefault();
+    });
+  });
   window.webContents.on('will-navigate', (event, url) => {
-    const allowed = process.argv.includes('--dev')
-      ? url.startsWith('http://127.0.0.1:3000')
-      : url.startsWith(PRODUCTION_APP_URL);
-    if (!allowed) event.preventDefault();
+    if (!isTrustedAppOrigin(url)) event.preventDefault();
   });
 
   if (process.argv.includes('--dev')) window.loadURL('http://127.0.0.1:3000');
   else window.loadURL(PRODUCTION_APP_URL);
-  window.once('ready-to-show', () => window.show());
+  window.once('ready-to-show', () => {
+    if (!window.isDestroyed()) window.show();
+  });
+  window.on('minimize', (event) => {
+    event.preventDefault();
+    window.hide();
+    showCompanionWindow();
+  });
+  window.once('closed', () => {
+    for (const child of runningProcesses.values()) {
+      if (!child.killed) child.kill();
+    }
+    runningProcesses.clear();
+    if (mainWindow === window) mainWindow = null;
+    if (companionWindow && !companionWindow.isDestroyed()) companionWindow.destroy();
+  });
+  mainWindow = window;
   return window;
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // The desktop shell renders the trusted production site directly. A PWA
+  // worker left by an older build can otherwise pin the companion to stale
+  // HTML/JS on its first launch after an upgrade. Preserve cookies and local
+  // app data while clearing only worker-managed and HTTP caches.
+  await session.defaultSession.clearStorageData({
+    storages: ['serviceworkers', 'cachestorage'],
+  }).catch(() => {});
+  await session.defaultSession.clearCache().catch(() => {});
+  desktopEnvironment().catch(() => {});
+  await persistEnvironmentProviderKey().catch(() => {});
+  await restoreWorkspace();
   const window = createWindow();
+  createCompanionWindow();
   ipcMain.handle('mira:runtime-info', () => ({
+    appVersion: app.getVersion(),
+    permissionBridgeVersion: PERMISSION_BRIDGE_VERSION,
     platform: process.platform,
     capabilities: DESKTOP_CAPABILITIES,
     workspace: workspaceRoot || null,
+    gpu: {
+      accelerationRequested: true,
+      featureStatus: app.getGPUFeatureStatus(),
+    },
   }));
-  ipcMain.handle('mira:choose-workspace', async () => {
+  ipcMain.handle('mira:permission-status', (event) => {
+    requireTrustedIpc(event);
+    return getSystemPermissionStatus();
+  });
+  ipcMain.handle('mira:request-permission', async (event, permission) => {
+    requireTrustedIpc(event);
+    return requestSystemPermission(String(permission || ''));
+  });
+  ipcMain.handle('mira:companion-expanded', (event, expanded) => {
+    requireTrustedIpc(event);
+    return setCompanionExpanded(expanded);
+  });
+  ipcMain.handle('mira:companion-move', (event, point) => {
+    requireTrustedIpc(event);
+    return moveCompanion(point);
+  });
+  ipcMain.handle('mira:companion-capture-screen', async (event) => {
+    requireTrustedIpc(event);
+    return captureCompanionScreen();
+  });
+  ipcMain.handle('mira:open-main-window', (event) => {
+    requireTrustedIpc(event);
+    return openMainWindow();
+  });
+  ipcMain.handle('mira:notify', (event, payload) => {
+    requireTrustedIpc(event);
+    return showMiraNotification(payload);
+  });
+  ipcMain.handle('mira:provider-status', async () => getProviderStatus());
+  ipcMain.handle('mira:configure-deepseek', async (_event, value) => {
+    requireTrustedIpc(_event);
+    try {
+      await saveDeepSeekKey(value);
+      return { ok: true, status: await getProviderStatus() };
+    } catch (error) {
+      return { ok: false, error: error?.message || 'Could not configure the coding provider.' };
+    }
+  });
+  ipcMain.handle('mira:agent-chat', async (_event, body) => {
+    requireTrustedIpc(_event);
+    try {
+      const key = await getDeepSeekKey();
+      if (!key) {
+        if (deepSeekStorageError === 'stored_credential_unreadable') throw providerReconnectError();
+        throw new Error('Configure the DeepSeek coding provider under System access.');
+      }
+      const result = await requestDeepSeekChat({
+        apiKey: key,
+        messages: body?.messages,
+        systemPrompt: body?.systemPrompt,
+        tools: body?.tools,
+        maxTokens: body?.maxTokens,
+        think: body?.think,
+      });
+      return { ok: true, ...result };
+    } catch (error) {
+      return { ok: false, code: error?.code || '', error: error?.message || 'The desktop coding provider is unavailable.' };
+    }
+  });
+  ipcMain.handle('mira:code-assist', async (_event, body) => {
+    requireTrustedIpc(_event);
+    try {
+      return { ok: true, ...await runDesktopCodeAssist(body) };
+    } catch (error) {
+      return { ok: false, code: error?.code || '', error: error?.message || 'The desktop coding assistant is unavailable.' };
+    }
+  });
+  ipcMain.handle('mira:choose-workspace', async (event) => {
+    requireTrustedIpc(event);
+    const previousWorkspace = workspaceRoot;
+    const previousWorkspaceTrust = workspaceCommandTrust;
     workspaceRoot = '';
-    return { workspace: await ensureWorkspace(window) };
+    workspaceCommandTrust = false;
+    workspaceVectorIndex = null;
+    appliedChanges.length = 0;
+    undoneChanges.length = 0;
+    try {
+      const workspace = await ensureWorkspace(window);
+      workspaceCommandTrust = true;
+      return { workspace };
+    } catch (error) {
+      workspaceRoot = previousWorkspace;
+      workspaceCommandTrust = previousWorkspaceTrust;
+      throw error;
+    }
+  });
+  ipcMain.handle('mira:workspace-memory', async () => getWorkspaceMemory());
+  ipcMain.handle('mira:save-workspace-file', async (_event, payload) => {
+    requireTrustedIpc(_event);
+    try {
+      return {
+        ok: true,
+        output: await saveWorkspaceFile(window, payload?.path, payload?.content, 'editor'),
+      };
+    } catch (error) {
+      return { ok: false, error: error?.message || 'Could not save the workspace file.' };
+    }
+  });
+  ipcMain.handle('mira:append-workspace-turn', async (_event, turn) => {
+    requireTrustedIpc(_event);
+    if (!workspaceRoot) return { saved: false };
+    const value = turn && typeof turn === 'object' ? turn : {};
+    await appendWorkspaceEvent({
+      type: 'chat',
+      conversationId: cleanWorkspaceMemoryText(value.conversationId, 300),
+      turnId: cleanWorkspaceMemoryText(value.turnId, 300),
+      user: value.user,
+      assistant: value.assistant,
+      attachments: Array.isArray(value.attachments)
+        ? value.attachments.map((item) => cleanWorkspaceMemoryText(item, 500)).slice(0, 20)
+        : [],
+    });
+    return { saved: true };
   });
   ipcMain.handle('mira:invoke-tool', async (_event, call) => {
+    requireTrustedIpc(_event);
     try {
       return { ok: true, output: await invokeDesktopTool(window, call) };
     } catch (error) {
@@ -262,7 +2094,7 @@ app.whenReady().then(() => {
   });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    openMainWindow();
   });
 });
 

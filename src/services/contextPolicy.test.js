@@ -71,10 +71,15 @@ test('desktop command tools are exposed only through an advertised desktop runti
         'shell.run',
         'test.run',
         'git.status',
+        'git.info',
+        'git.push',
+        'change.undo',
       ],
     },
   });
   assert.equal(desktopTools.some((tool) => tool.function.name === 'shell.run'), true);
+  assert.equal(desktopTools.some((tool) => tool.function.name === 'git.push'), true);
+  assert.equal(desktopTools.some((tool) => tool.function.name === 'change.undo'), true);
   assert.equal(desktopTools.some((tool) => tool.function.name === 'filesystem.write'), false);
 });
 

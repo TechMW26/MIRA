@@ -5,6 +5,7 @@ import path from 'path';
 function loadDotEnv() {
   try {
     const externallyDefined = new Set(Object.keys(process.env));
+    const loadedKeys = new Set();
     for (const filename of ['.env', '.env.local']) {
       const envPath = path.resolve(process.cwd(), filename);
       if (!fs.existsSync(envPath)) continue;
@@ -19,7 +20,10 @@ function loadDotEnv() {
         if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
           value = value.slice(1, -1);
         }
-        if (!externallyDefined.has(key)) process.env[key] = value;
+        if (!externallyDefined.has(key) && !loadedKeys.has(key)) {
+          process.env[key] = value;
+          loadedKeys.add(key);
+        }
       }
     }
   } catch (error) {
@@ -32,12 +36,19 @@ loadDotEnv();
 const PORT = Number(process.env.API_PORT || 3002);
 const ROUTES = new Map([
   ['/api/chat', './api/chat.js'],
+  ['/api/auth', './api/auth.js'],
   ['/api/health', './api/health.js'],
   ['/api/analyze', './api/analyze.js'],
   ['/api/analyse', './api/analyse.js'],
   ['/api/search', './api/search.js'],
   ['/api/search-query', './api/search-query.js'],
   ['/api/browser-mcp', './api/browser-mcp.js'],
+  ['/api/crawl', './api/crawl.js'],
+  ['/api/code-assist', './api/code-assist.js'],
+  ['/api/voice-health', './api/voice-health.js'],
+  ['/api/voice-speech', './api/voice-speech.js'],
+  ['/api/voice-transcribe', './api/voice-transcribe.js'],
+  ['/api/voice-chat', './api/voice-chat.js'],
   ['/api/image', './api/image.js'],
   ['/api/generate-image', './api/generate-image.js'],
   ['/api/generate-video', './api/generate-video.js'],

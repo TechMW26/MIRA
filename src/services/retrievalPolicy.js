@@ -51,7 +51,7 @@ export function buildSearchToolGuidance({ allowSearchTool = true, searchPriority
     return 'WEB SEARCH POLICY: Do not search the internet for this turn. The user supplied authoritative context or an attachment; answer only from that material unless they explicitly request external verification.';
   }
   if (searchPriority) {
-    return 'WEB SEARCH POLICY: This request needs live or externally verifiable information. Call web.search before answering, then synthesize the returned evidence. Do not expose the tool call.';
+    return 'WEB SEARCH POLICY: This request needs live or externally verifiable information, so the host will retrieve it before generation. When REAL-TIME WEB SEARCH DATA or a web-search status is present in the current request, synthesize that evidence directly and do not request web.search again. Only call web.search when no retrieval data or status is supplied. Never expose the tool call.';
   }
   return 'WEB SEARCH POLICY: Answer from the supplied context and reliable knowledge when sufficient. Call web.search only when the answer materially depends on current, changing, high-stakes, niche, unfamiliar, or externally verifiable facts. Never search for greetings, casual conversation, creative work, rewriting, translation, summarization, or analysis of content already provided.';
 }

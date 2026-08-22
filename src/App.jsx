@@ -2,6 +2,8 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import AuthPage from './components/Auth/AuthPage';
 import MainLayout from './components/Layout/MainLayout';
+import DesktopCompanion from './components/Desktop/DesktopCompanion';
+import DesktopPermissionOnboarding from './components/Desktop/DesktopPermissionOnboarding';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -24,7 +26,15 @@ function ProtectedRoute({ children }) {
 }
 
 export default function App() {
+  const companion = typeof window !== 'undefined'
+    && Boolean(window.miraDesktop)
+    && new URLSearchParams(window.location.search).get('desktopCompanion') === '1';
+
+  if (companion) return <DesktopCompanion />;
+
   return (
+    <>
+      {typeof window !== 'undefined' && window.miraDesktop && <DesktopPermissionOnboarding />}
     <Routes>
       <Route path="/auth" element={<AuthPage />} />
       <Route
@@ -36,5 +46,6 @@ export default function App() {
         }
       />
     </Routes>
+    </>
   );
 }

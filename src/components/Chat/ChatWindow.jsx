@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useChatContext } from '../../contexts/ChatContext';
 import useChat from '../../hooks/useChat';
 import useUserProfile from '../../hooks/useUserProfile';
+import useVoiceConversation from '../../hooks/useVoiceConversation';
 import {
   enqueueConversationPrompt,
   removeConversationPrompt,
@@ -20,12 +21,25 @@ import {
 import MessageBubble from './MessageBubble';
 import WelcomeScreen from './WelcomeScreen';
 import ParticleGlobe from './ParticleGlobe';
+import MiraBloub from './MiraBloub';
 import ChatInput from './ChatInput';
 import CanvasPanel from './CanvasPanel';
 import TaskRunner from './TaskRunner';
 import ToolsPanel from './ToolsPanel';
 import PromptLibrary from './PromptLibrary';
 import ShareModal from './ShareModal';
+import VoiceModeOverlay from './VoiceModeOverlay';
+import {
+  NEW_VOICE_CONVERSATION,
+  resolveVoiceConversationBinding,
+  resolveVoiceTurnAnswer,
+  sanitizeVoiceOutput,
+} from '../../services/voiceConversation';
+import {
+  resolveMiraActivity,
+  resolveMiraExpression,
+  shouldShowMiraWelcome,
+} from '../../services/miraIdentity';
 
 const FONT_SIZE_MAP = { small: '13px', medium: '14px', large: '16px' };
 function getStoredFontSize() {
@@ -33,7 +47,7 @@ function getStoredFontSize() {
   catch { return '14px'; }
 }
 
-function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children }) {
+function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, workspaceMode = false, onClose, children }) {
   const storageKey = `mira_panel_w_${id}`;
   const [width, setWidth] = useState(() => {
     const stored = Number(localStorage.getItem(storageKey));
@@ -57,6 +71,15 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
     localStorage.setItem(storageKey, String(width));
   }, [storageKey, width]);
 
+  useEffect(() => {
+    if (!onClose) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
   function onHandleMouseDown(e) {
     e.preventDefault();
     const startX = e.clientX;
@@ -79,6 +102,28 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
+  }
+
+  if (workspaceMode) {
+    return (
+      <div
+        className="absolute z-[60] flex animate-fade-in desktop-right-panel desktop-right-panel-pip"
+        style={{ width: `min(calc(100% - 28px), ${width + 14}px)` }}
+      >
+        <div
+          onMouseDown={onHandleMouseDown}
+          className="desktop-right-panel-resizer rounded-full cursor-col-resize flex-shrink-0 transition-all"
+          style={{
+            background: resizing ? 'var(--accent)' : 'var(--border)',
+            opacity: resizing ? 1 : 0.5,
+          }}
+          title="Drag to resize"
+        />
+        <div className="flex-1 min-w-0 h-full overflow-hidden glass-strong desktop-right-panel-surface">
+          {children}
+        </div>
+      </div>
+    );
   }
 
   if (isNarrowViewport) {
@@ -112,8 +157,8 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, children
   );
 }
 
-export default function ChatWindow() {
-  const { currentConversationId, isGenerating, isSearching, activeProjectId } = useChatContext();
+export default function ChatWindow({ onMiraExpressionChange, compact = false }) {
+  const { currentConversationId, isGenerating, isSearching, activeProjectId, showWorkspace } = useChatContext();
   const {
     messages,
     streamingContent,
@@ -136,11 +181,16 @@ export default function ChatWindow() {
   const [sharedPromptQueue, setSharedPromptQueue] = useState([]);
   const [activeConversationRun, setActiveConversationRun] = useState(null);
   const [composerHeight, setComposerHeight] = useState(176);
+  const [voiceScreenOpen, setVoiceScreenOpen] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState('');
+  const [voiceResponse, setVoiceResponse] = useState('');
   const scrollAreaRef = useRef(null);
   const autoScrollRef = useRef(true);
   const queueDrainRef = useRef(false);
   const previousConversationRef = useRef(currentConversationId);
   const autoOpenedWorkflowRef = useRef(null);
+  const voiceRef = useRef(null);
+  const voiceConversationRef = useRef('');
 
   const displayMessages = useMemo(() => {
     if (!isGenerating || messages.length === 0) return messages;
@@ -157,6 +207,11 @@ export default function ChatWindow() {
       },
     ];
   }, [messages, streamingContent, thinkingContent, isGenerating]);
+  const latestVisibleContent = displayMessages[displayMessages.length - 1]?.content || '';
+  const latestUserMessage = useMemo(
+    () => [...displayMessages].reverse().find((message) => message.role === 'user') || null,
+    [displayMessages],
+  );
 
   const handleScroll = useCallback(() => {
     const el = scrollAreaRef.current;
@@ -171,7 +226,7 @@ export default function ChatWindow() {
       if (el) el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(frame);
-  }, [composerHeight, displayMessages.length, streamingContent, thinkingContent]);
+  }, [composerHeight, displayMessages.length, latestVisibleContent, streamingContent, thinkingContent]);
 
   const handleComposerHeightChange = useCallback((height) => {
     setComposerHeight((current) => (Math.abs(current - height) > 1 ? height : current));
@@ -186,6 +241,75 @@ export default function ChatWindow() {
   const sendToChat = useCallback((content, attachments, ws, options = {}) => {
     return sendMessage(content, attachments, ws, options);
   }, [sendMessage]);
+
+  const handleVoiceTranscript = useCallback(async (text, { language } = {}) => {
+    setVoiceTranscript(text);
+    setVoiceResponse('');
+    voiceRef.current?.beginSpeech(language);
+    let streamedAnswer = '';
+    const result = await sendToChat(text, [], false, {
+      voice: true,
+      onResponseChunk: (answer, { final = false } = {}) => {
+        const visibleAnswer = sanitizeVoiceOutput(answer);
+        if (!visibleAnswer) return;
+        streamedAnswer = visibleAnswer;
+        setVoiceResponse(visibleAnswer);
+        voiceRef.current?.queueSpeech(visibleAnswer, language, final);
+      },
+    });
+    const visibleAnswer = resolveVoiceTurnAnswer(result?.answer, streamedAnswer);
+    if (!visibleAnswer) {
+      throw new Error('Mira returned an empty voice response.');
+    }
+    setVoiceResponse(visibleAnswer);
+    if (voiceRef.current?.active) {
+      await voiceRef.current.finishSpeech(visibleAnswer, language);
+    }
+  }, [sendToChat]);
+
+  const voice = useVoiceConversation({
+    onTranscript: handleVoiceTranscript,
+    onInterrupt: stopGenerating,
+  });
+  voiceRef.current = voice;
+
+  const startVoiceMode = useCallback(() => {
+    setVoiceTranscript('');
+    setVoiceResponse('');
+    setVoiceScreenOpen(true);
+    voiceConversationRef.current = currentConversationId || NEW_VOICE_CONVERSATION;
+    voiceRef.current?.start();
+  }, [currentConversationId]);
+
+  const closeVoiceMode = useCallback(() => {
+    voiceRef.current?.shutdown();
+    voiceConversationRef.current = '';
+    setVoiceScreenOpen(false);
+  }, []);
+
+  const retryVoiceMode = useCallback(() => {
+    setVoiceTranscript('');
+    setVoiceResponse('');
+    voiceRef.current?.start();
+  }, []);
+
+  useEffect(() => {
+    if (!voiceScreenOpen) return;
+    const resolution = resolveVoiceConversationBinding(
+      voiceConversationRef.current,
+      currentConversationId,
+    );
+    if (resolution.action === 'bind') {
+      voiceConversationRef.current = resolution.conversationId;
+      return;
+    }
+    if (resolution.action !== 'close') return;
+    voiceRef.current?.shutdown();
+    voiceConversationRef.current = '';
+    setVoiceScreenOpen(false);
+    // A voice turn belongs to the conversation where it was started.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentConversationId, voiceScreenOpen]);
 
   useEffect(() => {
     if (!activeProjectId || !currentConversationId) {
@@ -315,27 +439,85 @@ export default function ChatWindow() {
     setPanel('tasks');
   }, [taskWorkflow?.id, taskWorkflow?.status]);
 
-  const showingWelcome = messages.length === 0;
+  // A realtime subscription briefly clears the message array while a routed
+  // conversation hydrates. Keep the identity in chat mode for that session so
+  // the home-to-chat transition runs exactly once.
+  const showingWelcome = shouldShowMiraWelcome(currentConversationId, messages);
+  const miraExpression = resolveMiraExpression({
+    isWelcome: showingWelcome,
+    isGenerating,
+    isSearching,
+    voiceStatus: voice.status,
+    taskWorkflow,
+    lastMessage: displayMessages[displayMessages.length - 1],
+    latestUserMessage,
+  });
+  const miraActivity = resolveMiraActivity({
+    isWelcome: showingWelcome,
+    isGenerating,
+    isSearching,
+    voiceStatus: voice.status,
+    taskWorkflow,
+    thinkingContent,
+    streamingContent,
+  });
+
+  useEffect(() => {
+    onMiraExpressionChange?.(miraExpression);
+  }, [miraExpression, onMiraExpressionChange]);
 
   return (
-    <div className="flex-1 flex min-h-0 relative">
+    <div className={`flex-1 flex min-h-0 relative ${compact ? 'desktop-companion-chat' : ''}`}>
       {/* Particle background — always rendered, scattered when messages appear */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        <ParticleGlobe 
-          iconAttractor={iconAttractor}
-          hasMessages={messages.length > 0}
+      {!showWorkspace && !compact && (
+        <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
+          <ParticleGlobe
+            iconAttractor={iconAttractor}
+            hasMessages={messages.length > 0}
+            thinking={isGenerating || isSearching || taskWorkflow?.status === 'running'}
+            speaking={voice.status === 'speaking'}
+          />
+        </div>
+      )}
+      {!showWorkspace && !compact && (
+        <MiraBloub
+          expression={miraExpression}
+          activity={miraActivity}
+          expanded={!showingWelcome}
+          variant="ambient"
         />
-      </div>
+      )}
 
       {showShare && <ShareModal messages={messages} title={messages[0]?.content?.slice(0, 50)} onClose={() => setShowShare(false)} />}
+
+      {voiceScreenOpen && (
+        <VoiceModeOverlay
+          status={voice.status}
+          statusLabel={voice.statusLabel}
+          transcript={voiceTranscript}
+          response={voiceResponse}
+          onClose={closeVoiceMode}
+          onRetry={retryVoiceMode}
+        />
+      )}
 
       <div className="flex flex-col flex-1 min-w-0 min-h-0 relative z-10">
         <div ref={scrollAreaRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden hud-scroll-area" style={{ fontSize: chatFontSize }}>
           <div
-            className={`max-w-4xl mx-auto flex flex-col ${showingWelcome ? 'justify-center' : 'justify-end'} min-h-full pt-24 gap-6 px-4 w-full min-w-0`}
+            className={`max-w-4xl mx-auto flex flex-col ${compact ? 'desktop-companion-message-stack' : ''} ${showingWelcome ? 'justify-center pt-24' : 'justify-end pt-44'} min-h-full gap-6 px-4 w-full min-w-0`}
             style={{ paddingBottom: `${Math.max(216, composerHeight + 40)}px` }}
           >
-            {showingWelcome ? (
+            {showingWelcome && compact ? (
+              <div className="desktop-companion-empty">
+                <strong>Mini chat</strong>
+                <span>Ask MIRA anything, or open the full app for your workspace.</span>
+              </div>
+            ) : showingWelcome && showWorkspace ? (
+              <div className="desktop-workspace-chat-empty">
+                <strong>Workspace assistant</strong>
+                <span>Open a folder, then ask MIRA to inspect, edit, or test the project.</span>
+              </div>
+            ) : showingWelcome ? (
               <WelcomeScreen
                 onSend={(p, atts = []) => sendToChat(p, atts, webSearch)}
                 onIconHover={setIconAttractor}
@@ -381,16 +563,20 @@ export default function ChatWindow() {
           onEditQueued={editPromptInQueue}
           onSendQueuedNow={sendQueuedPromptNow}
           onHeightChange={handleComposerHeightChange}
+          voiceActive={voice.active}
+          voiceStatus={voice.status}
+          voiceStatusLabel={voice.statusLabel}
+          onToggleVoice={voiceScreenOpen ? closeVoiceMode : startVoiceMode}
         />
       </div>
 
       {panel === 'canvas' && (
-        <RightPanel id="canvas" defaultWidth={480} minWidth={320} maxWidth={1000}>
+        <RightPanel id="canvas" defaultWidth={480} minWidth={320} maxWidth={1000} workspaceMode={showWorkspace} onClose={() => setPanel(null)}>
           <CanvasPanel messages={messages} onClose={() => setPanel(null)} onRequestCanvas={requestCanvas} />
         </RightPanel>
       )}
       {panel === 'tasks' && (
-        <RightPanel id="tasks" defaultWidth={360} minWidth={280} maxWidth={720}>
+        <RightPanel id="tasks" defaultWidth={360} minWidth={280} maxWidth={720} workspaceMode={showWorkspace} onClose={() => setPanel(null)}>
           <TaskRunner
             workflow={taskWorkflow}
             onStop={stopGenerating}
@@ -407,7 +593,7 @@ export default function ChatWindow() {
         </RightPanel>
       )}
       {panel === 'tools' && (
-        <RightPanel id="tools" defaultWidth={320} minWidth={260} maxWidth={620}>
+        <RightPanel id="tools" defaultWidth={320} minWidth={260} maxWidth={620} workspaceMode={showWorkspace} onClose={() => setPanel(null)}>
           <ToolsPanel
             onPublish={(toolName, result) => {
               setPanel(null);
@@ -421,7 +607,7 @@ export default function ChatWindow() {
         </RightPanel>
       )}
       {panel === 'prompts' && (
-        <RightPanel id="prompts" defaultWidth={340} minWidth={280} maxWidth={680}>
+        <RightPanel id="prompts" defaultWidth={340} minWidth={280} maxWidth={680} workspaceMode={showWorkspace} onClose={() => setPanel(null)}>
           <PromptLibrary onUsePrompt={(p) => { sendToChat(p, [], webSearch); setPanel(null); }} onClose={() => setPanel(null)} />
         </RightPanel>
       )}

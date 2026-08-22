@@ -14,6 +14,22 @@ function ollamaBaseUrl() {
   return String(process.env.OLLAMA_API_URL || '').trim().replace(/\/api\/.*/i, '');
 }
 
+async function fetchWithRetry(url, signal) {
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(url, { signal, cache: 'no-store' });
+      if (response.ok || attempt > 0) return response;
+      lastError = new Error(`Health probe failed (${response.status}).`);
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error;
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  throw lastError || new Error('Health probe failed.');
+}
+
 export async function GET(req) {
   const startedAt = Date.now();
   const baseUrl = ollamaBaseUrl();
@@ -28,12 +44,15 @@ export async function GET(req) {
   const timeout = setTimeout(() => controller.abort(), 5000);
 
   try {
-    const [tagsResponse, psResponse] = await Promise.all([
-      fetch(`${baseUrl}/api/tags`, { signal: controller.signal, cache: 'no-store' }),
-      fetch(`${baseUrl}/api/ps`, { signal: controller.signal, cache: 'no-store' }),
+    const [tagsResult, psResult] = await Promise.allSettled([
+      fetchWithRetry(`${baseUrl}/api/tags`, controller.signal),
+      fetchWithRetry(`${baseUrl}/api/ps`, controller.signal),
     ]);
+    if (tagsResult.status !== 'fulfilled') throw tagsResult.reason;
+    const tagsResponse = tagsResult.value;
+    const psResponse = psResult.status === 'fulfilled' ? psResult.value : null;
     const tags = await tagsResponse.json().catch(() => ({}));
-    const ps = await psResponse.json().catch(() => ({}));
+    const ps = psResponse ? await psResponse.json().catch(() => ({})) : {};
     const models = Array.isArray(tags?.models) ? tags.models : [];
     const completionModelCount = models.filter((model) => {
       const capabilities = Array.isArray(model?.capabilities) ? model.capabilities : [];
@@ -42,11 +61,14 @@ export async function GET(req) {
     const loadedModelCount = Array.isArray(ps?.models) ? ps.models.length : 0;
     const registryReachable = tagsResponse.ok;
     const ready = registryReachable && completionModelCount > 0;
+    const modelWarm = loadedModelCount > 0;
     return json({
       ready,
       registryReachable,
       completionModelCount,
       loadedModelCount,
+      modelWarm,
+      state: modelWarm ? 'ready' : 'cold',
       latencyMs: Date.now() - startedAt,
     }, ready ? 200 : 503);
   } catch (error) {
