@@ -12,6 +12,8 @@ test('infers live research from the task goal before any search has run', () => 
   assert.equal(agentTaskRequiresResearch('Gather current market data via web search'), true);
   assert.equal(agentTaskRequiresResearch('Compare the latest product pricing'), true);
   assert.equal(agentTaskRequiresResearch('Rewrite this paragraph'), false);
+  assert.equal(agentTaskRequiresResearch('इस कंपनी के बारे में गहराई से रिसर्च करो'), true);
+  assert.equal(agentTaskRequiresResearch('深入研究这家公司的信誉'), true);
 });
 
 test('keeps an AI-requested task.run research plan wired to web search', async () => {
@@ -40,6 +42,8 @@ test('automatically plans research and explicit multi-step work but not simple q
   assert.equal(shouldRunAgentTask({ text: 'Create an implementation plan and break it into phases' }), true);
   assert.equal(shouldRunAgentTask({ text: 'What is 2 + 2?' }), false);
   assert.equal(shouldRunAgentTask({ text: 'Generate an image', mediaIntent: true }), false);
+  assert.equal(shouldRunAgentTask({ text: 'इस कंपनी के सोशल प्रोफाइल और रिव्यू पर रिसर्च करो' }), true);
+  assert.equal(shouldRunAgentTask({ text: 'ابحث بعمق عن سمعة هذه الشركة' }), true);
 });
 
 test('bounds and sanitizes model-generated plans', () => {
@@ -51,8 +55,8 @@ test('bounds and sanitizes model-generated plans', () => {
   }))), { goal: 'Research a topic', requiresResearch: true });
   assert.equal(plan.length, 5);
   assert.equal(plan[0].tool, 'web.search');
-  assert.equal(plan.filter((step) => step.tool === 'web.search').length, 2);
-  assert.ok(plan.slice(2).every((step) => step.tool === 'reason'));
+  assert.equal(plan.filter((step) => step.tool === 'web.search').length, 4);
+  assert.ok(plan.slice(4).every((step) => step.tool === 'reason'));
 });
 
 test('executes planned research and reasoning sequentially before returning the final handoff', async () => {

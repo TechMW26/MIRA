@@ -135,7 +135,10 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
-    ready = all(name in _models for name in ("english", "hindi", "stt"))
+    # A single optional language engine warming up must not disable the whole
+    # voice experience. STT plus at least one speech engine is usable; the
+    # speech endpoint still reports an exact language-engine error when needed.
+    ready = "stt" in _models and any(name in _models for name in ("english", "hindi"))
     payload = {
         "ready": ready,
         "engines": {name: name in _models for name in ("english", "hindi", "stt")},
@@ -144,6 +147,7 @@ async def health():
             "hindi": "neural" if edge_tts is not None else "local-fallback",
         },
         "uptimeSeconds": round(time.time() - _started_at),
+        "warming": sorted(name for name in ("english", "hindi", "stt") if name not in _models),
     }
     return JSONResponse(payload, status_code=200 if ready else 503)
 

@@ -1,4 +1,5 @@
 export const config = { maxDuration: 60 };
+import { guardRequest } from './_requestSecurity.js';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MIME = /^image\/(png|jpe?g|webp|gif|avif)$/i;
@@ -162,6 +163,8 @@ async function upstreamFailureResponse(upstream) {
 }
 
 export async function GET(req) {
+  const guarded = guardRequest(req, { limit: 12, windowMs: 60_000, key: 'generate-image' });
+  if (guarded) return guarded;
   const url = new URL(req.url);
   const rawPrompt = compactPrompt(url.searchParams.get('prompt') || '');
   if (!rawPrompt) {

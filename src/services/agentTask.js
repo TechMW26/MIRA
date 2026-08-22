@@ -1,7 +1,7 @@
 import { fallbackSearchQuery } from './searchQuery.js';
 
 const MAX_TASK_STEPS = 5;
-const MAX_RESEARCH_STEPS = 2;
+const MAX_RESEARCH_STEPS = 4;
 const MAX_CONTEXT_CHARS = 14000;
 const MAX_STEP_RESULT_CHARS = 5000;
 const MAX_STEP_ATTEMPTS = 3;
@@ -11,6 +11,7 @@ const FALLBACK_END = '=== END USER-SAFE TASK FALLBACK ===';
 const RESEARCH_WORKFLOW_PATTERN = /\b(research|investigate|deep\s+dive|due\s+diligence|literature\s+review|market\s+analysis|competitive\s+analysis|compare\s+(?:current|latest)|evaluate\s+(?:current|latest)|verify\s+across\s+sources)\b/i;
 const PLANNING_WORKFLOW_PATTERN = /\b(plan|roadmap|strategy|step[-\s]?by[-\s]?step|break\s+(?:it\s+)?down|split\s+into\s+steps|phases?|milestones?|end[-\s]?to[-\s]?end|implementation\s+plan|execution\s+plan|action\s+plan|first.+then|and\s+then)\b/i;
 const EXTERNAL_EVIDENCE_PATTERN = /\b(web|internet|online|sources?|citations?|evidence|data\s+sources?|current|latest|recent|today|market|news|pricing|availability|verify|fact[-\s]?check)\b/i;
+const MULTILINGUAL_RESEARCH_PATTERN = /(?:रिसर्च|शोध|गहराई\s+से|पता\s+लगाओ|जाँच\s+पड़ताल|जांच\s+पड़ताल|इंटरनेट\s+पर|वेब\s+पर|ताज़ा|ताजा|वर्तमान|नवीनतम|深入研究|调查|研究一下|詳しく調べ|調査|深掘り|심층\s*조사|조사해|연구해|بحث\s+متعمق|ابحث\s+بعمق|تحقق|исследуй|расследуй|проведи\s+исследование|গভীর\s+গবেষণা|তদন্ত)|\b(?:investiga|investigar|recherche|pesquisa|ricerca|recherchieren|untersuchen|onderzoek|araştır|araştırma|recherche approfondie)\b/iu;
 
 function compact(value = '', limit = MAX_CONTEXT_CHARS) {
   const normalized = String(value || '').replace(/\s+/g, ' ').trim();
@@ -29,7 +30,7 @@ export function shouldRunAgentTask({
   if (!value || simpleGreeting || mediaIntent || websiteInspection) return false;
   const explicitResearch = RESEARCH_WORKFLOW_PATTERN.test(value);
   const explicitPlanning = PLANNING_WORKFLOW_PATTERN.test(value);
-  if (explicitResearch || explicitPlanning) return true;
+  if (explicitResearch || MULTILINGUAL_RESEARCH_PATTERN.test(value) || explicitPlanning) return true;
   if (requiresResearch && complexity !== 'low' && /\b(compare|recommend|assess|analy[sz]e|report|options?|tradeoffs?|pros?\s+and\s+cons?)\b/i.test(value)) {
     return true;
   }
@@ -38,7 +39,7 @@ export function shouldRunAgentTask({
 
 export function agentTaskRequiresResearch(goal = '', explicit = false) {
   const value = String(goal || '').trim();
-  return Boolean(explicit || RESEARCH_WORKFLOW_PATTERN.test(value) || EXTERNAL_EVIDENCE_PATTERN.test(value));
+  return Boolean(explicit || RESEARCH_WORKFLOW_PATTERN.test(value) || EXTERNAL_EVIDENCE_PATTERN.test(value) || MULTILINGUAL_RESEARCH_PATTERN.test(value));
 }
 
 function extractJsonArray(text = '') {
@@ -131,12 +132,18 @@ export function buildAgentPlanPrompt({ goal = '', context = '', requiresResearch
 function formatSearchEvidence(payload = {}, query = '') {
   const results = Array.isArray(payload?.results) ? payload.results.slice(0, 8) : [];
   if (!results.length) return `No relevant live evidence was returned for: ${query}`;
-  return results.map((result, index) => [
+  const evidence = results.map((result, index) => [
     `${index + 1}. ${compact(result?.title || 'Untitled source', 240)}`,
     result?.publishedAt ? `Published: ${result.publishedAt}` : '',
+    result?.accessStatus && result.accessStatus !== 'ok' ? `Page access: ${result.accessStatus}` : '',
     compact(result?.snippet || '', 1200),
     result?.url ? `Source: ${result.url}` : '',
   ].filter(Boolean).join('\n')).join('\n\n');
+  const restricted = Array.isArray(payload?.research?.restricted) ? payload.research.restricted : [];
+  if (!restricted.length) return evidence;
+  return `${evidence}\n\nRestricted pages (do not pretend these were read):\n${restricted
+    .map((item) => `- ${item.url}: ${item.status}`)
+    .join('\n')}`;
 }
 
 function buildStepPrompt({ goal, context, plan, step, index, results }) {
@@ -271,7 +278,7 @@ export async function runAgentTask({
         operation: async () => {
           if (step.tool === 'web.search' && typeof search === 'function') {
             const resolvedQuery = resolveTaskSearchQuery(step.query, goal, context);
-            const evidence = await search(resolvedQuery, { freshness });
+            const evidence = await search(resolvedQuery, { freshness, deepResearch: true });
             if (!Array.isArray(evidence?.results) || evidence.results.length === 0) {
               throw new Error('Web search returned no useful evidence.');
             }

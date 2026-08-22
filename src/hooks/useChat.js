@@ -73,7 +73,7 @@ import {
   humanizeAssistantText,
   polishAssistantAnswer,
 } from '../services/responseQuality';
-import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
+import { detectDocumentRequest, sanitizeDocumentContent } from '../utils/documentContent.js';
 import { diagnosticLog, diagnosticWarn } from '../services/diagnostics.js';
 import { buildSearchToolGuidance, decideRetrievalPolicy } from '../services/retrievalPolicy.js';
 import {
@@ -128,6 +128,10 @@ const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
 const MAX_DESKTOP_AGENT_ROUNDS = 32;
 const MAX_DESKTOP_AGENT_REMINDERS = 4;
 const MAX_DESKTOP_TOOL_RESULT_CHARS = 16000;
+// Additional model passes can double or triple grounded-response latency.
+// Deterministic evidence fallbacks are safer when a completed model draft is
+// unusable or the provider is already failing.
+const ENABLE_MODEL_QUALITY_RETRIES = false;
 
 const DESKTOP_TOOL_NAMES = new Set([
   AGENT_CAPABILITIES.FILE_READ,
@@ -2462,7 +2466,7 @@ export default function useChat() {
               cancelPendingStreamFlushes();
               setStreamingContent('');
               setThinkingContent('');
-              if (timedOut) {
+              if (timedOut || !ENABLE_MODEL_QUALITY_RETRIES) {
                 fullText = buildEvidenceFallbackAnswer(
                   groundingSearchData,
                   groundingSearchQuery || content,
@@ -2963,7 +2967,7 @@ export default function useChat() {
                     requiresResearch: agentTaskRequiresResearch(goal, taskRequiresResearch),
                     freshness: needsFreshInformation(content),
                     generate,
-                    search: async (query, { freshness }) => {
+                    search: async (query, { freshness, deepResearch }) => {
                       if (!isCurrentRun()) {
                         const cancelled = new Error('Task workflow was stopped.');
                         cancelled.name = 'AbortError';
@@ -2976,6 +2980,8 @@ export default function useChat() {
                         freshness,
                         includeMedia: false,
                         requireTextResults: true,
+                        deepResearch: Boolean(deepResearch),
+                        crawl: true,
                       }, {
                         attemptsPerQuery: 2,
                         retryEmpty: true,
@@ -3130,7 +3136,14 @@ export default function useChat() {
             && groundingSearchData?.results?.length
             && normalizeSearchComparison(requestedWebSearchQuery) === normalizeSearchComparison(groundingSearchQuery),
           );
-          if (requestedSearchAlreadyGrounded && isCurrentRun()) {
+          if (requestedSearchAlreadyGrounded && !ENABLE_MODEL_QUALITY_RETRIES && isCurrentRun()) {
+            fullText = buildEvidenceFallbackAnswer(
+              groundingSearchData,
+              groundingSearchQuery || content,
+            );
+            requestedWebSearchQuery = '';
+            if (requestedToolCall?.name === TOOL_NAMES.WEB_SEARCH) requestedToolCall = null;
+          } else if (requestedSearchAlreadyGrounded && isCurrentRun()) {
             diagnosticWarn('search', 'model repeated an already-completed search; regenerating from attached evidence', {
               runId,
               query: String(requestedWebSearchQuery).slice(0, 180),
@@ -3354,7 +3367,18 @@ export default function useChat() {
             })
             : { ok: true, reasons: [] };
 
-          if (!qualityAssessment.ok && isCurrentRun()) {
+          if (!qualityAssessment.ok && !ENABLE_MODEL_QUALITY_RETRIES && isCurrentRun()) {
+            diagnosticWarn('model', 'quality fallback activated without another model pass', {
+              runId,
+              reasons: qualityAssessment.reasons,
+            });
+            fullText = buildEvidenceFallbackAnswer(
+              groundingSearchData,
+              groundingSearchQuery || content,
+            );
+          }
+
+          if (!qualityAssessment.ok && ENABLE_MODEL_QUALITY_RETRIES && isCurrentRun()) {
             diagnosticWarn('model', 'quality rewrite activated', {
               runId,
               reasons: qualityAssessment.reasons,
@@ -3445,6 +3469,7 @@ export default function useChat() {
               };
               try {
                 const filename = `mira-${requestedFormat}-${Date.now()}.${requestedFormat}`;
+                const { exportDocument } = await import('../utils/documentExport.js');
                 await exportDocument(documentContent, requestedFormat, filename);
               } catch (exportErr) {
                 documentUpdate.exportStatus = 'failed';

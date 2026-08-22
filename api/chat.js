@@ -1,5 +1,6 @@
 import { parseOllamaKeepAlive } from './ollamaConfig.js';
-import { requestManagedChat } from './code-assist.js';
+import { requestDeepSeekChat, requestManagedChat } from './code-assist.js';
+import { guardRequest } from './_requestSecurity.js';
 import {
   composeMiraSystemPrompt,
   MIRA_IDENTITY_PRIMER,
@@ -50,12 +51,31 @@ const ALLOWED_TOOL_NAMES = new Set([
 ]);
 const ACTIVE_CHAT_REQUESTS = new Map();
 const MODEL_REGISTRY_CACHE = { expiresAt: 0, selected: null };
-const MODEL_REGISTRY_CACHE_TTL_MS = 10 * 60 * 1000;
+const MODEL_REGISTRY_CACHE_TTL_MS = 60 * 1000;
+const MODEL_FAILURE_COOLDOWN_MS = 2 * 60 * 1000;
+const MODEL_FAILURES = new Map();
+const RETRYABLE_UPSTREAM_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+const DEEPSEEK_FAILURE_COOLDOWN_MS = 30 * 1000;
+let deepSeekUnavailableUntil = 0;
+
+function prefersDeepSeekChat() {
+  return String(process.env.MIRA_CHAT_PROVIDER || 'deepseek').trim().toLowerCase() !== 'ollama';
+}
 
 export function getContextTokens(value = process.env.OLLAMA_CONTEXT_TOKENS) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return 16384;
   return Math.max(1, Math.round(parsed));
+}
+
+export function getAdaptiveContextTokens(messages = [], maxTokens = OLLAMA_MAX_TOKENS, configuredLimit = getContextTokens()) {
+  const promptChars = (Array.isArray(messages) ? messages : [])
+    .reduce((total, message) => total + String(message?.content || '').length, 0);
+  const estimatedPromptTokens = Math.ceil(promptChars / 3.5);
+  const outputReserve = Math.max(256, Math.min(512, Number(maxTokens) || 512));
+  const required = Math.max(2048, estimatedPromptTokens + outputReserve);
+  const rounded = 2 ** Math.ceil(Math.log2(required));
+  return Math.max(1, Math.min(getContextTokens(configuredLimit), rounded));
 }
 
 export function getUpstreamStartTimeoutMs(value = process.env.OLLAMA_START_TIMEOUT_MS) {
@@ -65,9 +85,9 @@ export function getUpstreamStartTimeoutMs(value = process.env.OLLAMA_START_TIMEO
 }
 
 export function getUpstreamConnectTimeoutMs(value = process.env.OLLAMA_CONNECT_TIMEOUT_MS) {
-  const parsed = Number(value || 8000);
-  if (!Number.isFinite(parsed)) return 8000;
-  return Math.max(3000, Math.min(20000, Math.round(parsed)));
+  const parsed = Number(value || 28000);
+  if (!Number.isFinite(parsed)) return 28000;
+  return Math.max(10000, Math.min(50000, Math.round(parsed)));
 }
 
 function jsonResponse(payload, status = 200) {
@@ -85,34 +105,76 @@ function registryModelName(entry) {
   return String(entry?.name || entry?.model || '').trim();
 }
 
-export function selectRegistryModel(models = [], preferredModel = '') {
+function registryModelSize(entry) {
+  const size = Number(entry?.size || 0);
+  return Number.isFinite(size) && size > 0 ? size : 0;
+}
+
+function modelSelectionScore(entry, residentNames = new Set()) {
+  const name = registryModelName(entry);
+  const capabilities = Array.isArray(entry?.capabilities) ? entry.capabilities : [];
+  const sizeGb = registryModelSize(entry) / 1_000_000_000;
+  let score = 0;
+  if (residentNames.has(name)) score += 1000;
+  if (capabilities.includes('thinking')) score += 25;
+  if (capabilities.includes('tools')) score += 25;
+  // General chat must not evict/load the vision model merely because it is
+  // smaller. Vision has its own endpoint and is substantially slower for text.
+  if (!capabilities.includes('vision')) score += 80;
+  // Cold-start reliability matters more than a marginally larger model. The
+  // penalty is soft, so a configured or already resident model still wins.
+  score -= Math.min(40, sizeGb * 2);
+  return score;
+}
+
+export function selectRegistryModel(models = [], preferredModel = '', {
+  residentNames = [],
+  excludedNames = [],
+} = {}) {
   if (!Array.isArray(models)) return null;
-  const usable = models.filter((entry) => {
+  const excluded = new Set(excludedNames);
+  const residents = new Set(residentNames);
+  const candidates = models.filter((entry) => {
     const name = registryModelName(entry);
     if (!name) return false;
     const capabilities = Array.isArray(entry?.capabilities) ? entry.capabilities : [];
     return capabilities.length === 0 || capabilities.includes('completion');
   });
+  const usable = candidates.filter((entry) => !excluded.has(registryModelName(entry)));
   if (!usable.length) return null;
   const preferred = String(preferredModel || '').trim();
   const selected = (preferred
     ? usable.find((entry) => registryModelName(entry) === preferred)
-    : null) || usable.find((entry) => {
-    const capabilities = Array.isArray(entry?.capabilities) ? entry.capabilities : [];
-    return capabilities.includes('thinking') && !capabilities.includes('vision');
-  }) || usable.find((entry) => {
-    const capabilities = Array.isArray(entry?.capabilities) ? entry.capabilities : [];
-    return !capabilities.includes('vision');
-  }) || usable[0];
+    : null) || [...usable].sort((left, right) => (
+    modelSelectionScore(right, residents) - modelSelectionScore(left, residents)
+      || registryModelSize(left) - registryModelSize(right)
+  ))[0];
   return {
     name: registryModelName(selected),
     capabilities: Array.isArray(selected.capabilities) ? selected.capabilities : [],
   };
 }
 
-async function fetchRegistryModel(signal) {
+function activeModelFailures(now = Date.now()) {
+  for (const [name, expiresAt] of MODEL_FAILURES) {
+    if (expiresAt <= now) MODEL_FAILURES.delete(name);
+  }
+  return [...MODEL_FAILURES.keys()];
+}
+
+function markModelFailure(model) {
+  const name = registryModelName(model);
+  if (!name) return;
+  MODEL_FAILURES.set(name, Date.now() + MODEL_FAILURE_COOLDOWN_MS);
+  if (MODEL_REGISTRY_CACHE.selected?.name === name) {
+    MODEL_REGISTRY_CACHE.selected = null;
+    MODEL_REGISTRY_CACHE.expiresAt = 0;
+  }
+}
+
+async function fetchRegistryModel(signal, { forceRefresh = false, excludedNames = [] } = {}) {
   const now = Date.now();
-  if (MODEL_REGISTRY_CACHE.selected && MODEL_REGISTRY_CACHE.expiresAt > now) {
+  if (!forceRefresh && MODEL_REGISTRY_CACHE.selected && MODEL_REGISTRY_CACHE.expiresAt > now) {
     return MODEL_REGISTRY_CACHE.selected;
   }
 
@@ -124,17 +186,39 @@ async function fetchRegistryModel(signal) {
   signal?.addEventListener?.('abort', abort, { once: true });
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetch(`${baseUrl}/api/tags`, { signal: controller.signal });
-    if (!response.ok) throw new Error(`Model registry request failed (${response.status}).`);
-    const payload = await response.json().catch(() => ({}));
-    const selected = selectRegistryModel(payload?.models, process.env.OLLAMA_CHAT_MODEL);
-    if (!selected) throw new Error('The model registry returned no completion model.');
+    const residencySignal = typeof AbortSignal.any === 'function'
+      ? AbortSignal.any([controller.signal, AbortSignal.timeout(2000)])
+      : controller.signal;
+    const [tagsResponse, psResponse] = await Promise.all([
+      fetch(`${baseUrl}/api/tags`, { signal: controller.signal }),
+      fetch(`${baseUrl}/api/ps`, { signal: residencySignal }).catch(() => null),
+    ]);
+    if (!tagsResponse.ok) throw new Error(`Model registry request failed (${tagsResponse.status}).`);
+    const [payload, residency] = await Promise.all([
+      tagsResponse.json().catch(() => ({})),
+      psResponse?.ok ? psResponse.json().catch(() => ({})) : {},
+    ]);
+    const residentNames = (Array.isArray(residency?.models) ? residency.models : [])
+      .map(registryModelName)
+      .filter(Boolean);
+    const selected = selectRegistryModel(payload?.models, process.env.OLLAMA_CHAT_MODEL, {
+      residentNames,
+      excludedNames: [...new Set([...activeModelFailures(now), ...excludedNames])],
+    });
+    if (!selected) {
+      const unavailableError = new Error('No completion model is currently available.');
+      unavailableError.code = 'no_available_model';
+      throw unavailableError;
+    }
     MODEL_REGISTRY_CACHE.selected = selected;
     MODEL_REGISTRY_CACHE.expiresAt = now + MODEL_REGISTRY_CACHE_TTL_MS;
     return selected;
   } catch (error) {
     if (signal?.aborted) throw error;
-    if (MODEL_REGISTRY_CACHE.selected) return MODEL_REGISTRY_CACHE.selected;
+    const blocked = new Set([...activeModelFailures(), ...excludedNames]);
+    if (MODEL_REGISTRY_CACHE.selected && !blocked.has(MODEL_REGISTRY_CACHE.selected.name)) {
+      return MODEL_REGISTRY_CACHE.selected;
+    }
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -160,7 +244,7 @@ function normalizeMessages(messages = [], systemPrompt = '') {
 }
 
 function applyThinkingPreference(messages = [], think, supportsNativeThinking = false) {
-  if (typeof think !== 'boolean' || supportsNativeThinking) return messages;
+  if (typeof think !== 'boolean') return messages;
   const directive = think ? '/think' : '/no_think';
   const target = [...messages].reverse().findIndex((message) => message.role === 'user');
   if (target < 0) return messages;
@@ -209,7 +293,7 @@ export function buildUpstreamPayload({
   );
   const options = {
     num_predict: safeMax,
-    num_ctx: getContextTokens(),
+    num_ctx: getAdaptiveContextTokens(normalized, safeMax),
     temperature: OLLAMA_TEMPERATURE,
     top_p: OLLAMA_TOP_P,
     repeat_penalty: OLLAMA_REPEAT_PENALTY,
@@ -236,40 +320,38 @@ export function buildUpstreamPayload({
 
 async function fetchUpstream(payload, signal) {
   if (!OLLAMA_CHAT_API_URL) throw new Error('OLLAMA_API_URL is not configured.');
-  let lastError;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const attemptController = new AbortController();
-    let connectTimedOut = false;
-    const abortAttempt = () => attemptController.abort();
-    if (signal?.aborted) abortAttempt();
-    else signal?.addEventListener?.('abort', abortAttempt, { once: true });
-    const connectTimer = setTimeout(() => {
-      connectTimedOut = true;
-      attemptController.abort();
-    }, getUpstreamConnectTimeoutMs());
-    try {
-      return await fetch(OLLAMA_CHAT_API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: attemptController.signal,
-      });
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      if (connectTimedOut) {
-        const timeoutError = new Error('The model server did not accept the request in time.');
-        timeoutError.code = 'upstream_connect_timeout';
-        throw timeoutError;
-      }
-      if (error?.name === 'AbortError') throw error;
-      lastError = error;
-      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 250));
-    } finally {
-      clearTimeout(connectTimer);
-      signal?.removeEventListener?.('abort', abortAttempt);
+  const attemptController = new AbortController();
+  let connectTimedOut = false;
+  const abortAttempt = () => attemptController.abort();
+  if (signal?.aborted) abortAttempt();
+  else signal?.addEventListener?.('abort', abortAttempt, { once: true });
+  const connectTimer = setTimeout(() => {
+    connectTimedOut = true;
+    attemptController.abort();
+  }, getUpstreamConnectTimeoutMs());
+  try {
+    return await fetch(OLLAMA_CHAT_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: attemptController.signal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (connectTimedOut) {
+      const timeoutError = new Error('The model server did not begin the response in time.');
+      timeoutError.code = 'upstream_connect_timeout';
+      throw timeoutError;
     }
+    if (error?.name === 'AbortError') throw error;
+    const connectionError = new Error('The model server closed the connection before responding.');
+    connectionError.code = 'upstream_connection_closed';
+    connectionError.cause = error;
+    throw connectionError;
+  } finally {
+    clearTimeout(connectTimer);
+    signal?.removeEventListener?.('abort', abortAttempt);
   }
-  throw lastError || new Error('The model server is unreachable.');
 }
 
 export async function managedFallbackResponse(body, signal) {
@@ -303,7 +385,33 @@ export async function managedFallbackResponse(body, signal) {
   }
 }
 
+export async function deepSeekChatResponse(body, signal) {
+  const result = await requestDeepSeekChat({
+    messages: body?.messages,
+    systemPrompt: composeMiraSystemPrompt(body?.systemPrompt),
+    tools: sanitizeTools(body?.tools),
+    maxTokens: body?.max_tokens,
+    think: body?.think === true,
+    signal,
+  });
+  const message = {
+    ...(result.answer ? { content: result.answer } : {}),
+    ...(result.thinking ? { thinking: result.thinking } : {}),
+    ...(result.toolCalls?.length ? { tool_calls: result.toolCalls } : {}),
+  };
+  return new Response(`${JSON.stringify({ model: result.model, message, done: true })}\n`, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/x-ndjson',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Mira-Provider': 'deepseek',
+    },
+  });
+}
+
 export async function POST(req) {
+  const guarded = guardRequest(req, { limit: 24, windowMs: 60_000, key: 'chat' });
+  if (guarded) return guarded;
   let requestId = '';
   let upstreamStartTimedOut = false;
   let upstreamStartTimer = null;
@@ -338,45 +446,103 @@ export async function POST(req) {
     if (req.signal?.aborted) onClientAbort();
     else req.signal?.addEventListener?.('abort', onClientAbort, { once: true });
 
+    if (
+      prefersDeepSeekChat()
+      && String(process.env.DEEPSEEK_API_KEY || '').trim()
+      && Date.now() >= deepSeekUnavailableUntil
+    ) {
+      try {
+        const deepSeekSignal = typeof AbortSignal.any === 'function'
+          ? AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)])
+          : controller.signal;
+        const response = await deepSeekChatResponse(body, deepSeekSignal);
+        deepSeekUnavailableUntil = 0;
+        clearTimeout(upstreamStartTimer);
+        upstreamStartTimer = null;
+        req.signal?.removeEventListener?.('abort', onClientAbort);
+        if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+        return response;
+      } catch (error) {
+        if (controller.signal.aborted || req.signal?.aborted) throw error;
+        deepSeekUnavailableUntil = Date.now() + DEEPSEEK_FAILURE_COOLDOWN_MS;
+        // The private model host remains a provider-independent fallback when
+        // DeepSeek is rate-limited, unavailable, or not configured correctly.
+      }
+    }
+    // Give Ollama its own startup budget. A failed fast-provider attempt must
+    // not consume the cold-start/failover window before Ollama is contacted.
     upstreamStartTimer = setTimeout(() => {
       upstreamStartTimedOut = true;
       controller.abort();
     }, getUpstreamStartTimeoutMs());
-    const registryModel = await fetchRegistryModel(controller.signal);
-    const upstreamPayload = buildUpstreamPayload({
-      registryModel,
-      messages: body.messages,
-      systemPrompt: body.systemPrompt,
-      think: body.think,
-      maxTokens: body.max_tokens,
-      tools: body.tools,
-    });
     let upstream;
-    try {
-      upstream = await fetchUpstream(upstreamPayload, controller.signal);
-    } catch (error) {
+    let registryModel = await fetchRegistryModel(controller.signal);
+    let modelFailoverUsed = false;
+    let lastUpstreamError = null;
+    const attemptedModels = [];
+    for (let modelAttempt = 0; modelAttempt < 2 && registryModel; modelAttempt += 1) {
+      attemptedModels.push(registryModel.name);
+      const upstreamPayload = buildUpstreamPayload({
+        registryModel,
+        messages: body.messages,
+        systemPrompt: body.systemPrompt,
+        think: body.think,
+        maxTokens: body.max_tokens,
+        tools: body.tools,
+      });
+      try {
+        upstream = await fetchUpstream(upstreamPayload, controller.signal);
+      } catch (error) {
+        if (controller.signal.aborted || req.signal?.aborted) throw error;
+        lastUpstreamError = error;
+        markModelFailure(registryModel);
+      }
+
+      if (upstream?.ok) break;
+      if (upstream) {
+        const detail = await upstream.text().catch(() => '');
+        const upstreamError = new Error(detail || `Upstream request failed (${upstream.status}).`);
+        upstreamError.status = upstream.status;
+        upstreamError.code = 'upstream_http_error';
+        lastUpstreamError = upstreamError;
+        if (RETRYABLE_UPSTREAM_STATUS.has(upstream.status)) markModelFailure(registryModel);
+      }
+
+      const canTryAnotherModel = modelAttempt === 0 && (
+        !upstream || RETRYABLE_UPSTREAM_STATUS.has(upstream.status)
+      );
+      if (!canTryAnotherModel) break;
+      registryModel = await fetchRegistryModel(controller.signal, {
+        forceRefresh: true,
+        excludedNames: attemptedModels,
+      }).catch(() => null);
+      if (registryModel) modelFailoverUsed = true;
+      upstream = null;
+    }
+
+    if (!upstream?.ok) {
       clearTimeout(upstreamStartTimer);
       upstreamStartTimer = null;
       req.signal?.removeEventListener?.('abort', onClientAbort);
       if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
-      if (controller.signal.aborted || req.signal?.aborted) throw error;
-      return await managedFallbackResponse(body, req.signal);
-    }
-    clearTimeout(upstreamStartTimer);
-    upstreamStartTimer = null;
-    if (!upstream.ok) {
-      const detail = await upstream.text().catch(() => '');
-      req.signal?.removeEventListener?.('abort', onClientAbort);
-      if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
-      if ([500, 502, 503, 504].includes(upstream.status)) {
+      if (body?.desktopCoding === true) {
         try {
           return await managedFallbackResponse(body, req.signal);
         } catch {
-          // Return the original upstream error when both providers are unavailable.
+          // Return a provider-neutral error when both coding providers fail.
         }
       }
-      return jsonResponse({ error: detail || `Upstream request failed (${upstream.status}).` }, 502);
+      const timedOut = lastUpstreamError?.code === 'upstream_connect_timeout';
+      return jsonResponse({
+        error: timedOut
+          ? 'The model is still starting. Please retry shortly.'
+          : 'The model service is temporarily unavailable.',
+        code: timedOut ? 'upstream_start_timeout' : 'upstream_unavailable',
+        retryable: true,
+      }, timedOut ? 504 : 503);
     }
+    clearTimeout(upstreamStartTimer);
+    upstreamStartTimer = null;
 
     const proxiedBody = new ReadableStream({
       async start(streamController) {
@@ -417,6 +583,8 @@ export async function POST(req) {
         'Content-Type': upstream.headers.get('Content-Type') || 'application/x-ndjson',
         'Cache-Control': 'no-cache, no-transform',
         'X-Accel-Buffering': 'no',
+        'X-Mira-Provider': 'ollama',
+        ...(modelFailoverUsed ? { 'X-Mira-Model-Failover': '1' } : {}),
       },
     });
   } catch (error) {
@@ -427,6 +595,13 @@ export async function POST(req) {
         error: 'The model is busy and did not begin responding in time.',
         code: 'model_start_timeout',
       }, 504);
+    }
+    if (error?.code === 'no_available_model') {
+      return jsonResponse({
+        error: 'The model service is recovering. Please retry shortly.',
+        code: 'model_cooldown',
+        retryable: true,
+      }, 503);
     }
     const aborted = error?.name === 'AbortError';
     return jsonResponse({ error: aborted ? 'Generation stopped.' : (error?.message || 'Chat request failed.') }, aborted ? 499 : 500);

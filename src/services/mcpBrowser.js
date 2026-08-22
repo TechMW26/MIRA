@@ -20,6 +20,8 @@ function normalizeDocumentation(payload = {}, request = {}) {
     metadata: page.metadata && typeof page.metadata === 'object' ? page.metadata : {},
     accessibility: page.accessibility || page.accessibilityTree || '',
     capturedAt: page.capturedAt || new Date().toISOString(),
+    accessStatus: String(page.accessStatus || page.statusText || 'ok'),
+    provider: String(page.provider || ''),
   };
 }
 
@@ -38,6 +40,7 @@ export function formatBrowserDocumentation(documentation = {}) {
     `URL: ${documentation.url || 'unknown'}`,
     `Title: ${documentation.title || 'unknown'}`,
     `Captured: ${documentation.capturedAt || 'unknown'}`,
+    `Access status: ${documentation.accessStatus || 'ok'}`,
     documentation.summary ? `\nSummary:\n${documentation.summary}` : '',
     documentation.structure ? `\nPage structure:\n${typeof documentation.structure === 'string' ? documentation.structure : JSON.stringify(documentation.structure, null, 2)}` : '',
     documentation.accessibility ? `\nAccessibility tree:\n${typeof documentation.accessibility === 'string' ? documentation.accessibility : JSON.stringify(documentation.accessibility, null, 2)}` : '',
@@ -91,6 +94,30 @@ async function requestThroughServerGateway(request) {
     body: JSON.stringify({ url: request.url, task: request.task }),
   });
   const payload = await response.json().catch(() => ({}));
+  if (!response.ok && [404, 503].includes(response.status)) {
+    const crawlResponse = await fetch('/api/crawl', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: request.url }),
+    });
+    const crawlPayload = await crawlResponse.json().catch(() => ({}));
+    const page = crawlPayload?.pages?.[0];
+    if (page) {
+      return {
+        ...page,
+        source: page.content || page.summary || '',
+        metadata: {
+          provider: page.provider || 'jina-reader',
+          accessStatus: page.accessStatus || 'ok',
+        },
+      };
+    }
+    throw new Error(
+      crawlPayload?.error
+      || payload?.error
+      || `Website inspection failed (${response.status}).`,
+    );
+  }
   if (!response.ok) throw new Error(payload?.error || `Browser MCP gateway failed (${response.status}).`);
   return payload.documentation || payload.result || payload;
 }

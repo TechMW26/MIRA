@@ -11,11 +11,17 @@ test('routes current, explicit, and high-stakes facts to search', () => {
   assert.equal(processQuery('What is the latest Bitcoin price?').needsSearch, true);
   assert.equal(processQuery('Search the web for MIRA release notes').needsSearch, true);
   assert.equal(processQuery('What are the current visa regulations for India?').needsSearch, true);
+  assert.equal(processQuery('इंटरनेट पर खोजो कि आज बिटकॉइन की कीमत क्या है').needsSearch, true);
+  assert.equal(processQuery('Busca en internet las noticias actuales').needsSearch, true);
+  assert.equal(processQuery('在网上搜索今天的新闻').needsSearch, true);
+  assert.equal(processQuery('ابحث في الإنترنت عن أحدث الأخبار').needsSearch, true);
 });
 
 test('identifies requests that require newest-first evidence', () => {
   assert.equal(needsFreshInformation('What is the latest release?'), true);
   assert.equal(needsFreshInformation('Explain the release process'), false);
+  assert.equal(needsFreshInformation('आज की ताज़ा खबर क्या है?'), true);
+  assert.equal(needsFreshInformation('最新ニュースを調べて'), true);
 });
 
 test('routes sufficiently specific niche topics to search', () => {

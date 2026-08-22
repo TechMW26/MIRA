@@ -1,88 +1,114 @@
 import { createContext, useContext, useEffect, useState } from 'react';
-import { db } from '../config/firebase';
-import { ref, get, set } from 'firebase/database';
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile,
+} from 'firebase/auth';
+import { get, ref, set, update } from 'firebase/database';
+import { auth, db, firebaseAuthConfigured } from '../config/firebase';
 
 const AuthContext = createContext(null);
+const LEGACY_SESSION_KEY = 'mira_legacy_session';
+const LEGACY_ITERATIONS = 210_000;
+const allowLegacyAuth = import.meta.env.DEV || import.meta.env.VITE_ENABLE_LEGACY_AUTH === 'true';
 
-const TOKEN_KEY = 'mira_token';
-const JWT_SECRET = 'mira_jwt_secret_2024_v2';
-const TOKEN_EXPIRY_DAYS = 30;
-
-// ── JWT helpers (HMAC-SHA256 via Web Crypto) ───────────────────
-function base64UrlEncode(str) {
-  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+function publicUser(value) {
+  if (!value) return null;
+  return {
+    uid: value.uid,
+    email: value.email || '',
+    displayName: value.displayName || '',
+    photoURL: value.photoURL || '',
+  };
 }
 
-function base64UrlDecode(str) {
-  str = str.replace(/-/g, '+').replace(/_/g, '/');
-  while (str.length % 4) str += '=';
-  return atob(str);
+function bytesToHex(bytes) {
+  return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function getSigningKey() {
-  const enc = new TextEncoder();
-  return crypto.subtle.importKey(
+function randomHex(length = 16) {
+  return bytesToHex(crypto.getRandomValues(new Uint8Array(length)));
+}
+
+async function pbkdf2(password, salt, iterations = LEGACY_ITERATIONS) {
+  const material = await crypto.subtle.importKey(
     'raw',
-    enc.encode(JWT_SECRET),
-    { name: 'HMAC', hash: 'SHA-256' },
+    new TextEncoder().encode(password),
+    'PBKDF2',
     false,
-    ['sign', 'verify'],
+    ['deriveBits'],
   );
+  const bits = await crypto.subtle.deriveBits({
+    name: 'PBKDF2',
+    hash: 'SHA-256',
+    salt: new TextEncoder().encode(salt),
+    iterations,
+  }, material, 256);
+  return bytesToHex(new Uint8Array(bits));
 }
 
-async function createJWT(payload) {
-  const header = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const body = base64UrlEncode(JSON.stringify(payload));
-  const data = `${header}.${body}`;
-
-  const key = await getSigningKey();
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
-  const sigStr = base64UrlEncode(String.fromCharCode(...new Uint8Array(sig)));
-
-  return `${data}.${sigStr}`;
+async function createLegacyPassword(password) {
+  const salt = randomHex();
+  return `pbkdf2$${LEGACY_ITERATIONS}$${salt}$${await pbkdf2(password, salt)}`;
 }
 
-async function verifyJWT(token) {
-  try {
-    const [header, body, sig] = token.split('.');
-    if (!header || !body || !sig) return null;
-
-    const key = await getSigningKey();
-    const data = `${header}.${body}`;
-    const sigBytes = Uint8Array.from(base64UrlDecode(sig), (c) => c.charCodeAt(0));
-
-    const valid = await crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(data));
-    if (!valid) return null;
-
-    const payload = JSON.parse(base64UrlDecode(body));
-
-    // Check expiry
-    if (payload.exp && Date.now() > payload.exp) return null;
-
-    return payload;
-  } catch {
-    return null;
+async function verifyLegacyPassword(password, stored = '') {
+  const parts = String(stored).split('$');
+  if (parts[0] === 'pbkdf2' && parts.length === 4) {
+    const iterations = Math.max(100_000, Number(parts[1]) || LEGACY_ITERATIONS);
+    return await pbkdf2(password, parts[2], iterations) === parts[3];
   }
+  // One-time migration path for the previous fixed-salt SHA-256 format.
+  const legacy = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`${password}mira_salt_2024`),
+  );
+  return bytesToHex(new Uint8Array(legacy)) === stored;
 }
 
-// ── Password hashing ───────────────────────────────────────────
-async function hashPassword(password) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password + 'mira_salt_2024');
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+async function emailKey(email) {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(String(email || '').trim().toLowerCase()),
+  );
+  return bytesToHex(new Uint8Array(digest));
 }
 
-function generateUID() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+function saveLegacySession(user) {
+  if (!user) {
+    localStorage.removeItem(LEGACY_SESSION_KEY);
+    return;
+  }
+  localStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify({
+    ...publicUser(user),
+    expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+  }));
+}
+
+async function findLegacyUser(email) {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const index = await get(ref(db, `userEmailIndex/${await emailKey(normalizedEmail)}`));
+  if (index.exists()) {
+    const profile = await get(ref(db, `users/${index.val()}`));
+    if (profile.exists()) return { uid: index.val(), ...profile.val() };
+  }
+  // Transitional lookup for accounts created before the index existed.
+  const users = await get(ref(db, 'users'));
+  let match = null;
+  users.forEach((child) => {
+    if (!match && String(child.val()?.email || '').trim().toLowerCase() === normalizedEmail) {
+      match = { uid: child.key, ...child.val() };
+    }
+  });
+  return match;
 }
 
 export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
-  return ctx;
+  const context = useContext(AuthContext);
+  if (!context) throw new Error('useAuth must be used within AuthProvider');
+  return context;
 }
 
 export function AuthProvider({ children }) {
@@ -91,93 +117,61 @@ export function AuthProvider({ children }) {
   const [authLoading, setAuthLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Restore session from JWT on mount
   useEffect(() => {
-    (async () => {
+    if (firebaseAuthConfigured && auth) {
+      return onAuthStateChanged(auth, (account) => {
+        setUser(publicUser(account));
+        setLoading(false);
+      });
+    }
+    if (allowLegacyAuth) {
       try {
-        const token = localStorage.getItem(TOKEN_KEY);
-        if (token) {
-          const payload = await verifyJWT(token);
-          if (payload) {
-            setUser({ uid: payload.uid, email: payload.email, displayName: payload.displayName, photoURL: payload.photoURL || '' });
-          } else {
-            localStorage.removeItem(TOKEN_KEY);
-          }
-        } else {
-          // Migrate from legacy plain-JSON session if present
-          const legacy = localStorage.getItem('mira_user');
-          if (legacy) {
-            try {
-              const u = JSON.parse(legacy);
-              if (u && u.uid) {
-                await persistUser(u);
-                setUser(u);
-              }
-            } catch {}
-            localStorage.removeItem('mira_user');
-          }
-        }
-      } catch {}
-      setLoading(false);
-    })();
+        const session = JSON.parse(localStorage.getItem(LEGACY_SESSION_KEY) || 'null');
+        if (session?.uid && session.expiresAt > Date.now()) setUser(publicUser(session));
+        else localStorage.removeItem(LEGACY_SESSION_KEY);
+      } catch { localStorage.removeItem(LEGACY_SESSION_KEY); }
+    }
+    setLoading(false);
+    return undefined;
   }, []);
 
-  async function persistUser(u) {
-    if (u) {
-      const token = await createJWT({
-        uid: u.uid,
-        email: u.email,
-        displayName: u.displayName,
-        photoURL: u.photoURL || '',
-        iat: Date.now(),
-        exp: Date.now() + TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
-      });
-      localStorage.setItem(TOKEN_KEY, token);
-    } else {
-      localStorage.removeItem(TOKEN_KEY);
-    }
-    setUser(u);
-  }
-
-  function friendlyError(err) {
-    const code = err?.code || '';
-    if (code === 'auth/user-not-found' || code === 'auth/invalid-credential') return 'Invalid email or password.';
-    if (code === 'auth/email-already-in-use') return 'An account with this email already exists.';
-    if (code === 'auth/weak-password') return 'Password must be at least 6 characters.';
-    return err?.message || 'Something went wrong. Please try again.';
+  function friendlyError(authError) {
+    const code = authError?.code || '';
+    if (/invalid-credential|user-not-found|wrong-password/.test(code)) return 'Invalid email or password.';
+    if (code.includes('email-already-in-use')) return 'An account with this email already exists.';
+    if (code.includes('weak-password')) return 'Password must be at least 6 characters.';
+    if (code.includes('operation-not-allowed')) return 'Email/password sign-in is not enabled for this Firebase project.';
+    return authError?.message || 'Something went wrong. Please try again.';
   }
 
   async function login(email, password) {
     setError(null);
     setAuthLoading(true);
     try {
-      const hashedPw = await hashPassword(password);
-      const usersRef = ref(db, 'users');
-      const snap = await get(usersRef);
-
-      if (!snap.exists()) {
+      if (firebaseAuthConfigured && auth) {
+        const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
+        const current = publicUser(credential.user);
+        setUser(current);
+        return current;
+      }
+      if (!allowLegacyAuth) throw new Error('Secure authentication is not configured. Add VITE_FIREBASE_API_KEY.');
+      const found = await findLegacyUser(email);
+      if (!found || !await verifyLegacyPassword(password, found.password)) {
         setError('Invalid email or password.');
         return null;
       }
-
-      let foundUser = null;
-      snap.forEach((child) => {
-        const val = child.val();
-        if (val.email === email.toLowerCase().trim() && val.password === hashedPw) {
-          foundUser = { uid: child.key, email: val.email, displayName: val.displayName, photoURL: val.photoURL || '' };
-        }
-      });
-
-      if (!foundUser) {
-        setError('Invalid email or password.');
-        return null;
+      if (!String(found.password).startsWith('pbkdf2$')) {
+        await update(ref(db, `users/${found.uid}`), {
+          password: await createLegacyPassword(password),
+          passwordMigratedAt: Date.now(),
+        });
       }
-
-      await persistUser(foundUser);
-      return foundUser;
-    } catch (err) {
-      console.error('Login error:', err);
-      setError(friendlyError(err));
+      const current = publicUser(found);
+      saveLegacySession(current);
+      setUser(current);
+      return current;
+    } catch (authError) {
+      setError(friendlyError(authError));
       return null;
     } finally {
       setAuthLoading(false);
@@ -188,43 +182,38 @@ export function AuthProvider({ children }) {
     setError(null);
     setAuthLoading(true);
     try {
-      const normalizedEmail = email.toLowerCase().trim();
-
-      if (password.length < 6) {
-        setError('Password must be at least 6 characters.');
-        return null;
+      const normalizedEmail = email.trim().toLowerCase();
+      if (password.length < 6) throw new Error('Password must be at least 6 characters.');
+      if (firebaseAuthConfigured && auth) {
+        const credential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
+        await updateProfile(credential.user, { displayName: String(displayName || '').trim() });
+        const current = publicUser(credential.user);
+        await set(ref(db, `users/${current.uid}`), { ...current, createdAt: Date.now() });
+        setUser(current);
+        return current;
       }
-
-      // Check if email already exists
-      const usersRef = ref(db, 'users');
-      const snap = await get(usersRef);
-      if (snap.exists()) {
-        let exists = false;
-        snap.forEach((child) => {
-          if (child.val().email === normalizedEmail) exists = true;
-        });
-        if (exists) {
-          setError('An account with this email already exists.');
-          return null;
-        }
+      if (!allowLegacyAuth) throw new Error('Secure authentication is not configured. Add VITE_FIREBASE_API_KEY.');
+      if (await findLegacyUser(normalizedEmail)) {
+        throw Object.assign(new Error('Account exists.'), { code: 'auth/email-already-in-use' });
       }
-
-      const uid = generateUID();
-      const hashedPw = await hashPassword(password);
-
-      await set(ref(db, `users/${uid}`), {
+      const uid = crypto.randomUUID();
+      const profile = {
         email: normalizedEmail,
-        displayName: displayName || '',
-        password: hashedPw,
+        displayName: String(displayName || '').trim(),
+        photoURL: '',
+        password: await createLegacyPassword(password),
         createdAt: Date.now(),
+      };
+      await update(ref(db), {
+        [`users/${uid}`]: profile,
+        [`userEmailIndex/${await emailKey(normalizedEmail)}`]: uid,
       });
-
-      const newUser = { uid, email: normalizedEmail, displayName, photoURL: '' };
-      await persistUser(newUser);
-      return newUser;
-    } catch (err) {
-      console.error('Register error:', err);
-      setError(friendlyError(err));
+      const current = publicUser({ uid, ...profile });
+      saveLegacySession(current);
+      setUser(current);
+      return current;
+    } catch (authError) {
+      setError(friendlyError(authError));
       return null;
     } finally {
       setAuthLoading(false);
@@ -232,15 +221,22 @@ export function AuthProvider({ children }) {
   }
 
   async function logout() {
-    await persistUser(null);
-    localStorage.removeItem('mira_user'); // clean up legacy session key
+    if (firebaseAuthConfigured && auth) await signOut(auth);
+    saveLegacySession(null);
+    localStorage.removeItem('mira_token');
+    localStorage.removeItem('mira_user');
+    setUser(null);
   }
 
-  const value = { user, loading, authLoading, error, login, register, logout };
-
-  return (
-    <AuthContext.Provider value={value}>
-      {children}
-    </AuthContext.Provider>
-  );
+  const value = {
+    user,
+    loading,
+    authLoading,
+    error,
+    login,
+    register,
+    logout,
+    secureAuth: firebaseAuthConfigured,
+  };
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

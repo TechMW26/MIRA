@@ -1,4 +1,5 @@
 export const config = { maxDuration: 30 };
+import { guardRequest } from './_requestSecurity.js';
 
 const POLLINATIONS_ORIGIN = String(process.env.POLLINATIONS_API_URL || 'https://gen.pollinations.ai')
   .trim()
@@ -33,7 +34,18 @@ function deepSeekKey() {
 }
 
 function deepSeekModel() {
-  return String(process.env.DEEPSEEK_DESKTOP_MODEL || 'deepseek-v4-pro').trim();
+  return String(
+    process.env.DEEPSEEK_DESKTOP_MODEL
+    || process.env.DEEPSEEK_AGENT_MODEL
+    || 'deepseek-v4-pro',
+  ).trim();
+}
+
+function deepSeekChatModel() {
+  return String(
+    process.env.DEEPSEEK_CHAT_MODEL
+    || 'deepseek-v4-flash',
+  ).trim();
 }
 
 function isDesktopRequest(request) {
@@ -164,6 +176,43 @@ function sanitizeMessages(messages = []) {
     .filter((message) => message.content);
 }
 
+function parseToolArguments(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value || '{}'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function prepareDeepSeekTools(tools = []) {
+  const used = new Set();
+  const aliases = new Map();
+  const prepared = (Array.isArray(tools) ? tools : []).slice(0, 32).flatMap((tool) => {
+    const definition = tool?.function;
+    if (tool?.type !== 'function' || !definition?.name) return [];
+    const originalName = String(definition.name);
+    const base = originalName.replace(/[^A-Za-z0-9_-]/g, '__').slice(0, 56) || 'tool';
+    let alias = base;
+    let suffix = 1;
+    while (used.has(alias)) alias = `${base.slice(0, 52)}_${suffix++}`;
+    used.add(alias);
+    aliases.set(alias, originalName);
+    return [{
+      type: 'function',
+      function: {
+        name: alias,
+        description: String(definition.description || '').slice(0, 1_500),
+        parameters: definition.parameters && typeof definition.parameters === 'object'
+          ? definition.parameters
+          : { type: 'object', properties: {} },
+      },
+    }];
+  });
+  return { tools: prepared, aliases };
+}
+
 async function pollinationsJson(url, options, attempts = 2) {
   let lastError = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -214,31 +263,55 @@ async function deepSeekJson(payload, signal) {
   throw lastError || new Error('DeepSeek request failed.');
 }
 
-async function requestDesktopChat({ messages = [], systemPrompt = '', tools = [], maxTokens, signal } = {}) {
+export async function requestDeepSeekChat({
+  messages = [],
+  systemPrompt = '',
+  tools = [],
+  maxTokens,
+  think = false,
+  signal,
+  model = deepSeekChatModel(),
+} = {}) {
   const chatMessages = [
     ...(systemPrompt ? [{ role: 'system', content: String(systemPrompt).slice(0, 20_000) }] : []),
     ...sanitizeMessages(messages),
   ];
-  if (!chatMessages.length) throw new Error('Desktop coding assistance requires messages.');
-  const model = deepSeekModel();
+  if (!chatMessages.length) throw new Error('DeepSeek chat requires messages.');
+  const { tools: preparedTools, aliases } = prepareDeepSeekTools(tools);
   const result = await deepSeekJson({
     model,
     messages: chatMessages,
     max_tokens: Math.max(256, Math.min(4_000, Number(maxTokens) || 1_600)),
     temperature: 0.15,
-    ...(Array.isArray(tools) && tools.length ? { tools: tools.slice(0, 32), tool_choice: 'auto' } : {}),
+    thinking: { type: think === true ? 'enabled' : 'disabled' },
+    ...(think === true ? { reasoning_effort: 'max' } : {}),
+    ...(preparedTools.length ? { tools: preparedTools, tool_choice: 'auto' } : {}),
   }, signal);
   const message = result?.choices?.[0]?.message || {};
-  const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  const toolCalls = (Array.isArray(message.tool_calls) ? message.tool_calls : []).map((call) => ({
+    id: String(call?.id || '').slice(0, 200),
+    type: 'function',
+    function: {
+      name: aliases.get(call?.function?.name) || String(call?.function?.name || '').slice(0, 100),
+      arguments: parseToolArguments(call?.function?.arguments),
+    },
+  })).filter((call) => call.function.name);
   const answer = cleanSuggestion(message.content, 12_000);
   const thinking = cleanSuggestion(message.reasoning_content, 12_000);
-  if (!answer && !toolCalls.length) throw new Error('Desktop coding assistance returned no response.');
+  if (!answer && !toolCalls.length) throw new Error('DeepSeek chat returned no response.');
   return {
     ...(answer ? { answer } : {}),
     ...(thinking ? { thinking } : {}),
     ...(toolCalls.length ? { toolCalls } : {}),
-    model,
+    model: String(result?.model || model),
   };
+}
+
+async function requestDesktopChat(options = {}) {
+  return requestDeepSeekChat({
+    ...options,
+    model: deepSeekModel(),
+  });
 }
 
 export async function requestManagedChat({
@@ -286,6 +359,8 @@ export async function requestManagedChat({
 }
 
 export async function POST(request) {
+  const guarded = guardRequest(request, { limit: 30, windowMs: 60_000, key: 'code-assist' });
+  if (guarded) return guarded;
   let body;
   try { body = await request.json(); } catch { return json({ error: 'Invalid JSON request.' }, 400); }
   const task = String(body?.task || 'completion');
@@ -333,6 +408,9 @@ export async function POST(request) {
     }
 
     if (task === 'chat') {
+      if (!desktopRequest && body?.scope !== 'desktop-coding') {
+        return json({ error: 'Chat completions are restricted to coding workspaces.' }, 403);
+      }
       const result = desktopRequest ? await requestDesktopChat({
         messages: body.messages,
         systemPrompt: body.systemPrompt,

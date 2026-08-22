@@ -116,7 +116,14 @@ export function detectWebsiteInspectionRequest(text = '') {
   const value = String(text || '');
   const url = value.match(/https?:\/\/[^\s<>"')\]]+/i)?.[0]?.replace(/[.,;!?]+$/, '');
   if (!url) return null;
-  const inspectionIntent = /\b(study|inspect|crawl|audit|analy[sz]e|understand|open|visit|examine|review|check|map|document|source|dom|structure|stack|technology|technologies|framework|cms|hosting|backend|frontend|website)\b/i.test(value);
+  const inspectionIntent = /\b(study|inspect|crawl|audit|analy[sz]e|understand|open|visit|examine|review|check|map|document|source|dom|structure|stack|technology|technologies|framework|cms|hosting|backend|frontend|website|social(?:\s+account)?|profile)\b/i.test(value)
+    || /(?:वेबसाइट|साइट|पेज|सोशल|प्रोफाइल).{0,40}(?:देखो|खोलो|जाँचो|जांचो|क्रॉल|समझो|विश्लेषण|ऑडिट)/iu.test(value)
+    || /(?:देखो|खोलो|जाँचो|जांचो|क्रॉल|समझो|विश्लेषण|ऑडिट).{0,40}(?:वेबसाइट|साइट|पेज|सोशल|प्रोफाइल)/iu.test(value)
+    || /\b(?:sitio|página|perfil).{0,40}(?:inspecciona|revisa|analiza|abre)\b/iu.test(value)
+    || /(?:网站|网页|社交账号|个人资料|ウェブサイト|ページ|プロフィール|웹사이트|페이지|프로필).{0,40}(?:检查|分析|抓取|打开|調べ|分析|クロール|開いて|검사|분석|크롤링|열어)/iu.test(value)
+    || /(?:检查|分析|抓取|打开|調べ|クロール|開いて|검사|분석|크롤링|열어).{0,40}(?:网站|网页|社交账号|个人资料|ウェブサイト|ページ|プロフィール|웹사이트|페이지|프로필)/iu.test(value)
+    || /(?:موقع|صفحة|ملف\s+شخصي|сайт|страница|профиль).{0,40}(?:افحص|حلل|افتح|проверь|проанализируй|открой)/iu.test(value)
+    || /(?:افحص|حلل|افتح|проверь|проанализируй|открой).{0,40}(?:موقع|صفحة|ملف\s+شخصي|сайт|страница|профиль)/iu.test(value);
   if (!inspectionIntent) return null;
   return {
     name: TOOL_NAMES.BROWSER_INSPECT,

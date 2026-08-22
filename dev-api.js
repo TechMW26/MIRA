@@ -42,6 +42,7 @@ const ROUTES = new Map([
   ['/api/search', './api/search.js'],
   ['/api/search-query', './api/search-query.js'],
   ['/api/browser-mcp', './api/browser-mcp.js'],
+  ['/api/crawl', './api/crawl.js'],
   ['/api/code-assist', './api/code-assist.js'],
   ['/api/voice-health', './api/voice-health.js'],
   ['/api/voice-speech', './api/voice-speech.js'],

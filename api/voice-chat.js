@@ -1,4 +1,6 @@
 import { json } from './_voiceProxy.js';
+import { guardRequest } from './_requestSecurity.js';
+import { requestDeepSeekChat } from './code-assist.js';
 
 export const config = { maxDuration: 120 };
 
@@ -130,11 +132,51 @@ async function openVoiceStream(payload, signal) {
   throw lastError || new Error('Voice conversation request failed.');
 }
 
+export async function deepSeekVoiceResponse(payload, signal) {
+  const cleaned = cleanMessages(payload.messages, payload.systemPrompt);
+  const result = await requestDeepSeekChat({
+    systemPrompt: cleaned[0]?.content || MIRA_VOICE_PROMPT,
+    messages: cleaned.slice(1),
+    maxTokens: Math.max(96, Math.min(Number(payload.max_tokens) || 480, 1_000)),
+    think: false,
+    signal,
+  });
+  if (!result.answer) throw new Error('The fast voice provider returned no response.');
+  return new Response(`${JSON.stringify({
+    model: result.model,
+    message: { role: 'assistant', content: result.answer },
+    done: true,
+  })}\n`, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/x-ndjson',
+      'Cache-Control': 'no-cache, no-store, no-transform',
+      'X-Mira-Provider': 'deepseek',
+    },
+  });
+}
+
 export async function POST(request) {
+  const guarded = guardRequest(request, { limit: 30, windowMs: 60_000, key: 'voice-chat' });
+  if (guarded) return guarded;
   let body;
   try { body = await request.json(); } catch { return json({ error: 'Invalid JSON request.' }, 400); }
   if (!Array.isArray(body?.messages) || !body.messages.length) {
     return json({ error: 'Messages are required.' }, 400);
+  }
+
+  if (String(process.env.DEEPSEEK_API_KEY || '').trim()) {
+    try {
+      const fastSignal = typeof AbortSignal.any === 'function'
+        ? AbortSignal.any([request.signal, AbortSignal.timeout(12_000)])
+        : request.signal;
+      return await deepSeekVoiceResponse(body, fastSignal);
+    } catch (error) {
+      if (request.signal?.aborted) {
+        return json({ error: 'Voice generation was cancelled.' }, 499);
+      }
+      // Continue through the self-hosted route when the fast provider is down.
+    }
   }
 
   try {
@@ -150,6 +192,7 @@ export async function POST(request) {
         'Content-Type': response.headers.get('content-type') || 'application/x-ndjson',
         'Cache-Control': 'no-cache, no-store, no-transform',
         'X-Accel-Buffering': 'no',
+        'X-Mira-Provider': 'ollama',
       },
     });
   } catch (error) {

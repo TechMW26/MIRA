@@ -1,8 +1,11 @@
 import { json, proxyError, safeVoiceError, voiceFetch } from './_voiceProxy.js';
+import { guardRequest } from './_requestSecurity.js';
 
 export const config = { maxDuration: 120 };
 
 export async function POST(request) {
+  const guarded = guardRequest(request, { limit: 30, windowMs: 60_000, key: 'voice-transcribe' });
+  if (guarded) return guarded;
   let incoming;
   try { incoming = await request.formData(); } catch { return json({ error: 'A voice recording is required.' }, 400); }
   const file = incoming.get('file');
@@ -18,7 +21,7 @@ export async function POST(request) {
       method: 'POST',
       body: form,
       signal: request.signal,
-    }, { attempts: 2, timeoutMs: 35_000 });
+    }, { attempts: 2, timeoutMs: 100_000 });
     if (!response.ok) return proxyError(response, 'Speech recognition failed.');
     return new Response(response.body, {
       status: 200,

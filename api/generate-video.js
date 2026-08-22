@@ -1,4 +1,5 @@
 export const config = { maxDuration: 120 };
+import { guardRequest } from './_requestSecurity.js';
 
 const POLLINATIONS_ORIGIN = String(process.env.POLLINATIONS_API_URL || 'https://gen.pollinations.ai')
   .trim()
@@ -98,6 +99,8 @@ function buildVideoUrl({ prompt, model, duration, resolution, seed }) {
 }
 
 export async function GET(req) {
+  const guarded = guardRequest(req, { limit: 4, windowMs: 60_000, key: 'generate-video' });
+  if (guarded) return guarded;
   const url = new URL(req.url);
   const prompt = compactPrompt(url.searchParams.get('prompt') || '');
   if (!prompt) {

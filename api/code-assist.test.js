@@ -1,6 +1,53 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { POST, selectAssistModel, selectEmbeddingModel } from './code-assist.js';
+import {
+  POST,
+  prepareDeepSeekTools,
+  requestDeepSeekChat,
+  selectAssistModel,
+  selectEmbeddingModel,
+} from './code-assist.js';
+
+test('aliases dotted MIRA tool names for DeepSeek and restores them in tool calls', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.DEEPSEEK_API_KEY;
+  const requests = [];
+  process.env.DEEPSEEK_API_KEY = 'deepseek-server-secret';
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), options });
+    return new Response(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      choices: [{ message: {
+        tool_calls: [{
+          id: 'call-1',
+          type: 'function',
+          function: { name: 'weather__lookup', arguments: '{"city":"Delhi"}' },
+        }],
+      } }],
+    }), { status: 200 });
+  };
+  try {
+    const prepared = prepareDeepSeekTools([{
+      type: 'function',
+      function: { name: 'weather.lookup', parameters: { type: 'object' } },
+    }]);
+    assert.equal(prepared.tools[0].function.name, 'weather__lookup');
+    const result = await requestDeepSeekChat({
+      messages: [{ role: 'user', content: 'Weather?' }],
+      tools: [{ type: 'function', function: { name: 'weather.lookup', parameters: { type: 'object' } } }],
+      think: false,
+    });
+    const body = JSON.parse(requests[0].options.body);
+    assert.deepEqual(body.thinking, { type: 'disabled' });
+    assert.equal(body.tools[0].function.name, 'weather__lookup');
+    assert.equal(result.toolCalls[0].function.name, 'weather.lookup');
+    assert.deepEqual(result.toolCalls[0].function.arguments, { city: 'Delhi' });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalKey;
+  }
+});
 
 test('selects a fast coding-capable Pollinations model dynamically', () => {
   assert.equal(selectAssistModel([

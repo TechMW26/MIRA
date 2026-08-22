@@ -89,26 +89,26 @@ export async function updateConversationTitle(uid, convId, title) {
 export async function deleteConversation(uid, convId) {
   try {
     const messagesSnap = await get(ref(db, `messages/${convId}`));
-    const pathnames = [];
+    const mediaItems = [];
     if (messagesSnap.exists()) {
       messagesSnap.forEach((child) => {
         const message = child.val() || {};
         const images = Array.isArray(message?.generatedMedia?.images) ? message.generatedMedia.images : [];
         for (const image of images) {
           const pathname = String(image?.pathname || '').trim();
-          if (pathname) pathnames.push(pathname);
+          if (pathname) mediaItems.push({ pathname, deleteToken: String(image?.deleteToken || '') });
         }
       });
     }
 
-    if (pathnames.length > 0) {
+    if (mediaItems.length > 0) {
       await fetch('/api/media', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'delete',
           userId: uid,
-          pathnames: [...new Set(pathnames)],
+          items: Array.from(new Map(mediaItems.map((item) => [item.pathname, item])).values()),
         }),
       });
     }

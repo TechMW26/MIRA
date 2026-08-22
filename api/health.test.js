@@ -19,6 +19,8 @@ test('reports sanitized Ollama readiness without exposing model names', async ()
     assert.equal(response.status, 200);
     assert.equal(payload.ready, true);
     assert.equal(payload.loadedModelCount, 1);
+    assert.equal(payload.modelWarm, true);
+    assert.equal(payload.state, 'ready');
     assert.equal(text.includes('private-model-name'), false);
   } finally {
     globalThis.fetch = originalFetch;
@@ -45,6 +47,8 @@ test('keeps readiness healthy when only the optional residency probe fails', asy
     assert.equal(payload.ready, true);
     assert.equal(payload.registryReachable, true);
     assert.equal(payload.loadedModelCount, 0);
+    assert.equal(payload.modelWarm, false);
+    assert.equal(payload.state, 'cold');
   } finally {
     globalThis.fetch = originalFetch;
     if (originalUrl === undefined) delete process.env.OLLAMA_API_URL;

@@ -9,7 +9,7 @@ import Chart from './Chart';
 import ParticleText from './ParticleText';
 import RelatedMedia from './RelatedMedia';
 import UserAvatar from '../common/UserAvatar';
-import { exportDocument, sanitizeDocumentContent } from '../../utils/documentExport';
+import { sanitizeDocumentContent } from '../../utils/documentContent.js';
 import { executeDesktopTool } from '../../services/desktopBridge.js';
 
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
@@ -900,6 +900,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
     setShowExportMenu(false);
     try {
       const filename = `mira-response-${Date.now()}.${format}`;
+      const { exportDocument } = await import('../../utils/documentExport.js');
       await exportDocument(cleanExportContent(message.content), format, filename);
     } catch (error) {
       console.error('Export failed:', error);

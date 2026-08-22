@@ -27,7 +27,11 @@ const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 40 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 const PRODUCTION_APP_URL = 'https://www.itsmira.cloud';
-const PERMISSION_BRIDGE_VERSION = 11;
+const TRUSTED_PRODUCTION_ORIGINS = new Set([
+  'https://www.itsmira.cloud',
+  'https://itsmira.cloud',
+]);
+const PERMISSION_BRIDGE_VERSION = 12;
 const COMPANION_COLLAPSED_SIZE = Object.freeze({ width: 168, height: 168 });
 const COMPANION_EXPANDED_SIZE = Object.freeze({ width: 420, height: 640 });
 const WORKSPACE_MEMORY_DIRECTORY = '.mira';
@@ -253,6 +257,7 @@ function getSystemPermissionStatus() {
       screenCapture: mediaAccessStatus('screen'),
       camera: mediaAccessStatus('camera'),
       microphone: mediaAccessStatus('microphone'),
+      location: 'managed-by-web-permission',
     };
   }
   return {
@@ -261,9 +266,10 @@ function getSystemPermissionStatus() {
     platform: process.platform,
     accessibility: 'not-required',
     fullDiskAccess: process.platform === 'win32' ? 'managed-in-system-settings' : 'not-required',
-    screenCapture: process.platform === 'win32' ? 'available' : 'not-required',
-    camera: process.platform === 'win32' ? 'managed-in-system-settings' : 'available',
-    microphone: process.platform === 'win32' ? 'managed-in-system-settings' : 'available',
+    screenCapture: process.platform === 'win32' ? 'granted' : 'not-required',
+    camera: process.platform === 'win32' ? mediaAccessStatus('camera') : 'available',
+    microphone: process.platform === 'win32' ? mediaAccessStatus('microphone') : 'available',
+    location: process.platform === 'win32' ? 'managed-by-web-permission' : 'not-required',
   };
 }
 
@@ -289,20 +295,44 @@ async function requestSystemPermission(permission) {
 
   if (permission === 'camera' || permission === 'microphone') {
     if (process.platform === 'darwin') {
-      await systemPreferences.askForMediaAccess(permission);
+      const allowed = await systemPreferences.askForMediaAccess(permission);
+      if (!allowed) {
+        const pane = permission === 'camera' ? 'Privacy_Camera' : 'Privacy_Microphone';
+        await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
+        return { ...getSystemPermissionStatus(), settingsOpened: true };
+      }
     } else if (process.platform === 'win32') {
       await shell.openExternal(`ms-settings:privacy-${permission === 'camera' ? 'webcam' : 'microphone'}`);
+      return { ...getSystemPermissionStatus(), settingsOpened: true };
     }
     return getSystemPermissionStatus();
   }
 
   if (permission === 'screen-capture') {
     if (process.platform === 'darwin') {
-      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+      try {
+        await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 1, height: 1 },
+          fetchWindowIcons: false,
+        });
+      } catch {}
+      const granted = mediaAccessStatus('screen') === 'granted';
+      if (!granted) await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+      return { ...getSystemPermissionStatus(), settingsOpened: !granted };
     } else if (process.platform === 'win32') {
-      await shell.openExternal('ms-settings:privacy-screenshots');
+      return getSystemPermissionStatus();
     }
     return getSystemPermissionStatus();
+  }
+
+  if (permission === 'location') {
+    if (process.platform === 'darwin') {
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices');
+    } else if (process.platform === 'win32') {
+      await shell.openExternal('ms-settings:privacy-location');
+    }
+    return { ...getSystemPermissionStatus(), settingsOpened: true };
   }
 
   throw new Error('Unsupported system permission request.');
@@ -1582,23 +1612,33 @@ async function invokeDesktopTool(window, call = {}) {
 }
 
 function isTrustedAppOrigin(url = '') {
-  return url.startsWith(PRODUCTION_APP_URL)
-    || (process.argv.includes('--dev') && (
-      url.startsWith('http://127.0.0.1:3000')
-      || url.startsWith('http://localhost:3000')
-    ));
+  try {
+    const origin = new URL(String(url || '')).origin;
+    if (TRUSTED_PRODUCTION_ORIGINS.has(origin)) return true;
+    return process.argv.includes('--dev')
+      && ['http://127.0.0.1:3000', 'http://localhost:3000'].includes(origin);
+  } catch {
+    return false;
+  }
+}
+
+function requireTrustedIpc(event) {
+  const frameUrl = event?.senderFrame?.url || event?.sender?.getURL?.() || '';
+  if (!isTrustedAppOrigin(frameUrl) || (event?.senderFrame && event.senderFrame !== event.sender?.mainFrame)) {
+    throw new Error('Blocked an IPC request from an untrusted renderer.');
+  }
 }
 
 function configureDesktopSession(window) {
   const session = window.webContents.session;
   session.setPermissionCheckHandler((webContents, permission, requestingOrigin, details = {}) => {
-    if (!['media', 'display-capture'].includes(permission)) return false;
+    if (!['media', 'display-capture', 'geolocation'].includes(permission)) return false;
     const origin = requestingOrigin || details.requestingUrl || webContents?.getURL?.() || '';
     return isTrustedAppOrigin(origin);
   });
   session.setPermissionRequestHandler((webContents, permission, callback, details = {}) => {
     const origin = details.requestingUrl || webContents?.getURL?.() || '';
-    callback(['media', 'display-capture'].includes(permission) && isTrustedAppOrigin(origin));
+    callback(['media', 'display-capture', 'geolocation'].includes(permission) && isTrustedAppOrigin(origin));
   });
   session.setDisplayMediaRequestHandler(async (request, callback) => {
     if (!isTrustedAppOrigin(request.securityOrigin || request.frame?.url || '')) {
@@ -1663,6 +1703,9 @@ function createCompanionWindow() {
     companionWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   }
   companionWindow.loadURL(companionUrl());
+  companionWindow.once('ready-to-show', () => {
+    if (!companionWindow?.isDestroyed()) companionWindow.showInactive();
+  });
   companionWindow.on('closed', () => {
     companionWindow = null;
     companionExpanded = false;
@@ -1675,6 +1718,7 @@ function showCompanionWindow() {
   companionExpanded = false;
   window.setBounds(companionBounds(COMPANION_COLLAPSED_SIZE, window.getBounds()));
   window.showInactive();
+  sendToWindow(window, 'mira:companion-state', { expanded: false });
 }
 
 function setCompanionExpanded(expanded) {
@@ -1707,7 +1751,7 @@ function moveCompanion(point = {}) {
 
 function openMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createWindow();
-  if (companionWindow && !companionWindow.isDestroyed()) companionWindow.destroy();
+  showCompanionWindow();
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
@@ -1769,10 +1813,7 @@ function createWindow() {
     });
   });
   window.webContents.on('will-navigate', (event, url) => {
-    const allowed = process.argv.includes('--dev')
-      ? url.startsWith('http://127.0.0.1:3000')
-      : url.startsWith(PRODUCTION_APP_URL);
-    if (!allowed) event.preventDefault();
+    if (!isTrustedAppOrigin(url)) event.preventDefault();
   });
 
   if (process.argv.includes('--dev')) window.loadURL('http://127.0.0.1:3000');
@@ -1802,6 +1843,7 @@ app.whenReady().then(async () => {
   await persistEnvironmentProviderKey().catch(() => {});
   await restoreWorkspace();
   const window = createWindow();
+  createCompanionWindow();
   ipcMain.handle('mira:runtime-info', () => ({
     appVersion: app.getVersion(),
     permissionBridgeVersion: PERMISSION_BRIDGE_VERSION,
@@ -1809,15 +1851,29 @@ app.whenReady().then(async () => {
     capabilities: DESKTOP_CAPABILITIES,
     workspace: workspaceRoot || null,
   }));
-  ipcMain.handle('mira:permission-status', () => getSystemPermissionStatus());
-  ipcMain.handle('mira:request-permission', async (_event, permission) => (
-    requestSystemPermission(String(permission || ''))
-  ));
-  ipcMain.handle('mira:companion-expanded', (_event, expanded) => setCompanionExpanded(expanded));
-  ipcMain.handle('mira:companion-move', (_event, point) => moveCompanion(point));
-  ipcMain.handle('mira:open-main-window', () => openMainWindow());
+  ipcMain.handle('mira:permission-status', (event) => {
+    requireTrustedIpc(event);
+    return getSystemPermissionStatus();
+  });
+  ipcMain.handle('mira:request-permission', async (event, permission) => {
+    requireTrustedIpc(event);
+    return requestSystemPermission(String(permission || ''));
+  });
+  ipcMain.handle('mira:companion-expanded', (event, expanded) => {
+    requireTrustedIpc(event);
+    return setCompanionExpanded(expanded);
+  });
+  ipcMain.handle('mira:companion-move', (event, point) => {
+    requireTrustedIpc(event);
+    return moveCompanion(point);
+  });
+  ipcMain.handle('mira:open-main-window', (event) => {
+    requireTrustedIpc(event);
+    return openMainWindow();
+  });
   ipcMain.handle('mira:provider-status', async () => getProviderStatus());
   ipcMain.handle('mira:configure-deepseek', async (_event, value) => {
+    requireTrustedIpc(_event);
     try {
       await saveDeepSeekKey(value);
       return { ok: true, status: await getProviderStatus() };
@@ -1826,6 +1882,7 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.handle('mira:agent-chat', async (_event, body) => {
+    requireTrustedIpc(_event);
     try {
       const key = await getDeepSeekKey();
       if (!key) {
@@ -1846,13 +1903,15 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.handle('mira:code-assist', async (_event, body) => {
+    requireTrustedIpc(_event);
     try {
       return { ok: true, ...await runDesktopCodeAssist(body) };
     } catch (error) {
       return { ok: false, code: error?.code || '', error: error?.message || 'The desktop coding assistant is unavailable.' };
     }
   });
-  ipcMain.handle('mira:choose-workspace', async () => {
+  ipcMain.handle('mira:choose-workspace', async (event) => {
+    requireTrustedIpc(event);
     const previousWorkspace = workspaceRoot;
     const previousWorkspaceTrust = workspaceCommandTrust;
     workspaceRoot = '';
@@ -1872,6 +1931,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('mira:workspace-memory', async () => getWorkspaceMemory());
   ipcMain.handle('mira:save-workspace-file', async (_event, payload) => {
+    requireTrustedIpc(_event);
     try {
       return {
         ok: true,
@@ -1882,6 +1942,7 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.handle('mira:append-workspace-turn', async (_event, turn) => {
+    requireTrustedIpc(_event);
     if (!workspaceRoot) return { saved: false };
     const value = turn && typeof turn === 'object' ? turn : {};
     await appendWorkspaceEvent({
@@ -1897,6 +1958,7 @@ app.whenReady().then(async () => {
     return { saved: true };
   });
   ipcMain.handle('mira:invoke-tool', async (_event, call) => {
+    requireTrustedIpc(_event);
     try {
       return { ok: true, output: await invokeDesktopTool(window, call) };
     } catch (error) {

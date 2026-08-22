@@ -114,8 +114,15 @@ test('desktop permission requests use only the allowlisted native bridge', async
   assert.equal((await getDesktopPermissionStatus(scope)).accessibility, false);
   assert.equal((await requestDesktopPermission('accessibility', scope)).accessibility, true);
   assert.equal((await requestDesktopPermission('camera', scope)).accessibility, true);
+  const locationScope = {
+    ...scope,
+    navigator: {
+      geolocation: { getCurrentPosition: (resolve) => resolve({ coords: {} }) },
+    },
+  };
+  assert.equal((await requestDesktopPermission('location', locationScope)).platform, 'darwin');
   assert.deepEqual(calls, ['accessibility', 'camera']);
-  await assert.rejects(requestDesktopPermission('location', scope), /unsupported/i);
+  await assert.rejects(requestDesktopPermission('notifications', scope), /unsupported/i);
 });
 
 test('outdated desktop shells report an update instead of claiming permissions are unnecessary', async () => {

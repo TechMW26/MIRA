@@ -31,18 +31,87 @@ export async function getDesktopPermissionStatus(scope = globalThis) {
       bridgeVersion: Number(bridge.bridgeVersion || 0),
     };
   }
-  const status = await bridge.getPermissionStatus();
-  return { available: true, ...status };
+  const status = { available: true, ...await bridge.getPermissionStatus() };
+  const navigatorObject = scope?.navigator || scope?.window?.navigator;
+  if (navigatorObject?.permissions?.query) {
+    const browserPermissions = [
+      ['geolocation', 'location'],
+      ['camera', 'camera'],
+      ['microphone', 'microphone'],
+    ];
+    await Promise.all(browserPermissions.map(async ([name, key]) => {
+      try {
+        const result = await navigatorObject.permissions.query({ name });
+        if (result?.state && result.state !== 'prompt') status[key] = result.state;
+      } catch {}
+    }));
+  }
+  return status;
+}
+
+function browserPermissionRequest(permission, navigatorObject) {
+  if (permission === 'location') {
+    if (!navigatorObject?.geolocation?.getCurrentPosition) {
+      return Promise.reject(new Error('Location access is not supported by this system.'));
+    }
+    return new Promise((resolve, reject) => {
+      navigatorObject.geolocation.getCurrentPosition(
+        () => resolve(),
+        (error) => reject(new Error(error?.message || 'Location access was denied.')),
+        { enableHighAccuracy: false, timeout: 20_000, maximumAge: 0 },
+      );
+    });
+  }
+  if (permission === 'camera' || permission === 'microphone') {
+    if (!navigatorObject?.mediaDevices?.getUserMedia) {
+      return Promise.reject(new Error(`${permission} access is not supported by this system.`));
+    }
+    return navigatorObject.mediaDevices.getUserMedia({
+      video: permission === 'camera',
+      audio: permission === 'microphone',
+    }).then((stream) => {
+      stream?.getTracks?.().forEach((track) => track.stop());
+    });
+  }
+  return Promise.resolve();
+}
+
+export function isDesktopPermissionGranted(permission, status = {}) {
+  const key = ({
+    accessibility: 'accessibility',
+    'full-disk-access': 'fullDiskAccess',
+    'screen-capture': 'screenCapture',
+    camera: 'camera',
+    microphone: 'microphone',
+    location: 'location',
+  })[permission];
+  const value = status?.[key];
+  if (permission === 'accessibility') return value === true || value === 'not-required';
+  if (permission === 'screen-capture') return ['granted', 'available', 'not-required'].includes(value);
+  return value === true || value === 'granted' || value === 'not-required';
 }
 
 export async function requestDesktopPermission(permission, scope = globalThis) {
-  const allowed = new Set(['accessibility', 'full-disk-access', 'screen-capture', 'camera', 'microphone']);
+  const allowed = new Set(['accessibility', 'full-disk-access', 'screen-capture', 'camera', 'microphone', 'location']);
   if (!allowed.has(permission)) throw new Error('Unsupported desktop permission request.');
   const bridge = getDesktopBridge(scope);
   if (!bridge || typeof bridge.requestPermission !== 'function') {
     throw new Error(bridge
       ? 'Update the installed MIRA desktop app before requesting system permissions.'
       : 'System permissions are available only in the MIRA desktop application.');
+  }
+  const navigatorObject = scope?.navigator || scope?.window?.navigator;
+  const browserManaged = permission === 'location'
+    || (bridge.platform === 'win32' && (permission === 'camera' || permission === 'microphone'));
+  if (browserManaged) {
+    try {
+      await browserPermissionRequest(permission, navigatorObject);
+      return await getDesktopPermissionStatus(scope);
+    } catch (error) {
+      const next = await bridge.requestPermission(permission);
+      const key = permission === 'location' ? 'location' : permission;
+      return { available: true, ...next, [key]: 'denied', permissionError: error?.message || `${permission} access was denied.` };
+    }
   }
   return await bridge.requestPermission(permission);
 }

@@ -1058,6 +1058,12 @@ export default function DesktopWorkspace({ style, onExitWorkspace }) {
                   {permissionStatus?.microphone === 'granted' ? 'Allowed' : permissionBusy === 'microphone' ? 'Requesting…' : 'Request access'}
                 </button>
               </article>
+              <article>
+                <div><strong>Location</strong><span>Enables local weather, nearby information, and other location-aware answers.</span></div>
+                <button type="button" onClick={() => requestPermission('location')} disabled={permissionStatus?.updateRequired || permissionBusy === 'location' || permissionStatus?.location === 'granted'} className="desktop-ide-button">
+                  {permissionStatus?.location === 'granted' ? 'Allowed' : permissionBusy === 'location' ? 'Requesting…' : 'Request access'}
+                </button>
+              </article>
               {hasCapability('approval.set') && (
                 <article>
                   <div><strong>Workspace agent access</strong><span>Run in-workspace edits and non-destructive commands without repeated prompts until MIRA quits or you switch folders.</span></div>

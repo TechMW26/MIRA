@@ -3,7 +3,7 @@ import {
   assessVoiceTranscript,
   detectVoiceLanguage,
   getSpeakableIncrement,
-  getVoiceHealth,
+  waitForVoiceHealth,
   splitSpeechText,
   synthesizeVoice,
   transcribeVoice,
@@ -375,13 +375,13 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
         silenceStartedAtRef.current = 0;
       } else if (speechStartedAtRef.current) {
         if (!silenceStartedAtRef.current) silenceStartedAtRef.current = now;
-        const enoughSpeech = now - speechStartedAtRef.current > 160;
-        if (enoughSpeech && now - silenceStartedAtRef.current > 340) {
+        const enoughSpeech = now - speechStartedAtRef.current > 220;
+        if (enoughSpeech && now - silenceStartedAtRef.current > 650) {
           recorder.stop();
           return;
         }
       }
-      if (now - captureStartedAtRef.current > 15_000) recorder.stop();
+      if (now - captureStartedAtRef.current > 25_000) recorder.stop();
       else monitorFrameRef.current = requestAnimationFrame(monitor);
     };
     monitorFrameRef.current = requestAnimationFrame(monitor);
@@ -392,7 +392,7 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
       const hadSpeech = Boolean(speechStartedAtRef.current);
       const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' });
       if (!activeRef.current) return;
-      if (!hadSpeech || blob.size < 800) {
+      if (!hadSpeech || blob.size < 400) {
         startCapture();
         return;
       }
@@ -451,8 +451,8 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
       unlockSource.start(0);
 
       const healthController = new AbortController();
-      const healthTimeout = setTimeout(() => healthController.abort(), 6_000);
-      const healthPromise = getVoiceHealth(healthController.signal)
+      const healthTimeout = setTimeout(() => healthController.abort(), 15_000);
+      const healthPromise = waitForVoiceHealth(healthController.signal)
         .finally(() => clearTimeout(healthTimeout));
       const streamPromise = navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },

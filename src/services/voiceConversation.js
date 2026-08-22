@@ -235,3 +235,30 @@ export async function getVoiceHealth(signal) {
   }
   return health;
 }
+
+export async function waitForVoiceHealth(signal, { attempts = 3, delayMs = 900 } = {}) {
+  let health = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (signal?.aborted) throw new DOMException('Voice startup was cancelled.', 'AbortError');
+    health = await getVoiceHealth(signal);
+    if (health.ready) return health;
+    const warming = Array.isArray(health?.warming) && health.warming.length > 0;
+    if (!warming || attempt + 1 >= attempts) break;
+    await new Promise((resolve, reject) => {
+      const finish = () => {
+        signal?.removeEventListener?.('abort', abort);
+        resolve();
+      };
+      const timer = setTimeout(finish, delayMs * (attempt + 1));
+      const abort = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener?.('abort', abort);
+        reject(new DOMException('Voice startup was cancelled.', 'AbortError'));
+      };
+      signal?.addEventListener?.('abort', abort, { once: true });
+    });
+    cachedVoiceHealth = null;
+    cachedVoiceHealthAt = 0;
+  }
+  return health || { ready: false, error: 'Voice service is unavailable.' };
+}

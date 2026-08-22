@@ -61,11 +61,14 @@ export async function GET(req) {
     const loadedModelCount = Array.isArray(ps?.models) ? ps.models.length : 0;
     const registryReachable = tagsResponse.ok;
     const ready = registryReachable && completionModelCount > 0;
+    const modelWarm = loadedModelCount > 0;
     return json({
       ready,
       registryReachable,
       completionModelCount,
       loadedModelCount,
+      modelWarm,
+      state: modelWarm ? 'ready' : 'cold',
       latencyMs: Date.now() - startedAt,
     }, ready ? 200 : 503);
   } catch (error) {

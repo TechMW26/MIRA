@@ -1,4 +1,5 @@
 import { parseOllamaKeepAlive } from './ollamaConfig.js';
+import { guardRequest } from './_requestSecurity.js';
 
 export const config = { maxDuration: 60 };
 
@@ -283,6 +284,8 @@ export async function generateVisionAnalysis({ prompt, images, signal } = {}) {
 }
 
 export async function POST(req) {
+  const guarded = guardRequest(req, { limit: 12, windowMs: 60_000, key: 'analyze' });
+  if (guarded) return guarded;
   try {
     const contentLength = Number(req.headers?.get?.('content-length') || 0);
     if (contentLength > MAX_BODY_BYTES) return json({ error: 'Request body is too large.' }, 413);

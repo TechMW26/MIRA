@@ -6,6 +6,7 @@ import {
   getChatTimeoutMessage,
   getResponseHeadersTimeout,
   shouldRetryChatRequest,
+  shouldRetryChatRequestAfterHealth,
 } from './chatRequestPolicy.js';
 import { diagnosticError, diagnosticLog, diagnosticWarn } from './diagnostics.js';
 import { notifyDesktopProviderRequired, requestDesktopAgentChat } from './desktopBridge.js';
@@ -100,11 +101,13 @@ async function diagnoseChatFailure(originalError, attemptNumber) {
       loadedModelCount: Number(health?.loadedModelCount || 0),
       latencyMs: Number(health?.latencyMs || 0),
     });
+    return health;
   } catch (error) {
     diagnosticWarn('health', 'automatic troubleshooting could not reach health endpoint', {
       attempt: attemptNumber,
       error: error?.name === 'AbortError' ? 'Health check timed out.' : (error?.message || 'Health check failed.'),
     });
+    return null;
   } finally {
     clearTimeout(timeout);
   }
@@ -483,6 +486,7 @@ async function requestChat({
   think,
   onChunk,
   endpoint = '/api/chat',
+  desktopCoding = false,
 }) {
   const controller = new AbortController();
   activeChatAbortController = controller;
@@ -518,6 +522,7 @@ async function requestChat({
               ...(maxTokens ? { max_tokens: maxTokens } : {}),
               ...(Array.isArray(tools) && tools.length > 0 ? { tools } : {}),
               ...(typeof think === 'boolean' ? { think } : {}),
+              ...(desktopCoding ? { desktopCoding: true } : {}),
             }),
           }),
           getResponseHeadersTimeout(),
@@ -553,23 +558,31 @@ async function requestChat({
         const normalizedError = isAbortError(err) && attemptController.signal.aborted
           ? new ChatTimeoutError('response-headers')
           : err;
-        const retry = !receivedAnswer && shouldRetryChatRequest(normalizedError, attempt, maxAttempts);
-        diagnosticError('stream', retry ? 'request failed; automatic recovery started' : 'request failed', {
+        const retryCandidate = !receivedAnswer && shouldRetryChatRequest(normalizedError, attempt, maxAttempts);
+        diagnosticError('stream', retryCandidate ? 'request failed; checking automatic recovery' : 'request failed', {
           requestId,
           attempt,
-          retry,
+          retry: retryCandidate,
           error: normalizedError?.message || 'Unknown request error',
           errorType: normalizedError?.name || 'Error',
           elapsedMs: Date.now() - attemptStartedAt,
         });
-        if (!retry) throw normalizedError;
+        if (!retryCandidate) throw normalizedError;
 
         attemptController.abort();
         await cancelChatAttempt(requestId);
-        await Promise.all([
+        const [health] = await Promise.all([
           diagnoseChatFailure(normalizedError, attempt),
           wait(getChatRetryDelayMs(attempt)),
         ]);
+        if (!shouldRetryChatRequestAfterHealth(normalizedError, health)) {
+          diagnosticWarn('stream', 'automatic retry skipped while the model server is cold', {
+            requestId,
+            attempt,
+            loadedModelCount: Number(health?.loadedModelCount || 0),
+          });
+          throw normalizedError;
+        }
       } finally {
         cleanupAttemptSignal();
       }
@@ -630,6 +643,7 @@ async function requestPollinationsFallback({ messages, systemPrompt, tools, maxT
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         task: 'chat',
+        scope: 'desktop-coding',
         messages,
         systemPrompt,
         tools,
@@ -702,6 +716,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
       think: voice ? false : think,
       maxTokens,
       endpoint: voice ? '/api/voice-chat' : '/api/chat',
+      desktopCoding,
       onChunk: ({ answerFull, thinkingFull }) => {
         const split = splitThinkingFromRaw(answerFull || '');
         const mergedThinking = [thinkingFull || '', split.thinking || '']
@@ -717,8 +732,8 @@ export async function sendChatMessage(messages, onChunk, images = [], {
       },
     });
   } catch (error) {
-    if (isAbortError(error) || images.length || voice) throw error;
-    diagnosticWarn('model', 'primary model failed; trying Pollinations completion fallback', {
+    if (isAbortError(error) || images.length || voice || !desktopCoding) throw error;
+    diagnosticWarn('model', 'desktop coding providers failed; trying Pollinations coding fallback', {
       error: error?.message || 'Unknown model failure',
     });
     try {

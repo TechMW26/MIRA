@@ -49,7 +49,45 @@ test('diagnoses and retries one transient chat failure', async () => {
   }
 });
 
-test('uses the managed completion fallback after primary retries fail', async () => {
+test('does not send the same request twice while the model host is cold', async () => {
+  const originalFetch = globalThis.fetch;
+  let generationAttempts = 0;
+  let cancellationCalls = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url) === '/api/health') {
+      return new Response(JSON.stringify({
+        ready: true,
+        registryReachable: true,
+        completionModelCount: 2,
+        loadedModelCount: 0,
+        state: 'cold',
+      }), { status: 200 });
+    }
+    const body = JSON.parse(options.body || '{}');
+    if (body.action === 'cancel') {
+      cancellationCalls += 1;
+      return new Response(JSON.stringify({ cancelled: true }), { status: 200 });
+    }
+    generationAttempts += 1;
+    return new Response(JSON.stringify({
+      error: 'The model is still starting. Please retry shortly.',
+      code: 'upstream_start_timeout',
+    }), { status: 504 });
+  };
+
+  try {
+    await assert.rejects(runChatCompletion({
+      messages: [{ role: 'user', content: 'Hello' }],
+      think: false,
+    }), /still starting/i);
+    assert.equal(generationAttempts, 1);
+    assert.equal(cancellationCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('never routes ordinary chat through the Pollinations coding fallback', async () => {
   const originalFetch = globalThis.fetch;
   let generationAttempts = 0;
   let fallbackCalls = 0;
@@ -74,17 +112,54 @@ test('uses the managed completion fallback after primary retries fail', async ()
   };
 
   try {
-    const response = await sendChatMessage(
+    await assert.rejects(sendChatMessage(
       [{ role: 'user', content: 'Summarise this workspace.' }],
       () => {},
       [],
       { think: false },
-    );
-    assert.equal(response, 'Fallback response.');
+    ), /Model temporarily unavailable/);
     assert.equal(generationAttempts, 2);
+    assert.equal(fallbackCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('keeps Pollinations completion fallback scoped to desktop coding work', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  let fallbackCalls = 0;
+  globalThis.window = {
+    miraDesktop: {
+      requestAgentChat: async () => ({ ok: false, error: 'DeepSeek unavailable.' }),
+    },
+  };
+  globalThis.fetch = async (url, options = {}) => {
+    const body = JSON.parse(options.body || '{}');
+    if (String(url) === '/api/health') {
+      return new Response(JSON.stringify({ ready: false }), { status: 503 });
+    }
+    if (String(url) === '/api/code-assist') {
+      fallbackCalls += 1;
+      return new Response(JSON.stringify({ suggestion: 'Coding fallback response.' }), { status: 200 });
+    }
+    if (body.action === 'cancel') return new Response('{}', { status: 200 });
+    assert.equal(body.desktopCoding, true);
+    return new Response(JSON.stringify({ error: 'Model temporarily unavailable.' }), { status: 503 });
+  };
+  try {
+    const response = await sendChatMessage(
+      [{ role: 'user', content: 'Fix this workspace.' }],
+      () => {},
+      [],
+      { desktopCoding: true, think: false },
+    );
+    assert.equal(response, 'Coding fallback response.');
     assert.equal(fallbackCalls, 1);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
   }
 });
 

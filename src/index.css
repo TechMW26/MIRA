@@ -467,6 +467,17 @@
 .desktop-permission-list article > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .desktop-permission-list strong { color: var(--text-primary); font-size: 0.8rem; }
 .desktop-permission-list span { color: var(--text-tertiary); font-size: 0.7rem; line-height: 1.45; }
+.desktop-first-run-overlay { z-index: 900; }
+.desktop-first-run-dialog { width: min(520px, 100%); }
+.desktop-first-run-icon { width: 56px; height: 56px; display: grid; place-items: center; margin-top: 20px; border: 1px solid rgba(94, 234, 212, 0.28); border-radius: 18px; color: var(--hud-cyan-bright); background: rgba(94, 234, 212, 0.08); box-shadow: 0 0 28px rgba(45, 212, 191, 0.1); }
+.desktop-permission-progress { display: flex; gap: 7px; margin-top: 18px; }
+.desktop-permission-progress span { height: 4px; flex: 1; border-radius: 999px; background: rgba(148, 163, 184, 0.16); }
+.desktop-permission-progress span.is-active { background: var(--hud-cyan); box-shadow: 0 0 10px rgba(94, 234, 212, 0.35); }
+.desktop-first-run-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.desktop-first-run-actions .desktop-ide-button { display: inline-flex; align-items: center; gap: 7px; }
+.desktop-first-run-actions .desktop-ide-button.is-primary { color: #001014; background: var(--hud-cyan); }
+.desktop-first-run-later { display: block; margin: 14px auto 0; border: 0; color: var(--text-tertiary); background: transparent; font-size: 0.7rem; }
+.desktop-first-run-later:hover { color: var(--text-secondary); }
 .desktop-provider-form { display: flex; min-width: min(290px, 100%); align-items: center; gap: 8px; }
 .desktop-provider-form input { min-width: 0; flex: 1; border: 1px solid var(--hud-cyan-dim); border-radius: 8px; outline: 0; background: #000508; padding: 8px 10px; color: var(--text-primary); font-size: 0.7rem; }
 .desktop-provider-form input:focus { border-color: var(--hud-cyan); }
@@ -3053,6 +3064,11 @@ body.desktop-companion-mode #root {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
+.desktop-companion-signin { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; color: var(--hud-cyan-soft); text-align: center; }
+.desktop-companion-signin .mira-identity-layer { position: relative; width: 126px; height: 126px; inset: auto; }
+.desktop-companion-signin strong { color: var(--hud-cyan-bright); font: 600 0.78rem/1.25 'Orbitron', 'Inter', sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }
+.desktop-companion-signin p { max-width: 280px; color: var(--text-tertiary); font-size: 0.75rem; line-height: 1.55; }
+.desktop-companion-signin button { margin-top: 4px; border: 1px solid rgba(94, 234, 212, 0.3); border-radius: 10px; padding: 9px 14px; color: var(--hud-cyan-bright); background: rgba(94, 234, 212, 0.08); font-size: 0.72rem; }
 .desktop-companion-chat .hud-composer-dock {
   left: 0;
   right: 0;
