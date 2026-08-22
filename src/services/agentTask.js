@@ -7,6 +7,7 @@ const MAX_STEP_RESULT_CHARS = 5000;
 const MAX_STEP_ATTEMPTS = 3;
 const FALLBACK_START = '=== USER-SAFE TASK FALLBACK ===';
 const FALLBACK_END = '=== END USER-SAFE TASK FALLBACK ===';
+const RECOVERY_MARKER = '=== TASK MODEL RECOVERY USED ===';
 
 const RESEARCH_WORKFLOW_PATTERN = /\b(research|investigate|deep\s+dive|due\s+diligence|literature\s+review|market\s+analysis|competitive\s+analysis|compare\s+(?:current|latest)|evaluate\s+(?:current|latest)|verify\s+across\s+sources)\b/i;
 const PLANNING_WORKFLOW_PATTERN = /\b(plan|roadmap|strategy|step[-\s]?by[-\s]?step|break\s+(?:it\s+)?down|split\s+into\s+steps|phases?|milestones?|end[-\s]?to[-\s]?end|implementation\s+plan|execution\s+plan|action\s+plan|first.+then|and\s+then)\b/i;
@@ -287,6 +288,10 @@ export function extractAgentTaskFallback(handoff = '') {
   return value.slice(start + FALLBACK_START.length, end).trim();
 }
 
+export function agentTaskUsedRecovery(handoff = '') {
+  return String(handoff || '').includes(RECOVERY_MARKER);
+}
+
 export async function runAgentTask({
   goal = '',
   context = '',
@@ -299,6 +304,8 @@ export async function runAgentTask({
   if (!String(goal || '').trim()) throw new Error('A task goal is required.');
   if (typeof generate !== 'function') throw new Error('The task planning model is unavailable.');
   const useResearch = agentTaskRequiresResearch(goal, requiresResearch);
+  let generationUnavailable = false;
+  let usedGenerationRecovery = false;
 
   onPhase?.({ phase: 'planning' });
   let plan;
@@ -311,6 +318,8 @@ export async function runAgentTask({
     plan = parseAgentPlan(planText, { goal, requiresResearch: useResearch });
   } catch (error) {
     if (error?.name === 'AbortError') throw error;
+    generationUnavailable = retryableTaskError(error);
+    usedGenerationRecovery = generationUnavailable;
     plan = fallbackAgentPlan(goal, useResearch);
   }
   onPhase?.({
@@ -349,6 +358,10 @@ export async function runAgentTask({
             }
             return formatSearchEvidence(evidence, resolvedQuery);
           }
+          if (generationUnavailable) {
+            usedGenerationRecovery = true;
+            return buildReasonStepFallback({ goal, context, step, results });
+          }
           try {
             return await generate(buildStepPrompt({ goal, context, plan, step, index, results }), {
               phase: 'executing',
@@ -357,6 +370,8 @@ export async function runAgentTask({
             });
           } catch (error) {
             if (!retryableTaskError(error)) throw error;
+            generationUnavailable = true;
+            usedGenerationRecovery = true;
             // A temporarily cold or overloaded local model must not invalidate
             // evidence that earlier steps already gathered. The workflow can
             // still produce a useful handoff and the normal final synthesis
@@ -393,6 +408,7 @@ export async function runAgentTask({
     `Original goal: ${compact(goal)}`,
     'Completed internal work:',
     ...plan.map((step, index) => `\n${index + 1}. ${step.title}\n${results[index]?.text || 'No result.'}`),
+    usedGenerationRecovery ? `\n${RECOVERY_MARKER}` : '',
     `\n${FALLBACK_START}\n${fallback}\n${FALLBACK_END}`,
     '\nFinal response requirement: answer the original goal directly using the completed work. Resolve inconsistencies, preserve source URLs for citations when useful, omit process chatter, and do not mention internal plans or tools.',
   ].join('\n');

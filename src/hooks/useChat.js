@@ -97,6 +97,7 @@ import {
   getAgentRuntimeCapabilities,
 } from '../services/agentCapabilities.js';
 import {
+  agentTaskUsedRecovery,
   agentTaskRequiresResearch,
   extractAgentTaskFallback,
   runAgentTask,
@@ -3014,7 +3015,15 @@ export default function useChat() {
                   : `${content}\n\n=== TOOL RESULT ===\n${toolResult}\n=== END TOOL RESULT ===\n\nContinue the original request using this result. Do not emit the same tool call again.`,
               };
               let continuedAnswer = '';
-              try {
+              const recoveredTaskAnswer = isTaskResult && agentTaskUsedRecovery(toolResult)
+                ? extractAgentTaskFallback(toolResult)
+                : '';
+              if (recoveredTaskAnswer) {
+                diagnosticWarn('tool', 'task used completed evidence after model recovery', { runId });
+                continuedAnswer = recoveredTaskAnswer;
+                fullText = recoveredTaskAnswer;
+                flushStreamingContent(recoveredTaskAnswer);
+              } else try {
                 await sendChatMessage(
                   history,
                   (accumulated) => {

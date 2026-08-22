@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  agentTaskUsedRecovery,
   agentTaskRequiresResearch,
   buildTaskSearchQueries,
   extractAgentTaskFallback,
@@ -155,6 +156,7 @@ test('completes a reasoning step from available context when the model is tempor
   let executionCalls = 0;
   const output = await runAgentTask({
     goal: 'Research and summarize a market',
+    context: 'The available evidence supports a cautious market assessment.',
     generate: async (_prompt, options) => {
       if (options.phase === 'planning') {
         return JSON.stringify([
@@ -169,10 +171,29 @@ test('completes a reasoning step from available context when the model is tempor
   });
 
   const fallback = extractAgentTaskFallback(output);
-  assert.equal(executionCalls, 2);
+  assert.equal(executionCalls, 1);
   assert.match(fallback, /available evidence supports/i);
   assert.doesNotMatch(fallback, /Incomplete areas/i);
   assert.match(fallback, /Unavailable source/);
+  assert.equal(agentTaskUsedRecovery(output), true);
+});
+
+test('does not contact the model again after planning confirms it is unavailable', async () => {
+  let calls = 0;
+  const output = await runAgentTask({
+    goal: 'Research a civic app market',
+    requiresResearch: true,
+    generate: async () => {
+      calls += 1;
+      throw new Error('The model service is temporarily unavailable.');
+    },
+    search: async () => ({
+      results: [{ title: 'Benchmark', snippet: 'Verified evidence', url: 'https://example.com' }],
+    }),
+  });
+  assert.equal(calls, 1);
+  assert.equal(agentTaskUsedRecovery(output), true);
+  assert.match(extractAgentTaskFallback(output), /Verified evidence/);
 });
 
 test('uses a different research query on each empty-result retry', async () => {
