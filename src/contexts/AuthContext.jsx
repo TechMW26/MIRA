@@ -9,6 +9,7 @@ import {
 import { ref, set } from 'firebase/database';
 import { auth, db, firebaseAuthConfigured } from '../config/firebase';
 import { isPermanentSessionError, restoreSessionWithRetry } from '../services/authSessionPolicy';
+import { createServerAuthRequest } from '../services/authTransport';
 
 const AuthContext = createContext(null);
 const SERVER_SESSION_KEY = 'mira_auth_token';
@@ -30,15 +31,12 @@ function publicUser(value) {
 async function serverAuth(action, payload = {}, token = '') {
   let response;
   try {
-    response = await fetch('/api/auth', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ action, ...payload }),
-      signal: AbortSignal.timeout(12_000),
-    });
+    response = await fetch('/api/auth', createServerAuthRequest(
+      action,
+      payload,
+      token,
+      AbortSignal.timeout(12_000),
+    ));
   } catch (cause) {
     throw Object.assign(new Error('Authentication is temporarily unavailable.'), {
       code: 'auth/network-request-failed',

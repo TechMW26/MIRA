@@ -164,6 +164,40 @@ function resolveTaskSearchQuery(query, goal, context) {
   return fallbackSearchQuery(requested, context) || fallbackSearchQuery(goal, context) || requested;
 }
 
+function broadResearchQuery(goal = '', context = '') {
+  const corpus = `${goal} ${context}`.replace(/\s+/g, ' ').trim();
+  const domain = /\b(?:civic|citizen|community|public participation)\b/i.test(corpus)
+    ? 'civic engagement app'
+    : /\b(?:rating|ratings|reputation|social score|trust score)\b/i.test(corpus)
+      ? 'social reputation app'
+      : /\b(?:app|application|platform|software|product)\b/i.test(corpus)
+        ? 'mobile app'
+        : /\b(?:business|company|startup|service)\b/i.test(corpus)
+          ? 'digital product'
+          : 'industry';
+  const outcome = /\b(?:engag|retention|active users?|participation|sticky|habit)\w*/i.test(corpus)
+    ? 'gamification retention benchmarks'
+    : /\b(?:market|competitor|competitive|benchmark|position)\w*/i.test(corpus)
+      ? 'market benchmarks competitors'
+      : /\b(?:trust|safety|abuse|moderation|privacy)\w*/i.test(corpus)
+        ? 'trust safety best practices'
+        : 'research trends benchmarks';
+  return `${domain} ${outcome}`;
+}
+
+export function buildTaskSearchQueries({ query = '', goal = '', context = '', instruction = '' } = {}) {
+  const primary = resolveTaskSearchQuery(query, goal, context);
+  const instructionQuery = resolveTaskSearchQuery(
+    [instruction, goal].filter(Boolean).join(' '),
+    context,
+  );
+  return Array.from(new Set([
+    primary,
+    broadResearchQuery(goal, context),
+    instructionQuery,
+  ].map((value) => compact(value, 220)).filter(Boolean))).slice(0, MAX_STEP_ATTEMPTS);
+}
+
 function retryableTaskError(error) {
   if (error?.name === 'AbortError') return false;
   const message = String(error?.message || error || '').toLowerCase();
@@ -202,6 +236,26 @@ async function executeStepWithRetry({ operation, onPhase, step, total, title }) 
     }
   }
   throw lastError || new Error('The task step could not be completed.');
+}
+
+function buildReasonStepFallback({ goal, context, step, results }) {
+  const completed = results
+    .filter((result) => result.status === 'done' && String(result.text || '').trim())
+    .map((result) => compact(result.text, MAX_STEP_RESULT_CHARS));
+  if (completed.length) {
+    return [
+      `${step.title}: evidence-backed working result`,
+      ...completed,
+      `Apply these findings directly to the goal: ${compact(goal, 500)}`,
+    ].join('\n\n');
+  }
+  const knownContext = compact(context, MAX_STEP_RESULT_CHARS);
+  return [
+    `${step.title}: working result`,
+    `Goal: ${compact(goal, 700)}`,
+    knownContext ? `Known project context: ${knownContext}` : '',
+    `Required outcome: ${compact(step.instruction, 700)}`,
+  ].filter(Boolean).join('\n\n');
 }
 
 function buildTaskFallback(goal, plan, results) {
@@ -279,20 +333,36 @@ export async function runAgentTask({
         total: plan.length,
         title: step.title,
         onPhase,
-        operation: async () => {
+        operation: async (attempt) => {
           if (step.tool === 'web.search' && typeof search === 'function') {
-            const resolvedQuery = resolveTaskSearchQuery(step.query, goal, context);
+            const queries = buildTaskSearchQueries({
+              query: step.query,
+              goal,
+              context,
+              instruction: step.instruction,
+            });
+            const resolvedQuery = queries[Math.min(attempt - 1, queries.length - 1)]
+              || resolveTaskSearchQuery(step.query, goal, context);
             const evidence = await search(resolvedQuery, { freshness, deepResearch: true });
             if (!Array.isArray(evidence?.results) || evidence.results.length === 0) {
               throw new Error('Web search returned no useful evidence.');
             }
             return formatSearchEvidence(evidence, resolvedQuery);
           }
-          return await generate(buildStepPrompt({ goal, context, plan, step, index, results }), {
-            phase: 'executing',
-            think: true,
-            maxTokens: 2400,
-          });
+          try {
+            return await generate(buildStepPrompt({ goal, context, plan, step, index, results }), {
+              phase: 'executing',
+              think: false,
+              maxTokens: 1600,
+            });
+          } catch (error) {
+            if (!retryableTaskError(error)) throw error;
+            // A temporarily cold or overloaded local model must not invalidate
+            // evidence that earlier steps already gathered. The workflow can
+            // still produce a useful handoff and the normal final synthesis
+            // will refine it whenever Ollama is available.
+            return buildReasonStepFallback({ goal, context, step, results });
+          }
         },
       });
       results.push({ status: 'done', text: compact(result, MAX_STEP_RESULT_CHARS) });

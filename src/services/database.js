@@ -13,8 +13,67 @@ import {
   runTransaction,
 } from 'firebase/database';
 import { buildProjectContextTurn } from './projectContext.js';
+import { fetchFirebaseSnapshot } from './firebaseRest.js';
 
 const PROJECT_RUN_LEASE_MS = 6 * 60 * 1000;
+const DATABASE_URL = import.meta.env.VITE_FIREBASE_DATABASE_URL
+  || 'https://mira-3ffa4-default-rtdb.asia-southeast1.firebasedatabase.app';
+
+function readSubscriptionCache(key) {
+  try {
+    const value = JSON.parse(globalThis.localStorage?.getItem(key) || 'null');
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSubscriptionCache(key, value) {
+  try {
+    globalThis.localStorage?.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage is an optional resilience layer; live data remains authoritative.
+  }
+}
+
+function resilientOnValue(reference, onSnapshot, label, fallbackPath = '') {
+  let active = true;
+  let received = false;
+  let recoveryPromise = null;
+  const recover = () => {
+    if (!active || received || recoveryPromise) return;
+    recoveryPromise = (fallbackPath
+      ? fetchFirebaseSnapshot(DATABASE_URL, fallbackPath)
+      : get(reference))
+      .then((snapshot) => {
+        if (active && !received) {
+          received = true;
+          clearTimeout(fallbackTimer);
+          onSnapshot(snapshot);
+        }
+      })
+      .catch((error) => console.warn(`${label} recovery failed:`, error?.message || error))
+      .finally(() => { recoveryPromise = null; });
+  };
+  const fallbackTimer = setTimeout(recover, 2_500);
+  const unsubscribe = onValue(
+    reference,
+    (snapshot) => {
+      received = true;
+      clearTimeout(fallbackTimer);
+      if (active) onSnapshot(snapshot);
+    },
+    (error) => {
+      console.warn(`${label} subscription failed:`, error?.message || error);
+      recover();
+    },
+  );
+  return () => {
+    active = false;
+    clearTimeout(fallbackTimer);
+    unsubscribe();
+  };
+}
 
 function publicUserProfile(uid, profile = {}) {
   return {
@@ -61,15 +120,19 @@ export async function createConversation(uid, title = 'New Chat') {
 }
 
 export function subscribeConversations(uid, callback) {
-  const convRef = query(ref(db, `conversations/${uid}`), orderByChild('updatedAt'));
-  onValue(convRef, (snap) => {
+  const cacheKey = `mira-conversations-${uid}`;
+  const cached = readSubscriptionCache(cacheKey);
+  if (cached.length) callback(cached);
+  const convRef = ref(db, `conversations/${uid}`);
+  return resilientOnValue(convRef, (snap) => {
     const convs = [];
     snap.forEach((child) => {
       convs.push({ id: child.key, ...child.val() });
     });
-    callback(convs.reverse());
-  });
-  return () => off(convRef);
+    convs.sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0));
+    writeSubscriptionCache(cacheKey, convs);
+    callback(convs);
+  }, 'Conversation', `conversations/${uid}`);
 }
 
 export async function updateConversation(uid, convId, data) {
@@ -310,6 +373,9 @@ export async function createProject(uid, name, description = '') {
 }
 
 export function subscribeProjects(uid, callback) {
+  const cacheKey = `mira-projects-${uid}`;
+  const cached = readSubscriptionCache(cacheKey);
+  if (cached.length) callback(cached);
   const projRef = ref(db, `projects/${uid}`);
   const accessRef = ref(db, `userProjectAccess/${uid}`);
   let owned = [];
@@ -333,19 +399,21 @@ export function subscribeProjects(uid, callback) {
         isOwner: project.ownerUid === uid,
       });
     });
-    callback([...projects.values()].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)));
+    const next = [...projects.values()].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+    writeSubscriptionCache(cacheKey, next);
+    callback(next);
   };
 
-  onValue(projRef, (snap) => {
+  const unsubscribeOwned = resilientOnValue(projRef, (snap) => {
     const projects = [];
     snap.forEach((child) => {
       projects.push({ id: child.key, ...child.val() });
     });
     owned = projects;
     emit();
-  });
+  }, 'Project', `projects/${uid}`);
 
-  onValue(accessRef, (snap) => {
+  const unsubscribeAccess = resilientOnValue(accessRef, (snap) => {
     const nextIds = new Set();
     snap.forEach((child) => nextIds.add(child.key));
     sharedUnsubs.forEach((unsubscribe, projectId) => {
@@ -358,19 +426,19 @@ export function subscribeProjects(uid, callback) {
     nextIds.forEach((projectId) => {
       if (sharedUnsubs.has(projectId)) return;
       const sharedRef = ref(db, `sharedProjects/${projectId}`);
-      const unsubscribe = onValue(sharedRef, (projectSnap) => {
+      const unsubscribe = resilientOnValue(sharedRef, (projectSnap) => {
         if (projectSnap.exists()) shared.set(projectId, projectSnap.val());
         else shared.delete(projectId);
         emit();
-      });
+      }, 'Shared project', `sharedProjects/${projectId}`);
       sharedUnsubs.set(projectId, unsubscribe);
     });
     emit();
-  });
+  }, 'Project access', `userProjectAccess/${uid}`);
 
   return () => {
-    off(projRef);
-    off(accessRef);
+    unsubscribeOwned();
+    unsubscribeAccess();
     sharedUnsubs.forEach((unsubscribe) => unsubscribe());
   };
 }
