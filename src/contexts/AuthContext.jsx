@@ -9,24 +9,22 @@ import {
 import { ref, set } from 'firebase/database';
 import { auth, db, firebaseAuthConfigured } from '../config/firebase';
 import { isPermanentSessionError, restoreSessionWithRetry } from '../services/authSessionPolicy';
+import {
+  REMEMBERED_USER_KEY,
+  SERVER_SESSION_KEY,
+  SERVER_USER_KEY,
+  SERVER_VALIDATED_KEY,
+  clearRememberedSession,
+  discardServerToken,
+  readRememberedUser,
+  rememberAuthUser,
+  saveServerSession,
+} from '../services/authSessionStore';
 import { createServerAuthRequest } from '../services/authTransport';
 
 const AuthContext = createContext(null);
-const SERVER_SESSION_KEY = 'mira_auth_token';
-const SERVER_USER_KEY = 'mira_auth_user';
-const SERVER_VALIDATED_KEY = 'mira_auth_validated_at';
 const SESSION_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const SESSION_RESTORE_ATTEMPTS = 3;
-
-function publicUser(value) {
-  if (!value?.uid) return null;
-  return {
-    uid: value.uid,
-    email: value.email || '',
-    displayName: value.displayName || '',
-    photoURL: value.photoURL || '',
-  };
-}
 
 async function serverAuth(action, payload = {}, token = '') {
   let response;
@@ -61,28 +59,6 @@ async function serverAuth(action, payload = {}, token = '') {
   return data;
 }
 
-function readCachedServerUser() {
-  try {
-    return publicUser(JSON.parse(localStorage.getItem(SERVER_USER_KEY) || 'null'));
-  } catch {
-    return null;
-  }
-}
-
-function saveServerSession({ token, user: nextUser }) {
-  const current = publicUser(nextUser);
-  if (current) localStorage.setItem(SERVER_USER_KEY, JSON.stringify(current));
-  if (token) localStorage.setItem(SERVER_SESSION_KEY, token);
-  localStorage.setItem(SERVER_VALIDATED_KEY, String(Date.now()));
-  return current;
-}
-
-function clearServerSession() {
-  localStorage.removeItem(SERVER_SESSION_KEY);
-  localStorage.removeItem(SERVER_USER_KEY);
-  localStorage.removeItem(SERVER_VALIDATED_KEY);
-}
-
 async function restoreServerSession(token) {
   return restoreSessionWithRetry(
     () => serverAuth('session', {}, token),
@@ -97,15 +73,18 @@ export function useAuth() {
 }
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState(() => readRememberedUser());
+  const [loading, setLoading] = useState(() => !readRememberedUser());
   const [authLoading, setAuthLoading] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     if (firebaseAuthConfigured && auth) {
       return onAuthStateChanged(auth, (account) => {
-        setUser(publicUser(account));
+        const current = account
+          ? rememberAuthUser(account)
+          : readRememberedUser();
+        setUser(current);
         setLoading(false);
       });
     }
@@ -113,9 +92,9 @@ export function AuthProvider({ children }) {
     let refreshPromise = null;
     let refreshFailures = 0;
     let nextRefreshAllowedAt = 0;
-    const cachedUser = readCachedServerUser();
+    const cachedUser = readRememberedUser();
     const initialToken = localStorage.getItem(SERVER_SESSION_KEY) || '';
-    if (initialToken && cachedUser) {
+    if (cachedUser) {
       setUser(cachedUser);
       setLoading(false);
     } else if (!initialToken) {
@@ -127,13 +106,13 @@ export function AuthProvider({ children }) {
       const token = localStorage.getItem(SERVER_SESSION_KEY) || '';
       if (!token) {
         if (active) {
-          setUser(null);
+          setUser(readRememberedUser());
           setLoading(false);
         }
         return null;
       }
       const lastValidatedAt = Number(localStorage.getItem(SERVER_VALIDATED_KEY) || 0);
-      if (!force && readCachedServerUser() && Date.now() - lastValidatedAt < 60_000) return null;
+      if (!force && readRememberedUser() && Date.now() - lastValidatedAt < 60_000) return null;
       if (refreshPromise) return refreshPromise;
       refreshPromise = restoreServerSession(token)
         .then((result) => {
@@ -145,8 +124,11 @@ export function AuthProvider({ children }) {
         })
         .catch((sessionError) => {
           if (isPermanentSessionError(sessionError)) {
-            clearServerSession();
-            if (active) setUser(null);
+            // A rejected server credential may be stale after a deployment or
+            // secret rotation. Discard only that credential and keep the
+            // durable identity; automatic validation must never log users out.
+            discardServerToken();
+            if (active) setUser(readRememberedUser());
           } else {
             refreshFailures += 1;
             nextRefreshAllowedAt = Date.now() + Math.min(
@@ -155,7 +137,7 @@ export function AuthProvider({ children }) {
             );
             // A temporary API, network, or Firebase outage must never turn into
             // a local logout. Keep the last verified identity and retry later.
-            const retainedUser = readCachedServerUser();
+            const retainedUser = readRememberedUser();
             if (active && retainedUser) setUser(retainedUser);
           }
           return null;
@@ -173,12 +155,12 @@ export function AuthProvider({ children }) {
       if (document.visibilityState === 'visible') refreshSession();
     };
     const syncAcrossTabs = (event) => {
-      if (event.key === SERVER_USER_KEY && event.newValue) {
-        const syncedUser = readCachedServerUser();
+      if ((event.key === REMEMBERED_USER_KEY || event.key === SERVER_USER_KEY) && event.newValue) {
+        const syncedUser = readRememberedUser();
         if (active && syncedUser) setUser(syncedUser);
         return;
       }
-      if (event.key === SERVER_SESSION_KEY && !event.newValue) {
+      if (event.key === REMEMBERED_USER_KEY && !event.newValue) {
         if (active) setUser(null);
       }
     };
@@ -212,7 +194,7 @@ export function AuthProvider({ children }) {
     try {
       if (firebaseAuthConfigured && auth) {
         const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
-        const current = publicUser(credential.user);
+        const current = rememberAuthUser(credential.user);
         setUser(current);
         return current;
       }
@@ -237,7 +219,7 @@ export function AuthProvider({ children }) {
       if (firebaseAuthConfigured && auth) {
         const credential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
         await updateProfile(credential.user, { displayName: String(displayName || '').trim() });
-        const current = publicUser(credential.user);
+        const current = rememberAuthUser(credential.user);
         await set(ref(db, `users/${current.uid}`), { ...current, createdAt: Date.now() });
         setUser(current);
         return current;
@@ -256,7 +238,7 @@ export function AuthProvider({ children }) {
 
   async function logout() {
     if (firebaseAuthConfigured && auth) await signOut(auth);
-    clearServerSession();
+    clearRememberedSession();
     localStorage.removeItem('mira_legacy_session');
     localStorage.removeItem('mira_token');
     localStorage.removeItem('mira_user');

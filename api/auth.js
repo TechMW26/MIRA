@@ -14,11 +14,10 @@ const DATABASE_URL = String(
   || 'https://mira-3ffa4-default-rtdb.asia-southeast1.firebasedatabase.app',
 ).replace(/\/+$/, '');
 const PASSWORD_ITERATIONS = 210_000;
-// Sessions are rolling: every successful restoration returns a freshly signed
-// token. A long absolute window prevents desktop users from being signed out
-// merely because they did not open MIRA for a week, while server validation
-// still confirms that the account exists whenever the app resumes.
-const SESSION_LIFETIME_MS = 90 * 24 * 60 * 60 * 1000;
+// Sessions are rolling and intentionally very long lived. The client also
+// retains the last verified identity across token renewal failures, so a
+// deployment or temporary credential mismatch cannot become a visible logout.
+const SESSION_LIFETIME_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 16 * 1024;
 
 function json(payload, status = 200) {
@@ -212,9 +211,15 @@ async function register(request, body) {
 
 async function restoreSession(request, body) {
   const session = verifySession(bearerToken(request, body));
-  if (!session) return json({ error: 'Your session is invalid or has expired.' }, 401);
+  if (!session) return json({
+    error: 'The saved server credential needs to be renewed.',
+    code: 'auth/session-renewal-required',
+  }, 401);
   const profile = await firebaseRequest(`users/${session.uid}`);
-  if (!profile) return json({ error: 'This account no longer exists.' }, 401);
+  if (!profile) return json({
+    error: 'This account no longer exists.',
+    code: 'auth/account-missing',
+  }, 401);
   const user = publicUser(session.uid, profile);
   return json({ user, token: signSession(user) });
 }

@@ -124,6 +124,25 @@ test('auth rejects a wrong password with a generic error', async () => {
   }
 });
 
+test('auth identifies stale session credentials as renewal failures', async () => {
+  const originalSecret = process.env.MIRA_AUTH_SECRET;
+  process.env.MIRA_AUTH_SECRET = SECRET;
+  try {
+    const response = await POST(bodyTokenAuthRequest(
+      { action: 'session' },
+      'stale.invalid',
+    ));
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), {
+      error: 'The saved server credential needs to be renewed.',
+      code: 'auth/session-renewal-required',
+    });
+  } finally {
+    if (originalSecret === undefined) delete process.env.MIRA_AUTH_SECRET;
+    else process.env.MIRA_AUTH_SECRET = originalSecret;
+  }
+});
+
 test('auth restores a signed server session and refreshes the public profile', async () => {
   const originalFetch = globalThis.fetch;
   const originalSecret = process.env.MIRA_AUTH_SECRET;
@@ -159,7 +178,7 @@ test('auth restores a signed server session and refreshes the public profile', a
     });
     assert.match(session.token, /^[^.]+\.[^.]+$/);
     const refreshedPayload = JSON.parse(Buffer.from(session.token.split('.')[0], 'base64url').toString('utf8'));
-    assert.ok(refreshedPayload.expiresAt - refreshedPayload.issuedAt >= 89 * 24 * 60 * 60 * 1000);
+    assert.ok(refreshedPayload.expiresAt - refreshedPayload.issuedAt >= 9 * 365 * 24 * 60 * 60 * 1000);
     const secondSessionResponse = await POST(authRequest(
       { action: 'session' },
       { token: session.token },
