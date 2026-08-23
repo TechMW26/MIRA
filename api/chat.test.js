@@ -100,7 +100,7 @@ test('bounds the upstream model-start timeout below the browser timeout', () => 
   assert.equal(getUpstreamStartTimeoutMs(), 50000);
   assert.equal(getUpstreamStartTimeoutMs(1000), 15000);
   assert.equal(getUpstreamStartTimeoutMs(90000), 55000);
-  assert.equal(getFailoverStartTimeoutMs(1000), 30000);
+  assert.equal(getFailoverStartTimeoutMs(1000), 60000);
   assert.equal(getFailoverStartTimeoutMs(), 60000);
 });
 

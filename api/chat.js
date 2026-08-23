@@ -88,12 +88,12 @@ export function getUpstreamStartTimeoutMs(value = process.env.OLLAMA_START_TIMEO
   return Math.max(15000, Math.min(55000, Math.round(parsed)));
 }
 
-export function getFailoverStartTimeoutMs(value = process.env.OLLAMA_START_TIMEOUT_MS) {
+export function getFailoverStartTimeoutMs() {
   // A failed large model can take most of one start window before Ollama
   // reports that its runner was killed. Reserve a second bounded window for
   // the already-installed registry fallback while remaining below the
   // browser's 65-second response-header timeout.
-  return Math.min(60_000, getUpstreamStartTimeoutMs(value) * MAX_MODEL_ATTEMPTS);
+  return 60_000;
 }
 
 export function getUpstreamConnectTimeoutMs(value = process.env.OLLAMA_CONNECT_TIMEOUT_MS) {
