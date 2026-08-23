@@ -47,6 +47,12 @@
       ]
     },
     {
+      "source": "/asset-recovery-v3.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    },
+    {
       "source": "/manifest.webmanifest",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache, must-revalidate" }
@@ -67,6 +73,9 @@
   ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/project/(.*)/chat/assets/(.*)", "destination": "/asset-recovery-v3.js" },
+    { "source": "/project/assets/(.*)", "destination": "/asset-recovery-v3.js" },
+    { "source": "/chat/assets/(.*)", "destination": "/asset-recovery-v3.js" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

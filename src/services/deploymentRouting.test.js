@@ -6,6 +6,8 @@ test('production assets use a root base so nested chat routes can reload', () =>
   const viteConfig = readFileSync(new URL('../../vite.config.js', import.meta.url), 'utf8');
   const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
   const packageJson = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+  const vercelConfig = JSON.parse(readFileSync(new URL('../../vercel.json', import.meta.url), 'utf8'));
+  const recoveryScript = readFileSync(new URL('../../public/asset-recovery-v3.js', import.meta.url), 'utf8');
   assert.match(viteConfig, /base:\s*['"]\/['"]/);
   assert.doesNotMatch(viteConfig, /base:\s*['"]\.\/['"]/);
   assert.match(html, /href="\/manifest\.webmanifest"/);
@@ -14,4 +16,12 @@ test('production assets use a root base so nested chat routes can reload', () =>
   assert.match(viteConfig, /importScripts:\s*\[['"]\/pwa-cache-reset-v3\.js['"]\]/);
   assert.match(packageJson.scripts['desktop:build'], /vite build --base=\.\//);
   assert.match(packageJson.scripts['desktop:pack'], /vite build --base=\.\//);
+  const rewritePairs = vercelConfig.rewrites.map(({ source, destination }) => `${source} -> ${destination}`);
+  assert.ok(rewritePairs.includes('/project/(.*)/chat/assets/(.*) -> /asset-recovery-v3.js'));
+  assert.ok(rewritePairs.includes('/chat/assets/(.*) -> /asset-recovery-v3.js'));
+  assert.ok(rewritePairs.indexOf('/project/(.*)/chat/assets/(.*) -> /asset-recovery-v3.js')
+    < rewritePairs.indexOf('/(.*) -> /index.html'));
+  assert.match(recoveryScript, /getRegistrations/);
+  assert.match(recoveryScript, /caches\?\.keys/);
+  assert.match(recoveryScript, /location\?\.reload/);
 });
