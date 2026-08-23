@@ -24,6 +24,7 @@ import {
   acquireConversationRun,
   releaseConversationRun,
   subscribeMessages,
+  getProjectConversation,
   getProjectContext,
   saveProjectContextTurn,
 } from '../services/database';
@@ -105,6 +106,7 @@ import {
 } from '../services/agentTask.js';
 import { isChatTimeoutError } from '../services/chatRequestPolicy.js';
 import { buildProjectContextPrompt, buildProjectContextTurn } from '../services/projectContext.js';
+import { resolveProjectConversationTarget } from '../services/projectChatRecovery.js';
 import { createThrottledRealtimeWriter } from '../services/realtimeSync.js';
 import {
   appendDesktopWorkspaceTurn,
@@ -1387,21 +1389,50 @@ export default function useChat() {
       const isActingForAnotherUser = messageAuthor.uid !== user.uid;
       const requestProfile = isActingForAnotherUser ? messageAuthor : profile;
       let lockedConversationId = null;
+      let convId = currentConversationId;
 
-      if (activeProjectId && currentConversationId) {
-        const acquired = await acquireConversationRun(currentConversationId, projectRunToken, messageAuthor);
-        if (!acquired) {
-          if (options.queueOnBusy !== false) {
-            await enqueueConversationPrompt(currentConversationId, {
-              content,
-              attachments,
-              webSearch,
-              conversationId: currentConversationId,
-            }, messageAuthor);
+      try {
+        if (activeProjectId && convId) {
+          // A bookmarked/project URL can outlive its deleted conversation.
+          // Recover it as a new chat instead of writing orphan messages and
+          // appearing to ignore the send action.
+          const projectConversation = await getProjectConversation(activeProjectId, convId);
+          const target = resolveProjectConversationTarget({
+            projectId: activeProjectId,
+            conversationId: convId,
+            conversation: projectConversation,
+          });
+          convId = target.conversationId;
+          if (target.recoveredMissingConversation) {
+            setCurrentConversationId(null);
+          } else {
+            const acquired = await acquireConversationRun(convId, projectRunToken, messageAuthor);
+            if (!acquired) {
+              if (options.queueOnBusy !== false) {
+                await enqueueConversationPrompt(convId, {
+                  content,
+                  attachments,
+                  webSearch,
+                  conversationId: convId,
+                }, messageAuthor);
+              }
+              return { queued: true };
+            }
+            lockedConversationId = convId;
           }
-          return { queued: true };
         }
-        lockedConversationId = currentConversationId;
+      } catch (preflightError) {
+        const failureText = `Sorry, I couldn't start that chat. ${preflightError?.message || 'Please try again.'}`;
+        setMessages((previous) => [...previous, {
+          id: `local-assistant-error-${Date.now()}`,
+          role: 'assistant',
+          content: failureText,
+          type: 'text',
+          isStreaming: false,
+          localOnly: true,
+        }]);
+        sendDesktopNotification({ title: 'MIRA needs your attention', body: failureText }).catch(() => {});
+        return { error: preflightError, answer: failureText };
       }
       generationRunRef.current = runId;
       const interruptedResponse = options.steering && activeResponseRef.current?.content
@@ -1424,7 +1455,6 @@ export default function useChat() {
       setStreamingContent('');
       setThinkingContent('');
 
-      let convId = currentConversationId;
       const replaceMessageId = options.replaceMessageId || null;
       let assistantMsgId = null;
       let completedAnswer = '';

@@ -3,7 +3,12 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
-  base: './',
+  // The web app uses BrowserRouter and must be reloadable from nested chat
+  // routes. A relative base makes Vite emit ./assets links, which browsers
+  // resolve below /project/:id/chat/:id and replace JavaScript with the SPA
+  // fallback HTML. Electron packaging explicitly overrides this with
+  // `vite build --base=./` because file:// assets must remain relative.
+  base: '/',
   plugins: [
     react(),
     VitePWA({
@@ -17,11 +22,11 @@ export default defineConfig({
       ],
       manifest: false,
       workbox: {
-        cacheId: 'mira-v2',
+        cacheId: 'mira-v3',
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: true,
-        importScripts: ['/pwa-cache-reset-v2.js'],
+        importScripts: ['/pwa-cache-reset-v3.js'],
         navigateFallbackDenylist: [/^\/api\//],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
       },

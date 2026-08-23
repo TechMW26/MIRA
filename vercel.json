@@ -41,7 +41,7 @@
       ]
     },
     {
-      "source": "/pwa-cache-reset-v2.js",
+      "source": "/pwa-cache-reset-v3.js",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
       ]

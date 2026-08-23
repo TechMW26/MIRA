@@ -1,4 +1,4 @@
-const ACTIVE_CACHE_PREFIX = 'mira-v2-';
+const ACTIVE_CACHE_PREFIX = 'mira-v3-';
 
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {

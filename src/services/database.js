@@ -635,12 +635,17 @@ export function subscribeProjectConversations(projectId, callback) {
     return () => {};
   }
   const chatsRef = query(ref(db, `projectChats/${projectId}`), orderByChild('updatedAt'));
-  onValue(chatsRef, (snap) => {
+  return resilientOnValue(chatsRef, (snap) => {
     const conversations = [];
     snap.forEach((child) => conversations.push({ id: child.key, ...child.val(), projectId }));
     callback(conversations.reverse());
-  });
-  return () => off(chatsRef);
+  }, 'Project conversation', `projectChats/${projectId}`);
+}
+
+export async function getProjectConversation(projectId, convId) {
+  if (!projectId || !convId) return null;
+  const snapshot = await restSnapshot(`projectChats/${projectId}/${convId}`);
+  return snapshot.exists() ? { id: convId, ...snapshot.val(), projectId } : null;
 }
 
 export async function deleteProject(uid, projectId) {
@@ -819,12 +824,11 @@ export function subscribeConversationQueue(convId, callback) {
     return () => {};
   }
   const queueRef = query(ref(db, `conversationQueues/${convId}`), orderByChild('queuedAt'));
-  onValue(queueRef, (snap) => {
+  return resilientOnValue(queueRef, (snap) => {
     const prompts = [];
     snap.forEach((child) => prompts.push({ ...child.val(), id: child.key }));
     callback(prompts);
-  });
-  return () => off(queueRef);
+  }, 'Conversation queue', `conversationQueues/${convId}`);
 }
 
 export async function updateConversationPrompt(convId, promptId, authorUid, data) {
@@ -849,7 +853,7 @@ export function subscribeConversationRun(convId, callback) {
   }
   const runRef = ref(db, `conversationRuns/${convId}`);
   let expiryTimer = null;
-  onValue(runRef, (snap) => {
+  const unsubscribe = resilientOnValue(runRef, (snap) => {
     if (expiryTimer) clearTimeout(expiryTimer);
     const run = snap.exists() ? snap.val() : null;
     const remaining = Number(run?.leaseUntil || 0) - Date.now();
@@ -857,10 +861,10 @@ export function subscribeConversationRun(convId, callback) {
     if (run && remaining > 0) {
       expiryTimer = setTimeout(() => callback(null), remaining + 50);
     }
-  });
+  }, 'Conversation run', `conversationRuns/${convId}`);
   return () => {
     if (expiryTimer) clearTimeout(expiryTimer);
-    off(runRef);
+    unsubscribe();
   };
 }
 
