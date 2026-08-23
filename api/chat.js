@@ -334,10 +334,13 @@ export function buildUpstreamPayload({
   // native calls correctly, so pass only our allowlisted schemas whenever the
   // selected model supports completion.
   if (safeTools.length) payload.tools = safeTools;
-  // /api/tags may omit capabilities even when the selected model supports
-  // reasoning. Preserve an explicit caller preference so simple requests do
-  // not spend latency on unnecessary reasoning tokens.
-  if (typeof think === 'boolean' && supportsNativeThinking) payload.think = think;
+  // Ollama accepts the thinking preference even when a model manifest omits
+  // the `thinking` capability. The live Qwen registry does exactly that; if
+  // we rely on the tag alone, `/no_think` can be ignored and a greeting burns
+  // its entire response budget on hidden reasoning with no visible answer.
+  // Keep the prompt directive for older templates and always send the native
+  // switch as the authoritative preference.
+  if (typeof think === 'boolean') payload.think = think;
   return payload;
 }
 

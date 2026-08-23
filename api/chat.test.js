@@ -165,14 +165,14 @@ test('enforces the Mira identity while preserving caller instructions', () => {
   assert.doesNotMatch(payload.messages[0].content, /You are Qwen/i);
 });
 
-test('uses a prompt-level thinking switch when tags omit native thinking support', () => {
+test('sends native and prompt-level thinking switches when tags omit capability metadata', () => {
   const payload = buildUpstreamPayload({
     registryModel: { name: 'runtime-model', capabilities: [] },
     messages: [{ role: 'user', content: 'Hello' }],
     systemPrompt: 'You are Mira.',
     think: false,
   });
-  assert.equal(payload.think, undefined);
+  assert.equal(payload.think, false);
   assert.equal(payload.messages.at(-1).content, '/no_think\nHello');
   assert.equal(payload.messages.some((message) => message.content.startsWith('Quick check before we start')), true);
 });
