@@ -110,12 +110,12 @@ test('fails over quickly when an upstream connection stalls', () => {
   assert.equal(getUpstreamConnectTimeoutMs(90000), 50000);
 });
 
-test('keeps text chat off the vision model while respecting residency and overrides', () => {
+test('uses the smaller Ollama completion model for a cold start while respecting residency and overrides', () => {
   const models = [
     { name: 'large', size: 18_600_000_000, capabilities: ['completion'] },
     { name: 'small', size: 6_100_000_000, capabilities: ['vision', 'completion', 'tools', 'thinking'] },
   ];
-  assert.equal(selectRegistryModel(models).name, 'large');
+  assert.equal(selectRegistryModel(models).name, 'small');
   assert.equal(selectRegistryModel(models, '', { residentNames: ['large'] }).name, 'large');
   assert.equal(selectRegistryModel(models, 'large').name, 'large');
   assert.equal(selectRegistryModel(models, '', { excludedNames: ['small'] }).name, 'large');

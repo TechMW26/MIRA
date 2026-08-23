@@ -130,12 +130,13 @@ function modelSelectionScore(entry, residentNames = new Set()) {
   if (residentNames.has(name)) score += 1000;
   if (capabilities.includes('thinking')) score += 25;
   if (capabilities.includes('tools')) score += 25;
-  // General chat must not evict/load the vision model merely because it is
-  // smaller. Vision has its own endpoint and is substantially slower for text.
+  // Prefer the dedicated text model when both runners are equally viable.
   if (!capabilities.includes('vision')) score += 80;
-  // Cold-start reliability matters more than a marginally larger model. The
-  // penalty is soft, so a configured or already resident model still wins.
-  score -= Math.min(40, sizeGb * 2);
+  // On a cold CPU-only host, loading a model larger than available system RAM
+  // kills llama-server before failover can begin. Weight size strongly enough
+  // for the smaller completion-capable registry model to win a cold start;
+  // residency (+1000) and an explicit configured preference still override it.
+  score -= Math.min(80, sizeGb * 3.5);
   return score;
 }
 
