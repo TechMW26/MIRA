@@ -97,9 +97,14 @@ export function getFailoverStartTimeoutMs() {
 }
 
 export function getUpstreamConnectTimeoutMs(value = process.env.OLLAMA_CONNECT_TIMEOUT_MS) {
-  const parsed = Number(value || 28000);
-  if (!Number.isFinite(parsed)) return 28000;
-  return Math.max(10000, Math.min(50000, Math.round(parsed)));
+  // Hostinger can buffer the Ollama response headers until a cold model has
+  // finished loading. The installed fallback currently needs ~40-45 seconds
+  // on a cold CPU start, so a shorter header timeout aborts a healthy runner.
+  // Keep this below the overall 60-second request budget so the API still has
+  // a deterministic upper bound and can return a useful recovery response.
+  const parsed = Number(value || 55000);
+  if (!Number.isFinite(parsed)) return 55000;
+  return Math.max(15000, Math.min(55000, Math.round(parsed)));
 }
 
 function jsonResponse(payload, status = 200) {

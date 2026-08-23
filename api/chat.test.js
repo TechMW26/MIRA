@@ -105,9 +105,9 @@ test('bounds the upstream model-start timeout below the browser timeout', () => 
 });
 
 test('fails over quickly when an upstream connection stalls', () => {
-  assert.equal(getUpstreamConnectTimeoutMs(), 28000);
-  assert.equal(getUpstreamConnectTimeoutMs(1000), 10000);
-  assert.equal(getUpstreamConnectTimeoutMs(90000), 50000);
+  assert.equal(getUpstreamConnectTimeoutMs(), 55000);
+  assert.equal(getUpstreamConnectTimeoutMs(1000), 15000);
+  assert.equal(getUpstreamConnectTimeoutMs(90000), 55000);
 });
 
 test('uses the smaller Ollama completion model for a cold start while respecting residency and overrides', () => {
