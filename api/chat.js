@@ -156,9 +156,19 @@ export function selectRegistryModel(models = [], preferredModel = '', {
   const usable = candidates.filter((entry) => !excluded.has(registryModelName(entry)));
   if (!usable.length) return null;
   const preferred = String(preferredModel || '').trim();
-  const selected = (preferred
+  const preferredEntry = preferred
     ? usable.find((entry) => registryModelName(entry) === preferred)
-    : null) || [...usable].sort((left, right) => (
+    : null;
+  const positiveSizes = usable.map(registryModelSize).filter((size) => size > 0);
+  const smallestSize = positiveSizes.length ? Math.min(...positiveSizes) : 0;
+  const preferredIsColdAndOversized = Boolean(
+    preferredEntry
+    && !residents.has(registryModelName(preferredEntry))
+    && smallestSize > 0
+    && registryModelSize(preferredEntry) > smallestSize * 2,
+  );
+  const selected = (preferredEntry && !preferredIsColdAndOversized ? preferredEntry : null)
+    || [...usable].sort((left, right) => (
     modelSelectionScore(right, residents) - modelSelectionScore(left, residents)
       || registryModelSize(left) - registryModelSize(right)
   ))[0];

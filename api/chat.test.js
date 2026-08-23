@@ -117,7 +117,8 @@ test('uses the smaller Ollama completion model for a cold start while respecting
   ];
   assert.equal(selectRegistryModel(models).name, 'small');
   assert.equal(selectRegistryModel(models, '', { residentNames: ['large'] }).name, 'large');
-  assert.equal(selectRegistryModel(models, 'large').name, 'large');
+  assert.equal(selectRegistryModel(models, 'large').name, 'small');
+  assert.equal(selectRegistryModel(models, 'large', { residentNames: ['large'] }).name, 'large');
   assert.equal(selectRegistryModel(models, '', { excludedNames: ['small'] }).name, 'large');
 });
 
