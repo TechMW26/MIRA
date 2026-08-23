@@ -2644,6 +2644,9 @@ body.mira-hud-active {
   border-radius: 22px;
   background: rgba(1, 12, 19, 0.58);
 }
+.generation-live-status {
+  min-width: min(72vw, 300px);
+}
 .task-live-orb {
   width: 11px;
   height: 11px;

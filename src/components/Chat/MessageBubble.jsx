@@ -870,6 +870,13 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
   const showThinking = !isUser && Boolean(message.thinkingContent);
   const searchingBubbleActive = !isUser && isLast && isSearching && message.content === '' && !showThinking;
   const taskBubbleActive = !isUser && isLast && taskWorkflow?.status === 'running';
+  const generationBubbleActive = !isUser
+    && isLast
+    && message.isStreaming
+    && !message.content
+    && !showThinking
+    && !isSearching
+    && !taskBubbleActive;
   const activeTaskStep = taskBubbleActive && Array.isArray(taskWorkflow.steps)
     ? taskWorkflow.steps[taskWorkflow.currentStep ?? 0]
     : null;
@@ -1091,7 +1098,7 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
         ) : (
           <div className={`hud-chat-bubble hud-chat-bubble-assistant${thinkingOnly ? ' is-thinking-only' : ''}${(!thinkingOnly && (message.isStreaming || searchingBubbleActive || taskBubbleActive)) ? ' is-active' : ''}${taskBubbleActive ? ' is-task-active' : ''}`}>
             <div className="hud-chat-bubble-label">
-              {taskBubbleActive ? 'MIRA · TASK ACTIVE' : searchingBubbleActive ? 'MIRA · SEARCHING' : message.isThinkingActive ? 'MIRA · THINKING' : message.isStreaming ? 'MIRA · RESPONDING' : 'MIRA'}
+              {taskBubbleActive ? 'MIRA · TASK ACTIVE' : searchingBubbleActive ? 'MIRA · SEARCHING' : (message.isThinkingActive || generationBubbleActive) ? 'MIRA · THINKING' : message.isStreaming ? 'MIRA · RESPONDING' : 'MIRA'}
             </div>
             <div className="prose prose-base max-w-none overflow-x-auto break-words prose-headings:font-bold prose-p:leading-relaxed prose-li:leading-relaxed" style={{ color: 'var(--text-primary)' }}>
               {taskBubbleActive && (
@@ -1106,6 +1113,13 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
               )}
               {showThinking && (
                 <ThinkingSection content={message.thinkingContent} isActive={message.isThinkingActive} />
+              )}
+              {generationBubbleActive && (
+                <div className="task-live-status generation-live-status" role="status" aria-live="polite">
+                  <span className="task-live-orb" aria-hidden="true" />
+                  <div className="task-live-copy">Thinking about your request</div>
+                  <span className="task-live-dots" aria-hidden="true"><i /><i /><i /></span>
+                </div>
               )}
               {message.image && message.image.length > 0 && (
                 <img src={message.image} alt="Generated" className="rounded-xl mb-3 max-w-full shadow-lg" />

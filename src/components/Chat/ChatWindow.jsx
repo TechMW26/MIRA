@@ -19,6 +19,7 @@ import {
   updateQueuedPrompt,
 } from '../../utils/promptQueue';
 import MessageBubble from './MessageBubble';
+import { buildChatDisplayMessages } from '../../services/chatDisplayMessages.js';
 import WelcomeScreen from './WelcomeScreen';
 import ParticleGlobe from './ParticleGlobe';
 import MiraBloub from './MiraBloub';
@@ -193,19 +194,12 @@ export default function ChatWindow({ onMiraExpressionChange, compact = false }) 
   const voiceConversationRef = useRef('');
 
   const displayMessages = useMemo(() => {
-    if (!isGenerating || messages.length === 0) return messages;
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg.role !== 'assistant') return messages;
-    return [
-      ...messages.slice(0, -1),
-      {
-        ...lastMsg,
-        content: streamingContent || lastMsg.content,
-        thinkingContent: thinkingContent || undefined,
-        isThinkingActive: Boolean(thinkingContent && !streamingContent),
-        isStreaming: true,
-      },
-    ];
+    return buildChatDisplayMessages({
+      messages,
+      isGenerating,
+      streamingContent,
+      thinkingContent,
+    });
   }, [messages, streamingContent, thinkingContent, isGenerating]);
   const latestVisibleContent = displayMessages[displayMessages.length - 1]?.content || '';
   const latestUserMessage = useMemo(
