@@ -143,7 +143,9 @@ function verifySession(token) {
   }
 }
 
-function bearerToken(request) {
+function bearerToken(request, body = {}) {
+  const bodyToken = String(body.sessionToken || '').trim();
+  if (bodyToken) return bodyToken;
   const authorization = String(request.headers.get('authorization') || '');
   return authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
 }
@@ -208,8 +210,8 @@ async function register(request, body) {
   return json({ user, token: signSession(user) }, 201);
 }
 
-async function restoreSession(request) {
-  const session = verifySession(bearerToken(request));
+async function restoreSession(request, body) {
+  const session = verifySession(bearerToken(request, body));
   if (!session) return json({ error: 'Your session is invalid or has expired.' }, 401);
   const profile = await firebaseRequest(`users/${session.uid}`);
   if (!profile) return json({ error: 'This account no longer exists.' }, 401);
@@ -235,7 +237,7 @@ export async function POST(request) {
   try {
     if (body.action === 'login') return await login(request, body);
     if (body.action === 'register') return await register(request, body);
-    if (body.action === 'session') return await restoreSession(request);
+    if (body.action === 'session') return await restoreSession(request, body);
     return json({ error: 'Unsupported authentication action.' }, 400);
   } catch (error) {
     console.error('[MIRA:auth] request failed', { message: error?.message || 'Unknown error' });

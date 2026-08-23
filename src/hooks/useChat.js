@@ -3544,20 +3544,35 @@ export default function useChat() {
         }
       } catch (err) {
         console.error('Send message error:', err);
-        if (generationRunRef.current === runId && !abortRef.current && assistantMsgId) {
+        if (generationRunRef.current === runId && !abortRef.current) {
           const failureText = `Sorry, I couldn't complete that response. ${err?.message || 'Please try again.'}`;
-          setMessages((prev) => prev.map((msg) => (
-            msg.id === assistantMsgId
-              ? { ...msg, content: failureText, isStreaming: false }
-              : msg
-          )));
-          await activeResponseRef.current?.syncWriter?.finish();
-          updateMessage(convId, assistantMsgId, {
-            content: failureText,
-            isStreaming: false,
-          }).catch((persistErr) => {
-            console.warn('Failed to persist terminal chat error:', persistErr?.message);
-          });
+          completedAnswer = failureText;
+          if (assistantMsgId) {
+            setMessages((prev) => prev.map((msg) => (
+              msg.id === assistantMsgId
+                ? { ...msg, content: failureText, isStreaming: false }
+                : msg
+            )));
+            await activeResponseRef.current?.syncWriter?.finish();
+            updateMessage(convId, assistantMsgId, {
+              content: failureText,
+              isStreaming: false,
+            }).catch((persistErr) => {
+              console.warn('Failed to persist terminal chat error:', persistErr?.message);
+            });
+          } else {
+            // Persistence can fail before an assistant record exists. Always
+            // surface a terminal response locally instead of leaving the user
+            // bubble beside an endless blank generation state.
+            setMessages((prev) => [...prev, {
+              id: `local-assistant-error-${Date.now()}`,
+              role: 'assistant',
+              content: failureText,
+              type: 'text',
+              isStreaming: false,
+              localOnly: true,
+            }]);
+          }
           sendDesktopNotification({ title: 'MIRA needs your attention', body: failureText }).catch(() => {});
         }
       } finally {

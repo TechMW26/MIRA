@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildUpstreamPayload,
   deepSeekChatResponse,
+  getFailoverStartTimeoutMs,
   getAdaptiveContextTokens,
   getContextTokens,
   getUpstreamConnectTimeoutMs,
@@ -99,6 +100,8 @@ test('bounds the upstream model-start timeout below the browser timeout', () => 
   assert.equal(getUpstreamStartTimeoutMs(), 50000);
   assert.equal(getUpstreamStartTimeoutMs(1000), 15000);
   assert.equal(getUpstreamStartTimeoutMs(90000), 55000);
+  assert.equal(getFailoverStartTimeoutMs(1000), 30000);
+  assert.equal(getFailoverStartTimeoutMs(), 60000);
 });
 
 test('fails over quickly when an upstream connection stalls', () => {

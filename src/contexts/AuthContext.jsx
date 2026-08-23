@@ -51,7 +51,10 @@ async function serverAuth(action, payload = {}, token = '') {
       {
         code: data.code || `auth/http-${response.status}`,
         status: response.status,
-        retryable: response.status === 408 || response.status === 429 || response.status >= 500,
+        retryable: response.status === 408
+          || response.status === 429
+          || response.status === 494
+          || response.status >= 500,
       },
     );
   }
@@ -108,6 +111,8 @@ export function AuthProvider({ children }) {
     }
     let active = true;
     let refreshPromise = null;
+    let refreshFailures = 0;
+    let nextRefreshAllowedAt = 0;
     const cachedUser = readCachedServerUser();
     const initialToken = localStorage.getItem(SERVER_SESSION_KEY) || '';
     if (initialToken && cachedUser) {
@@ -118,6 +123,7 @@ export function AuthProvider({ children }) {
     }
 
     const refreshSession = async ({ force = false } = {}) => {
+      if (!force && Date.now() < nextRefreshAllowedAt) return null;
       const token = localStorage.getItem(SERVER_SESSION_KEY) || '';
       if (!token) {
         if (active) {
@@ -131,6 +137,8 @@ export function AuthProvider({ children }) {
       if (refreshPromise) return refreshPromise;
       refreshPromise = restoreServerSession(token)
         .then((result) => {
+          refreshFailures = 0;
+          nextRefreshAllowedAt = 0;
           const restoredUser = saveServerSession(result);
           if (active) setUser(restoredUser);
           return restoredUser;
@@ -140,6 +148,11 @@ export function AuthProvider({ children }) {
             clearServerSession();
             if (active) setUser(null);
           } else {
+            refreshFailures += 1;
+            nextRefreshAllowedAt = Date.now() + Math.min(
+              5 * 60_000,
+              15_000 * (2 ** Math.min(4, refreshFailures - 1)),
+            );
             // A temporary API, network, or Firebase outage must never turn into
             // a local logout. Keep the last verified identity and retry later.
             const retainedUser = readCachedServerUser();

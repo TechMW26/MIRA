@@ -53,6 +53,7 @@ const ALLOWED_TOOL_NAMES = new Set([
 const ACTIVE_CHAT_REQUESTS = new Map();
 const MODEL_REGISTRY_CACHE = { expiresAt: 0, selected: null };
 const MODEL_REGISTRY_CACHE_TTL_MS = 60 * 1000;
+const MAX_MODEL_ATTEMPTS = 2;
 const RETRYABLE_UPSTREAM_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const DEEPSEEK_FAILURE_COOLDOWN_MS = 30 * 1000;
 let deepSeekUnavailableUntil = 0;
@@ -85,6 +86,14 @@ export function getUpstreamStartTimeoutMs(value = process.env.OLLAMA_START_TIMEO
   const parsed = Number(value || 50000);
   if (!Number.isFinite(parsed)) return 50000;
   return Math.max(15000, Math.min(55000, Math.round(parsed)));
+}
+
+export function getFailoverStartTimeoutMs(value = process.env.OLLAMA_START_TIMEOUT_MS) {
+  // A failed large model can take most of one start window before Ollama
+  // reports that its runner was killed. Reserve a second bounded window for
+  // the already-installed registry fallback while remaining below the
+  // browser's 65-second response-header timeout.
+  return Math.min(60_000, getUpstreamStartTimeoutMs(value) * MAX_MODEL_ATTEMPTS);
 }
 
 export function getUpstreamConnectTimeoutMs(value = process.env.OLLAMA_CONNECT_TIMEOUT_MS) {
@@ -510,13 +519,13 @@ export async function POST(req) {
     upstreamStartTimer = setTimeout(() => {
       upstreamStartTimedOut = true;
       controller.abort();
-    }, getUpstreamStartTimeoutMs());
+    }, getFailoverStartTimeoutMs());
     let upstream;
     let registryModel = await fetchRegistryModel(controller.signal);
     let modelFailoverUsed = false;
     let lastUpstreamError = null;
     const attemptedModels = [];
-    for (let modelAttempt = 0; modelAttempt < 2 && registryModel; modelAttempt += 1) {
+    for (let modelAttempt = 0; modelAttempt < MAX_MODEL_ATTEMPTS && registryModel; modelAttempt += 1) {
       attemptedModels.push(registryModel.name);
       const upstreamPayload = buildUpstreamPayload({
         registryModel,

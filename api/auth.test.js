@@ -18,6 +18,18 @@ function authRequest(body, { token = '', ip = randomUUID() } = {}) {
   });
 }
 
+function bodyTokenAuthRequest(body, token, { ip = randomUUID() } = {}) {
+  return new Request('https://www.itsmira.cloud/api/auth', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: 'https://www.itsmira.cloud',
+      'X-Real-IP': ip,
+    },
+    body: JSON.stringify({ ...body, sessionToken: token }),
+  });
+}
+
 test('auth fails closed when its session secret is missing', async () => {
   const originalSecret = process.env.MIRA_AUTH_SECRET;
   delete process.env.MIRA_AUTH_SECRET;
@@ -133,9 +145,9 @@ test('auth restores a signed server session and refreshes the public profile', a
       password: 'passphrase123',
     }));
     const login = await loginResponse.json();
-    const sessionResponse = await POST(authRequest(
+    const sessionResponse = await POST(bodyTokenAuthRequest(
       { action: 'session' },
-      { token: login.token },
+      login.token,
     ));
     assert.equal(sessionResponse.status, 200);
     const session = await sessionResponse.json();

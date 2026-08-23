@@ -34,3 +34,24 @@ export async function fetchFirebaseSnapshot(databaseUrl, path, options = {}) {
   if (!response.ok) throw new Error(`Firebase recovery returned HTTP ${response.status}.`);
   return snapshotFromValue(await response.json());
 }
+
+export async function writeFirebaseValue(databaseUrl, path, value, options = {}) {
+  const fetchImpl = options.fetchImpl || fetch;
+  const method = String(options.method || 'PUT').toUpperCase();
+  const response = await fetchImpl(buildFirebaseRestUrl(databaseUrl, path), {
+    method,
+    headers: {
+      Accept: 'application/json',
+      ...(method === 'DELETE' ? {} : { 'Content-Type': 'application/json' }),
+    },
+    ...(method === 'DELETE' ? {} : { body: JSON.stringify(value) }),
+    // Realtime Database is intentionally accessed without browser cookies.
+    // This avoids extension/session cookie growth interfering with persistence
+    // and matches the read-side recovery transport above.
+    credentials: 'omit',
+    signal: options.signal || AbortSignal.timeout(8_000),
+  });
+  if (!response.ok) throw new Error(`Firebase persistence returned HTTP ${response.status}.`);
+  if (response.status === 204) return null;
+  return response.json().catch(() => null);
+}
