@@ -6,6 +6,7 @@ import {
   getFailoverStartTimeoutMs,
   getAdaptiveContextTokens,
   getContextTokens,
+  getRequestMaxTokens,
   getUpstreamConnectTimeoutMs,
   getUpstreamStartTimeoutMs,
   managedFallbackResponse,
@@ -129,6 +130,14 @@ test('uses a concurrency-friendly default while allowing any configured context'
   assert.equal(getContextTokens(100000), 100000);
   assert.equal(getAdaptiveContextTokens([{ role: 'user', content: 'Hello' }], 500, 16384), 2048);
   assert.equal(getAdaptiveContextTokens([{ role: 'user', content: 'x'.repeat(30000) }], 1000, 16384), 16384);
+});
+
+test('uses bounded output budgets for chat, tool selection, and task workers', () => {
+  assert.equal(getRequestMaxTokens({}), 4096);
+  assert.equal(getRequestMaxTokens({ tools: [{ type: 'function' }] }), 2200);
+  assert.equal(getRequestMaxTokens({ requestClass: 'task' }), 1800);
+  assert.equal(getRequestMaxTokens({ max_tokens: 700 }), 700);
+  assert.equal(getRequestMaxTokens({ max_tokens: 99_000 }), 12000);
 });
 
 test('builds one streaming Ollama payload from the registry selection', () => {

@@ -7,6 +7,8 @@ const MAX_STEP_RESULT_CHARS = 5000;
 const MAX_STEP_ATTEMPTS = 3;
 const FALLBACK_START = '=== USER-SAFE TASK FALLBACK ===';
 const FALLBACK_END = '=== END USER-SAFE TASK FALLBACK ===';
+const ANSWER_START = '=== USER-SAFE TASK ANSWER ===';
+const ANSWER_END = '=== END USER-SAFE TASK ANSWER ===';
 const RECOVERY_MARKER = '=== TASK MODEL RECOVERY USED ===';
 
 const RESEARCH_WORKFLOW_PATTERN = /\b(research|investigate|deep\s+dive|due\s+diligence|literature\s+review|market\s+analysis|competitive\s+analysis|compare\s+(?:current|latest)|evaluate\s+(?:current|latest)|verify\s+across\s+sources)\b/i;
@@ -156,7 +158,9 @@ function buildStepPrompt({ goal, context, plan, step, index, results }) {
     `Current step: ${step.title}\nInstruction: ${step.instruction}`,
     context ? `Available context and verified evidence:\n${compact(context)}` : '',
     priorResults ? `Prior completed results:\n${priorResults}` : '',
-    'Return only the useful result of this step. Do not expose hidden reasoning, planning syntax, or tool mechanics.',
+    index === plan.length - 1
+      ? 'This is the final synthesis step. Return the polished answer that should be shown directly to the user. Answer the original goal, preserve relevant source URLs, use prior conversation facts to resolve references, discard irrelevant evidence, and do not mention the workflow or internal reasoning.'
+      : 'Return only the useful result of this step. Do not expose hidden reasoning, planning syntax, or tool mechanics.',
   ].filter(Boolean).join('\n\n');
 }
 
@@ -288,6 +292,14 @@ export function extractAgentTaskFallback(handoff = '') {
   return value.slice(start + FALLBACK_START.length, end).trim();
 }
 
+export function extractAgentTaskAnswer(handoff = '') {
+  const value = String(handoff || '');
+  const start = value.indexOf(ANSWER_START);
+  const end = value.indexOf(ANSWER_END);
+  if (start < 0 || end <= start) return '';
+  return value.slice(start + ANSWER_START.length, end).trim();
+}
+
 export function agentTaskUsedRecovery(handoff = '') {
   return String(handoff || '').includes(RECOVERY_MARKER);
 }
@@ -404,11 +416,18 @@ export async function runAgentTask({
 
   onPhase?.({ phase: 'synthesizing', total: plan.length });
   const fallback = buildTaskFallback(goal, plan, results);
+  const finalReasonIndex = plan.reduce((latest, step, index) => (
+    step.tool === 'reason' && results[index]?.status === 'done' ? index : latest
+  ), -1);
+  const preferredAnswer = !usedGenerationRecovery && finalReasonIndex >= 0
+    ? compact(results[finalReasonIndex]?.text || '', MAX_STEP_RESULT_CHARS)
+    : '';
   return [
     `Original goal: ${compact(goal)}`,
     'Completed internal work:',
     ...plan.map((step, index) => `\n${index + 1}. ${step.title}\n${results[index]?.text || 'No result.'}`),
     usedGenerationRecovery ? `\n${RECOVERY_MARKER}` : '',
+    preferredAnswer ? `\n${ANSWER_START}\n${preferredAnswer}\n${ANSWER_END}` : '',
     `\n${FALLBACK_START}\n${fallback}\n${FALLBACK_END}`,
     '\nFinal response requirement: answer the original goal directly using the completed work. Resolve inconsistencies, preserve source URLs for citations when useful, omit process chatter, and do not mention internal plans or tools.',
   ].join('\n');

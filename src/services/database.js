@@ -41,7 +41,7 @@ function writeSubscriptionCache(key, value) {
   }
 }
 
-function resilientOnValue(reference, onSnapshot, label, fallbackPath = '') {
+function resilientOnValue(reference, onSnapshot, label, fallbackPath = '', fallbackDelayMs = 2_500) {
   let active = true;
   let received = false;
   let recoveryPromise = null;
@@ -60,7 +60,7 @@ function resilientOnValue(reference, onSnapshot, label, fallbackPath = '') {
       .catch((error) => console.warn(`${label} recovery failed:`, error?.message || error))
       .finally(() => { recoveryPromise = null; });
   };
-  const fallbackTimer = setTimeout(recover, 2_500);
+  const fallbackTimer = setTimeout(recover, fallbackDelayMs);
   const unsubscribe = onValue(
     reference,
     (snapshot) => {
@@ -188,6 +188,7 @@ export async function deleteConversation(uid, convId) {
     restDelete(`conversations/${uid}/${convId}`),
     restDelete(`messages/${convId}`),
   ]);
+  try { globalThis.localStorage?.removeItem(`mira-messages-${convId}`); } catch {}
 }
 
 // ── Messages ───────────────────────────────────────────
@@ -209,14 +210,25 @@ export async function deleteMessage(convId, msgId) {
 }
 
 export function subscribeMessages(convId, callback) {
+  const cacheKey = `mira-messages-${convId}`;
+  const cached = readSubscriptionCache(cacheKey);
+  if (cached.length) callback(cached);
   const msgRef = query(ref(db, `messages/${convId}`), orderByChild('timestamp'));
   return resilientOnValue(msgRef, (snap) => {
     const msgs = [];
     snap.forEach((child) => {
       msgs.push({ id: child.key, ...child.val() });
     });
+    const cacheable = msgs.slice(-60).map((message) => ({
+      ...message,
+      content: String(message?.content || '').slice(0, 30_000),
+      attachments: Array.isArray(message?.attachments)
+        ? message.attachments.map(({ base64: _base64, parsedText: _parsedText, ...attachment }) => attachment)
+        : message?.attachments,
+    }));
+    writeSubscriptionCache(cacheKey, cacheable);
     callback(msgs);
-  }, 'Message', `messages/${convId}`);
+  }, 'Message', `messages/${convId}`, 700);
 }
 
 // ── Shared project context ─────────────────────────────

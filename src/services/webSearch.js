@@ -272,7 +272,16 @@ export function buildDeepResearchQueries(query = '') {
   const raw = String(query || '').replace(/\s+/g, ' ').trim();
   const subject = extractSearchSubject(raw) || raw;
   if (!subject) return [];
-  const quoted = subject.includes(' ') ? `"${subject}"` : subject;
+  const words = subject.split(/\s+/).filter(Boolean);
+  const quoted = subject.includes(' ') && words.length <= 8 ? `"${subject}"` : subject;
+  const productResearch = /\b(?:app|application|platform|product|software|market|competitor|engagement|retention|gamification|benchmark|ratings?|reputation|civic|community|users?)\b/i.test(subject);
+  if (productResearch) {
+    return Array.from(new Set([
+      raw,
+      `${subject} case studies user engagement retention benchmarks research`,
+      `${subject} competitors product strategy trust safety best practices`,
+    ].filter(Boolean))).slice(0, 3);
+  }
   return Array.from(new Set([
     raw,
     `${quoted} official website company profile LinkedIn social media`,

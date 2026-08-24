@@ -4,6 +4,7 @@ import {
   agentTaskUsedRecovery,
   agentTaskRequiresResearch,
   buildTaskSearchQueries,
+  extractAgentTaskAnswer,
   extractAgentTaskFallback,
   parseAgentPlan,
   runAgentTask,
@@ -104,6 +105,7 @@ test('executes planned research and reasoning sequentially before returning the 
   ]);
   assert.match(output, /Benchmark/);
   assert.match(output, /product A for speed/);
+  assert.match(extractAgentTaskAnswer(output), /product A for speed/);
   assert.match(output, /Final response requirement/);
   assert.deepEqual(phases.map((phase) => phase.phase), [
     'planning',
@@ -116,6 +118,24 @@ test('executes planned research and reasoning sequentially before returning the 
   ]);
   assert.deepEqual(phases[1].steps.map((step) => step.title), ['Research', 'Compare']);
   assert.match(phases[3].result, /Benchmark/);
+});
+
+test('marks the final reasoning result as the user-visible task answer', async () => {
+  const output = await runAgentTask({
+    goal: 'Use the earlier Canact context to propose engagement improvements',
+    context: 'Canact is a people ratings and civic score application, not a social network.',
+    generate: async (_prompt, options) => options.phase === 'planning'
+      ? JSON.stringify([
+        { title: 'Assess', instruction: 'Assess the constraints', tool: 'reason' },
+        { title: 'Answer', instruction: 'Produce the final answer', tool: 'reason' },
+      ])
+      : options.maxTokens === 1600
+        ? 'Use verified-rating prompts and transparent score explanations while preserving the civic-score framing.'
+        : '',
+  });
+  const answer = extractAgentTaskAnswer(output);
+  assert.match(answer, /civic-score framing/i);
+  assert.doesNotMatch(answer, /Completed internal work|USER-SAFE TASK/i);
 });
 
 test('stops the workflow immediately when generation is cancelled', async () => {

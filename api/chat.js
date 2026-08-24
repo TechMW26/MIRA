@@ -16,6 +16,11 @@ const OLLAMA_REPEAT_PENALTY = Number(process.env.OLLAMA_REPEAT_PENALTY || 1.05);
 const OLLAMA_KEEP_ALIVE = parseOllamaKeepAlive(process.env.OLLAMA_KEEP_ALIVE, -1);
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_TOKENS_CAP = 12000;
+const DEFAULT_CHAT_MAX_TOKENS = 4096;
+const DEFAULT_TOOL_MAX_TOKENS = 2200;
+const DEFAULT_TASK_MAX_TOKENS = 1800;
+const UPSTREAM_STREAM_IDLE_MS = 25_000;
+const UPSTREAM_STREAM_TOTAL_MS = 110_000;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
 const ALLOWED_TOOL_NAMES = new Set([
   'web.search',
@@ -105,6 +110,30 @@ export function getUpstreamConnectTimeoutMs(value = process.env.OLLAMA_CONNECT_T
   const parsed = Number(value || 55000);
   if (!Number.isFinite(parsed)) return 55000;
   return Math.max(15000, Math.min(55000, Math.round(parsed)));
+}
+
+export function getRequestMaxTokens(body = {}) {
+  const requested = Number(body?.max_tokens);
+  if (Number.isFinite(requested) && requested > 0) {
+    return Math.min(MAX_TOKENS_CAP, Math.round(requested));
+  }
+  if (body?.requestClass === 'task') return DEFAULT_TASK_MAX_TOKENS;
+  if (Array.isArray(body?.tools) && body.tools.length > 0) return DEFAULT_TOOL_MAX_TOKENS;
+  return Math.min(MAX_TOKENS_CAP, Math.max(512, OLLAMA_MAX_TOKENS || DEFAULT_CHAT_MAX_TOKENS), DEFAULT_CHAT_MAX_TOKENS);
+}
+
+function readUpstreamChunk(reader, timeoutMs) {
+  let timer;
+  return Promise.race([
+    reader.read(),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error('The model response stalled before it completed.');
+        error.code = 'upstream_stream_timeout';
+        reject(error);
+      }, Math.max(1, timeoutMs));
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 function jsonResponse(payload, status = 200) {
@@ -551,7 +580,7 @@ export async function POST(req) {
         messages: body.messages,
         systemPrompt: body.systemPrompt,
         think: body.think,
-        maxTokens: body.max_tokens,
+        maxTokens: getRequestMaxTokens(body),
         tools: body.tools,
       });
       try {
@@ -612,14 +641,34 @@ export async function POST(req) {
           try { streamController.close(); } catch {}
         };
         controller.signal.addEventListener('abort', onAbort, { once: true });
+        const streamStartedAt = Date.now();
+        let wroteChunk = false;
         try {
           while (!controller.signal.aborted) {
-            const { value, done } = await reader.read();
+            const remainingMs = UPSTREAM_STREAM_TOTAL_MS - (Date.now() - streamStartedAt);
+            if (remainingMs <= 0) {
+              const error = new Error('The model took too long to complete the response.');
+              error.code = 'upstream_stream_timeout';
+              throw error;
+            }
+            const { value, done } = await readUpstreamChunk(
+              reader,
+              Math.min(UPSTREAM_STREAM_IDLE_MS, remainingMs),
+            );
             if (done) break;
+            wroteChunk = true;
             streamController.enqueue(value);
           }
-        } catch {
-          // The client or upstream may close a streaming connection normally.
+        } catch (error) {
+          if (!controller.signal.aborted && error?.code === 'upstream_stream_timeout' && !wroteChunk) {
+            const payload = `${JSON.stringify({
+              error: error.message,
+              code: error.code,
+              done: true,
+            })}\n`;
+            try { streamController.enqueue(new TextEncoder().encode(payload)); } catch {}
+          }
+          try { await reader.cancel(error); } catch {}
         } finally {
           controller.signal.removeEventListener('abort', onAbort);
           req.signal?.removeEventListener?.('abort', onClientAbort);

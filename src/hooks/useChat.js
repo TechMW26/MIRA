@@ -100,12 +100,18 @@ import {
 import {
   agentTaskUsedRecovery,
   agentTaskRequiresResearch,
+  extractAgentTaskAnswer,
   extractAgentTaskFallback,
   runAgentTask,
   shouldRunAgentTask,
 } from '../services/agentTask.js';
 import { isChatTimeoutError } from '../services/chatRequestPolicy.js';
 import { buildProjectContextPrompt, buildProjectContextTurn } from '../services/projectContext.js';
+import {
+  extractContextEntities,
+  getLatestConversationSubject,
+  getRecentContextEntities,
+} from '../services/conversationContext.js';
 import { resolveProjectConversationTarget } from '../services/projectChatRecovery.js';
 import { createThrottledRealtimeWriter } from '../services/realtimeSync.js';
 import {
@@ -336,7 +342,6 @@ const CONTEXT_REFERENCE_PATTERN = /\b(it|its|this|that|these|those|they|them|the
 const CONTEXTUAL_WEB_RESEARCH_PATTERN = /\b(company|companies|manufacturer|manufactures?|producer|produces?|producing|maker|made\s+by|built\s+by|created\s+by|developed\s+by|owner|owned\s+by|founder|team|organization|brand|official|website|source|origin|specs?|features?|pricing|price|cost|availability|launch|release|details?|in[-\s]?depth|deep\s+dive|full\s+information|complete\s+information|let\s+me\s+know|tell\s+me\s+more|more\s+about|background|research|explain)\b/i;
 const SHORT_CONTEXT_FOLLOWUP_PATTERN = /\b(are\s+you\s+sure|sure\s+about\s+that|really|seriously|wait|why\??|how\s+so|what\s+do\s+you\s+mean|continue|go\s+on|tell\s+me\s+more|more|elaborate|explain\s+that)\b/i;
 const SEARCH_WORTHY_CONTEXT_PATTERN = /\b(company|manufacturer|maker|producer|brand|official\s+website|specs?|pricing|price|cost|availability|launch|release|latest|current|current\s+status|market|marketplace|research|analysis|revenue|sales|audience|competitors?|who\s+makes|who\s+owns|what\s+company|where\s+to\s+buy|how\s+much|how\s+many)\b/i;
-const CONTEXT_ENTITY_STOP = new Set(['I', 'The', 'A', 'An', 'It', 'This', 'That', 'These', 'Those', 'You', 'He', 'She', 'We', 'They', 'My', 'Your', 'MIRA', 'AI', 'PDF', 'DOCX', 'PPTX']);
 const TEXT_ENTITY_RESEARCH_PATTERN = /\b(tell\s+me\s+about|tell\s+me\s+more\s+about|details?\s+about|information\s+about|info\s+about|background\s+on|research|explain|what\s+is|what\s+are|what\s+an|what\s+a|what's|overview\s+of|in\s+detail|deep\s+dive|let\s+me\s+know\s+what)\b/i;
 const MEDIA_RELEVANCE_STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'to', 'for', 'in', 'on', 'with', 'about',
@@ -666,30 +671,6 @@ function wantsContextualDeviceMedia(text = '') {
   return CONTEXTUAL_DEVICE_MEDIA_PATTERN.test(String(text || ''));
 }
 
-function extractContextEntities(text = '') {
-  const matches = String(text || '')
-    .slice(0, 2600)
-    .match(/"([^"]{2,60})"|“([^”]{2,60})”|\b([A-Z][A-Za-z0-9]+(?:[-\s]+[A-Z][A-Za-z0-9]+){0,4})\b|\b([A-Z0-9]{2,}(?:[-\s]+[A-Z0-9]{2,}){0,3})\b/g) || [];
-
-  return Array.from(new Set(
-    matches
-      .map((value) => value.replace(/["“”]/g, '').trim())
-      .filter((value) => value.length > 2 && !CONTEXT_ENTITY_STOP.has(value))
-  ));
-}
-
-function getRecentContextEntities(historySource = []) {
-  const recent = Array.isArray(historySource) ? historySource.slice(-8) : [];
-  const entities = [];
-  for (let index = recent.length - 1; index >= 0; index -= 1) {
-    const message = recent[index];
-    const text = normalizeMessageContent(message?.promptContent || message?.content || '');
-    entities.push(...extractContextEntities(text));
-    if (message?.media?.query) entities.push(...extractContextEntities(message.media.query));
-  }
-  return Array.from(new Set(entities)).slice(0, 5);
-}
-
 function getRecentContextAnchor(historySource = []) {
   const recent = Array.isArray(historySource) ? historySource.slice(-6) : [];
   const source = [...recent].reverse().find((message) => {
@@ -697,17 +678,6 @@ function getRecentContextAnchor(historySource = []) {
     return message?.role === 'assistant' && text.length > 20;
   });
   return normalizeMessageContent(source?.content || source?.promptContent || '').replace(/\s+/g, ' ').trim().slice(0, 500);
-}
-
-function getLatestConversationSubject(historySource = []) {
-  const recent = Array.isArray(historySource) ? historySource.slice(-8) : [];
-  for (let index = recent.length - 1; index >= 0; index -= 1) {
-    const message = recent[index];
-    const text = normalizeMessageContent(message?.promptContent || message?.content || '');
-    const entities = extractContextEntities(message?.media?.query || text);
-    if (entities.length) return entities[0];
-  }
-  return '';
 }
 
 function needsContextualWebSearch(text = '', historySource = []) {
@@ -1787,6 +1757,25 @@ export default function useChat() {
           return;
         }
 
+        // The realtime subscription can arrive after a model has already begun
+        // working. Insert the persisted assistant placeholder locally so MIRA's
+        // activity bubble is visible immediately and final updates always have
+        // a timeline record to update.
+        setMessages((previous) => {
+          if (previous.some((message) => message.id === assistantMsgId)) return previous;
+          return [...previous, {
+            id: assistantMsgId,
+            role: 'assistant',
+            content: '',
+            type: 'text',
+            timestamp: assistantTimestamp,
+            generatedBy: messageAuthor,
+            isStreaming: true,
+            streamStartedAt: assistantTimestamp,
+            localEcho: true,
+          }];
+        });
+
         activeResponseRef.current = {
           runId,
           conversationId: convId,
@@ -1805,7 +1794,9 @@ export default function useChat() {
           const greetingResponse = buildGreetingResponse(content);
           await updateMessage(convId, assistantMsgId, { content: greetingResponse, isStreaming: false });
           setMessages((prev) => prev.map((message) => (
-            message.id === assistantMsgId ? { ...message, content: greetingResponse } : message
+            message.id === assistantMsgId
+              ? { ...message, content: greetingResponse, isStreaming: false, localEcho: false }
+              : message
           )));
           await persistWorkspaceTurn(greetingResponse);
           return;
@@ -3045,14 +3036,18 @@ export default function useChat() {
                   : `${content}\n\n=== TOOL RESULT ===\n${toolResult}\n=== END TOOL RESULT ===\n\nContinue the original request using this result. Do not emit the same tool call again.`,
               };
               let continuedAnswer = '';
-              const recoveredTaskAnswer = isTaskResult && agentTaskUsedRecovery(toolResult)
-                ? extractAgentTaskFallback(toolResult)
+              const completedTaskAnswer = isTaskResult
+                ? (extractAgentTaskAnswer(toolResult) || extractAgentTaskFallback(toolResult))
                 : '';
-              if (recoveredTaskAnswer) {
-                diagnosticWarn('tool', 'task used completed evidence after model recovery', { runId });
-                continuedAnswer = recoveredTaskAnswer;
-                fullText = recoveredTaskAnswer;
-                flushStreamingContent(recoveredTaskAnswer);
+              if (completedTaskAnswer) {
+                if (agentTaskUsedRecovery(toolResult)) {
+                  diagnosticWarn('tool', 'task used completed evidence after model recovery', { runId });
+                } else {
+                  diagnosticLog('tool', 'task final answer accepted without redundant synthesis', { runId });
+                }
+                continuedAnswer = completedTaskAnswer;
+                fullText = completedTaskAnswer;
+                flushStreamingContent(completedTaskAnswer);
               } else try {
                 await sendChatMessage(
                   history,
@@ -3534,9 +3529,13 @@ export default function useChat() {
               }
               await activeResponseRef.current?.syncWriter?.finish();
               await updateMessage(convId, assistantMsgId, documentUpdate);
-              setMessages((prev) => prev.map((msg) => (
-                msg.id === assistantMsgId ? { ...msg, ...documentUpdate } : msg
-              )));
+              setMessages((prev) => {
+                const found = prev.some((msg) => msg.id === assistantMsgId);
+                const next = prev.map((msg) => (
+                  msg.id === assistantMsgId ? { ...msg, ...documentUpdate, localEcho: false } : msg
+                ));
+                return found ? next : [...next, { id: assistantMsgId, role: 'assistant', type: 'text', ...documentUpdate }];
+              });
             } else {
               const assistantUpdate = {
                 content: fullText,
@@ -3548,9 +3547,13 @@ export default function useChat() {
               };
               await activeResponseRef.current?.syncWriter?.finish();
               await updateMessage(convId, assistantMsgId, assistantUpdate);
-              setMessages((prev) => prev.map((msg) => (
-                msg.id === assistantMsgId ? { ...msg, ...assistantUpdate } : msg
-              )));
+              setMessages((prev) => {
+                const found = prev.some((msg) => msg.id === assistantMsgId);
+                const next = prev.map((msg) => (
+                  msg.id === assistantMsgId ? { ...msg, ...assistantUpdate, localEcho: false } : msg
+                ));
+                return found ? next : [...next, { id: assistantMsgId, role: 'assistant', type: 'text', ...assistantUpdate }];
+              });
             }
 
             if (isNewChat) {
@@ -3578,11 +3581,21 @@ export default function useChat() {
           const failureText = `Sorry, I couldn't complete that response. ${err?.message || 'Please try again.'}`;
           completedAnswer = failureText;
           if (assistantMsgId) {
-            setMessages((prev) => prev.map((msg) => (
-              msg.id === assistantMsgId
-                ? { ...msg, content: failureText, isStreaming: false }
-                : msg
-            )));
+            setMessages((prev) => {
+              const found = prev.some((msg) => msg.id === assistantMsgId);
+              const next = prev.map((msg) => (
+                msg.id === assistantMsgId
+                  ? { ...msg, content: failureText, isStreaming: false, localEcho: false }
+                  : msg
+              ));
+              return found ? next : [...next, {
+                id: assistantMsgId,
+                role: 'assistant',
+                content: failureText,
+                type: 'text',
+                isStreaming: false,
+              }];
+            });
             await activeResponseRef.current?.syncWriter?.finish();
             updateMessage(convId, assistantMsgId, {
               content: failureText,
