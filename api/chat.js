@@ -338,11 +338,20 @@ export function buildUpstreamPayload({
 } = {}) {
   const safeMax = Math.max(1, Math.min(Number(maxTokens) || OLLAMA_MAX_TOKENS, MAX_TOKENS_CAP));
   const supportsNativeThinking = registryModel?.capabilities?.includes('thinking');
-  const normalized = applyThinkingPreference(
+  const safeTools = sanitizeTools(tools);
+  const normalizedMessages = applyThinkingPreference(
     normalizeMessages(messages, systemPrompt),
     think,
     supportsNativeThinking,
   );
+  // Qwen3-VL in the current Ollama runtime ignores both `think: false` and
+  // `/no_think`, consuming the full token budget in hidden reasoning and then
+  // returning an empty answer. An assistant prefill closes that channel and
+  // makes the model answer immediately. Keep native-tool turns untouched,
+  // because their template needs to begin the assistant turn itself.
+  const normalized = think === false && supportsNativeThinking && safeTools.length === 0
+    ? [...normalizedMessages, { role: 'assistant', content: '</think>\n\n' }]
+    : normalizedMessages;
   const options = {
     num_predict: safeMax,
     num_ctx: getAdaptiveContextTokens(normalized, safeMax),
@@ -357,7 +366,6 @@ export function buildUpstreamPayload({
     keep_alive: OLLAMA_KEEP_ALIVE,
     options,
   };
-  const safeTools = sanitizeTools(tools);
   // Some Ollama model manifests (including Qwen3-Coder) expose a tool-aware
   // template but omit `tools` from /api/tags. Ollama still accepts and parses
   // native calls correctly, so pass only our allowlisted schemas whenever the

@@ -186,6 +186,28 @@ test('sends native and prompt-level thinking switches when tags omit capability 
   assert.equal(payload.messages.some((message) => message.content.startsWith('Quick check before we start')), true);
 });
 
+test('prefills non-tool Qwen thinking turns so disabled thinking produces a visible answer', () => {
+  const payload = buildUpstreamPayload({
+    registryModel: { name: 'qwen3-vl:8b', capabilities: ['completion', 'thinking'] },
+    messages: [{ role: 'user', content: 'Hello' }],
+    tools: [],
+    think: false,
+  });
+  assert.ok(payload.messages.some((message) => message.role === 'user' && message.content === '/no_think\nHello'));
+  assert.deepEqual(payload.messages.at(-1), { role: 'assistant', content: '</think>\n\n' });
+});
+
+test('does not prefill native-tool turns that require the model chat template', () => {
+  const payload = buildUpstreamPayload({
+    registryModel: { name: 'runtime-model', capabilities: ['completion', 'thinking', 'tools'] },
+    messages: [{ role: 'user', content: 'Check the weather.' }],
+    tools: [{ type: 'function', function: { name: 'weather.lookup', parameters: { type: 'object' } } }],
+    think: false,
+  });
+  assert.equal(payload.messages.at(-1).role, 'user');
+  assert.equal(payload.messages.at(-1).content, '/no_think\nCheck the weather.');
+});
+
 test('keeps raw images out of the general chat payload', () => {
   const payload = buildUpstreamPayload({
     registryModel: { name: 'runtime-model', capabilities: ['completion', 'vision'] },
