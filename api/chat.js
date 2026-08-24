@@ -271,6 +271,7 @@ async function fetchRegistryModel(signal, { forceRefresh = false, excludedNames 
     if (MODEL_REGISTRY_CACHE.selected && !blocked.has(MODEL_REGISTRY_CACHE.selected.name)) {
       return MODEL_REGISTRY_CACHE.selected;
     }
+    if (!error?.code) error.code = 'model_registry_unreachable';
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -728,6 +729,13 @@ export async function POST(req) {
       return jsonResponse({
         error: 'No Ollama completion model is currently available.',
         code: 'no_completion_model',
+        retryable: true,
+      }, 503);
+    }
+    if (error?.code === 'model_registry_unreachable') {
+      return jsonResponse({
+        error: 'The Ollama model service is temporarily unreachable.',
+        code: 'upstream_unavailable',
         retryable: true,
       }, 503);
     }

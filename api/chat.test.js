@@ -386,6 +386,37 @@ test('routes web task workflows only through Ollama even when desktop provider k
   }
 });
 
+test('reports an unreachable Ollama registry as a retryable service outage', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalUrl = process.env.OLLAMA_API_URL;
+  process.env.OLLAMA_API_URL = 'http://offline-ollama.test:11434/api/chat';
+  globalThis.fetch = async () => {
+    throw new TypeError('fetch failed');
+  };
+
+  try {
+    const freshModule = await import(`./chat.js?registry-unreachable=${Date.now()}`);
+    const response = await freshModule.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-real-ip': 'registry-unreachable-test' },
+      body: JSON.stringify({
+        requestClass: 'task',
+        messages: [{ role: 'user', content: 'Execute a task step.' }],
+      }),
+    }));
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), {
+      error: 'The Ollama model service is temporarily unreachable.',
+      code: 'upstream_unavailable',
+      retryable: true,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl === undefined) delete process.env.OLLAMA_API_URL;
+    else process.env.OLLAMA_API_URL = originalUrl;
+  }
+});
+
 test('does not quarantine Ollama models across independent requests after transient 503s', async () => {
   const originalFetch = globalThis.fetch;
   const originalUrl = process.env.OLLAMA_API_URL;
