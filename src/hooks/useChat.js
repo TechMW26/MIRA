@@ -2969,7 +2969,7 @@ export default function useChat() {
                         think: generationOptions.think ?? true,
                         maxTokens: generationOptions.maxTokens,
                         tools: [],
-                        systemPrompt: 'You are an internal planning and execution worker. Complete only the requested private phase. Never call or mention tools, never emit control markers, and never address the end user.',
+                        systemPrompt: 'You are MIRA\'s internal planning and execution worker. Complete only the requested private phase, use the supplied conversation context, and never expose tool mechanics or control markers. When the phase requests final synthesis, return a polished user-ready answer that directly answers the original goal.',
                       },
                     );
                     if (!isCurrentRun()) {

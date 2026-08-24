@@ -278,7 +278,7 @@ async function fetchRegistryModel(signal, { forceRefresh = false, excludedNames 
   }
 }
 
-function normalizeMessages(messages = [], systemPrompt = '') {
+function normalizeMessages(messages = [], systemPrompt = '', requestClass = 'chat') {
   const normalized = (Array.isArray(messages) ? messages : [])
     .slice(-40)
     .map((message) => ({
@@ -288,6 +288,15 @@ function normalizeMessages(messages = [], systemPrompt = '') {
     .filter((message) => message.content.trim());
 
   const withoutSystem = normalized.filter((message) => message.role !== 'system');
+  if (requestClass === 'task') {
+    return [
+      {
+        role: 'system',
+        content: String(systemPrompt || 'Complete the requested internal task phase accurately and concisely.').trim(),
+      },
+      ...withoutSystem,
+    ];
+  }
   return [
     { role: 'system', content: composeMiraSystemPrompt(systemPrompt) },
     ...MIRA_IDENTITY_PRIMER,
@@ -335,12 +344,13 @@ export function buildUpstreamPayload({
   think = true,
   maxTokens = OLLAMA_MAX_TOKENS,
   tools = [],
+  requestClass = 'chat',
 } = {}) {
   const safeMax = Math.max(1, Math.min(Number(maxTokens) || OLLAMA_MAX_TOKENS, MAX_TOKENS_CAP));
   const supportsNativeThinking = registryModel?.capabilities?.includes('thinking');
   const safeTools = sanitizeTools(tools);
   const normalizedMessages = applyThinkingPreference(
-    normalizeMessages(messages, systemPrompt),
+    normalizeMessages(messages, systemPrompt, requestClass),
     think,
     supportsNativeThinking,
   );
@@ -590,6 +600,7 @@ export async function POST(req) {
         think: body.think,
         maxTokens: getRequestMaxTokens(body),
         tools: body.tools,
+        requestClass: body.requestClass,
       });
       try {
         upstream = await fetchUpstream(upstreamPayload, controller.signal);

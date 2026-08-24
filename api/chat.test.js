@@ -174,6 +174,21 @@ test('enforces the Mira identity while preserving caller instructions', () => {
   assert.doesNotMatch(payload.messages[0].content, /You are Qwen/i);
 });
 
+test('uses a lean contextual prompt for internal task workers', () => {
+  const payload = buildUpstreamPayload({
+    registryModel: { name: 'runtime-model', capabilities: ['completion'] },
+    messages: [{ role: 'user', content: 'Use the prior Canact context to form the answer.' }],
+    systemPrompt: 'Return a polished answer grounded in the supplied context.',
+    requestClass: 'task',
+    think: false,
+  });
+  assert.equal(payload.messages[0].role, 'system');
+  assert.equal(payload.messages[0].content, 'Return a polished answer grounded in the supplied context.');
+  assert.ok(payload.messages.some((message) => message.role === 'user' && message.content.includes('Canact')));
+  assert.doesNotMatch(payload.messages.map((message) => message.content).join('\n'), /Quick check before we start/);
+  assert.doesNotMatch(payload.messages[0].content, /You are Mira, an AI assistant by MW FutureTech/i);
+});
+
 test('sends native and prompt-level thinking switches when tags omit capability metadata', () => {
   const payload = buildUpstreamPayload({
     registryModel: { name: 'runtime-model', capabilities: [] },
