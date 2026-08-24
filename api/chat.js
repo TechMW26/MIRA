@@ -62,6 +62,7 @@ const MAX_MODEL_ATTEMPTS = 2;
 const RETRYABLE_UPSTREAM_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const DEEPSEEK_FAILURE_COOLDOWN_MS = 30 * 1000;
 let deepSeekUnavailableUntil = 0;
+let webDeepSeekUnavailableUntil = 0;
 
 function prefersDeepSeekDesktopCoding() {
   return String(
@@ -94,11 +95,9 @@ export function getUpstreamStartTimeoutMs(value = process.env.OLLAMA_START_TIMEO
 }
 
 export function getFailoverStartTimeoutMs() {
-  // A failed large model can take most of one start window before Ollama
-  // reports that its runner was killed. Reserve a second bounded window for
-  // the already-installed registry fallback while remaining below the
-  // browser's 65-second response-header timeout.
-  return 60_000;
+  // Reserve the last 16 seconds of the browser's response-header budget for
+  // DeepSeek Flash recovery after Ollama's own model retry path is exhausted.
+  return 44_000;
 }
 
 export function getUpstreamConnectTimeoutMs(value = process.env.OLLAMA_CONNECT_TIMEOUT_MS) {
@@ -459,7 +458,7 @@ export async function managedFallbackResponse(body, signal) {
   }
 }
 
-export async function deepSeekChatResponse(body, signal) {
+export async function deepSeekChatResponse(body, signal, { recovery = '' } = {}) {
   const result = await requestDeepSeekChat({
     messages: body?.messages,
     systemPrompt: composeMiraSystemPrompt(body?.systemPrompt),
@@ -479,6 +478,7 @@ export async function deepSeekChatResponse(body, signal) {
       'Content-Type': 'application/x-ndjson',
       'Cache-Control': 'no-cache, no-transform',
       'X-Mira-Provider': 'deepseek',
+      ...(recovery ? { 'X-Mira-Recovery': recovery } : {}),
     },
   });
 }
@@ -491,6 +491,7 @@ export async function POST(req) {
   let requestController = null;
   let removeClientAbortListener = () => {};
   let managedFallbackAttempted = false;
+  let webDeepSeekFallbackAttempted = false;
   let upstreamStartTimedOut = false;
   let upstreamStartTimer = null;
   try {
@@ -522,6 +523,9 @@ export async function POST(req) {
 
     const controller = new AbortController();
     requestController = controller;
+    const ollamaController = new AbortController();
+    const abortOllama = () => ollamaController.abort();
+    controller.signal.addEventListener('abort', abortOllama, { once: true });
     if (requestId) ACTIVE_CHAT_REQUESTS.set(requestId, controller);
     const onClientAbort = () => controller.abort();
     removeClientAbortListener = () => req.signal?.removeEventListener?.('abort', onClientAbort);
@@ -545,6 +549,32 @@ export async function POST(req) {
         return await managedFallbackResponse(body, controller.signal);
       } catch (error) {
         if (controller.signal.aborted || req.signal?.aborted) throw error;
+        return null;
+      }
+    };
+
+    const tryWebDeepSeekFallback = async (reason = 'ollama-unavailable') => {
+      if (
+        desktopCodingRequest
+        || webDeepSeekFallbackAttempted
+        || !String(process.env.DEEPSEEK_API_KEY || '').trim()
+        || Date.now() < webDeepSeekUnavailableUntil
+        || controller.signal.aborted
+        || req.signal?.aborted
+      ) return null;
+      webDeepSeekFallbackAttempted = true;
+      try {
+        const fallbackSignal = typeof AbortSignal.any === 'function'
+          ? AbortSignal.any([controller.signal, AbortSignal.timeout(16_000)])
+          : controller.signal;
+        const response = await deepSeekChatResponse(body, fallbackSignal, {
+          recovery: reason,
+        });
+        webDeepSeekUnavailableUntil = 0;
+        return response;
+      } catch (error) {
+        if (controller.signal.aborted || req.signal?.aborted) throw error;
+        webDeepSeekUnavailableUntil = Date.now() + DEEPSEEK_FAILURE_COOLDOWN_MS;
         return null;
       }
     };
@@ -582,13 +612,35 @@ export async function POST(req) {
       }, 503));
     }
 
-    // Web chat and web task workflows use Ollama exclusively.
+    // Web chat and task workflows prefer Ollama. DeepSeek Flash is used only
+    // after Ollama's registry/model retry path has been exhausted.
     upstreamStartTimer = setTimeout(() => {
       upstreamStartTimedOut = true;
-      controller.abort();
+      ollamaController.abort();
     }, getFailoverStartTimeoutMs());
     let upstream;
-    let registryModel = await fetchRegistryModel(controller.signal);
+    let registryModel;
+    try {
+      registryModel = await fetchRegistryModel(ollamaController.signal);
+    } catch (error) {
+      clearTimeout(upstreamStartTimer);
+      upstreamStartTimer = null;
+      if (
+        error?.code === 'model_registry_unreachable'
+        || error?.code === 'no_available_model'
+        || (error?.name === 'AbortError' && upstreamStartTimedOut)
+      ) {
+        const fallback = await tryWebDeepSeekFallback(
+          error.code === 'no_available_model'
+            ? 'ollama-no-model'
+            : upstreamStartTimedOut
+              ? 'ollama-start-timeout'
+              : 'ollama-registry-unreachable',
+        );
+        if (fallback) return finishEarlyResponse(fallback);
+      }
+      throw error;
+    }
     let modelFailoverUsed = false;
     let lastUpstreamError = null;
     const attemptedModels = [];
@@ -604,7 +656,7 @@ export async function POST(req) {
         requestClass: body.requestClass,
       });
       try {
-        upstream = await fetchUpstream(upstreamPayload, controller.signal);
+        upstream = await fetchUpstream(upstreamPayload, ollamaController.signal);
       } catch (error) {
         if (controller.signal.aborted || req.signal?.aborted) throw error;
         lastUpstreamError = error;
@@ -625,26 +677,29 @@ export async function POST(req) {
         !upstream || RETRYABLE_UPSTREAM_STATUS.has(upstream.status)
       );
       if (!canTryAnotherModel) break;
-      registryModel = await fetchRegistryModel(controller.signal, {
+      const failedModel = registryModel;
+      const alternateModel = await fetchRegistryModel(ollamaController.signal, {
         forceRefresh: true,
         excludedNames: attemptedModels,
       }).catch(() => null);
-      if (registryModel) modelFailoverUsed = true;
+      registryModel = alternateModel || failedModel;
+      if (alternateModel) modelFailoverUsed = true;
       upstream = null;
     }
 
     if (!upstream?.ok) {
       clearTimeout(upstreamStartTimer);
       upstreamStartTimer = null;
-      finishEarlyResponse(null);
+      const fallback = await tryWebDeepSeekFallback('ollama-retries-exhausted');
+      if (fallback) return finishEarlyResponse(fallback);
       const timedOut = lastUpstreamError?.code === 'upstream_connect_timeout';
-      return jsonResponse({
+      return finishEarlyResponse(jsonResponse({
         error: timedOut
           ? 'The model is still starting. Please retry shortly.'
           : 'The model service is temporarily unavailable.',
         code: timedOut ? 'upstream_start_timeout' : 'upstream_unavailable',
         retryable: true,
-      }, timedOut ? 504 : 503);
+      }, timedOut ? 504 : 503));
     }
     clearTimeout(upstreamStartTimer);
     upstreamStartTimer = null;

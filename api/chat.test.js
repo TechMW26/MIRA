@@ -101,8 +101,8 @@ test('bounds the upstream model-start timeout below the browser timeout', () => 
   assert.equal(getUpstreamStartTimeoutMs(), 50000);
   assert.equal(getUpstreamStartTimeoutMs(1000), 15000);
   assert.equal(getUpstreamStartTimeoutMs(90000), 55000);
-  assert.equal(getFailoverStartTimeoutMs(1000), 60000);
-  assert.equal(getFailoverStartTimeoutMs(), 60000);
+  assert.equal(getFailoverStartTimeoutMs(1000), 44000);
+  assert.equal(getFailoverStartTimeoutMs(), 44000);
 });
 
 test('fails over quickly when an upstream connection stalls', () => {
@@ -331,7 +331,7 @@ test('fails over to another registry model when the preferred upstream is unheal
   }
 });
 
-test('routes web task workflows only through Ollama even when desktop provider keys exist', async () => {
+test('keeps web task workflows on Ollama while the primary provider is healthy', async () => {
   const originalFetch = globalThis.fetch;
   const originalUrl = process.env.OLLAMA_API_URL;
   const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
@@ -386,10 +386,71 @@ test('routes web task workflows only through Ollama even when desktop provider k
   }
 });
 
+test('uses DeepSeek Flash only after both Ollama model attempts fail', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalUrl = process.env.OLLAMA_API_URL;
+  const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  const originalDeepSeekModel = process.env.DEEPSEEK_CHAT_MODEL;
+  process.env.OLLAMA_API_URL = 'http://ollama-fallback.test:11434/api/chat';
+  process.env.DEEPSEEK_API_KEY = 'web-fallback-key';
+  process.env.DEEPSEEK_CHAT_MODEL = 'deepseek-v4-flash';
+  const providers = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const target = String(url);
+    if (target.endsWith('/api/tags')) {
+      return new Response(JSON.stringify({ models: [
+        { name: 'primary', size: 6_000_000_000, capabilities: ['completion', 'thinking'] },
+        { name: 'secondary', size: 8_000_000_000, capabilities: ['completion'] },
+      ] }), { status: 200 });
+    }
+    if (target.endsWith('/api/ps')) return new Response(JSON.stringify({ models: [] }), { status: 200 });
+    if (target === 'http://ollama-fallback.test:11434/api/chat') {
+      providers.push(JSON.parse(options.body || '{}').model);
+      return new Response(JSON.stringify({ error: 'runner unavailable' }), { status: 503 });
+    }
+    if (target === 'https://api.deepseek.com/chat/completions') {
+      providers.push(JSON.parse(options.body || '{}').model);
+      return new Response(JSON.stringify({
+        model: 'deepseek-v4-flash',
+        choices: [{ message: { content: 'Recovered after Ollama retries.' } }],
+      }), { status: 200 });
+    }
+    throw new Error(`Unexpected provider request: ${target}`);
+  };
+
+  try {
+    const freshModule = await import(`./chat.js?deepseek-web-fallback=${Date.now()}`);
+    const response = await freshModule.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-real-ip': 'deepseek-web-fallback-test' },
+      body: JSON.stringify({
+        requestClass: 'task',
+        messages: [{ role: 'user', content: 'Complete this task.' }],
+        think: true,
+      }),
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-mira-provider'), 'deepseek');
+    assert.equal(response.headers.get('x-mira-recovery'), 'ollama-retries-exhausted');
+    assert.deepEqual(providers, ['primary', 'secondary', 'deepseek-v4-flash']);
+    assert.match(await response.text(), /Recovered after Ollama retries/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl === undefined) delete process.env.OLLAMA_API_URL;
+    else process.env.OLLAMA_API_URL = originalUrl;
+    if (originalDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
+    if (originalDeepSeekModel === undefined) delete process.env.DEEPSEEK_CHAT_MODEL;
+    else process.env.DEEPSEEK_CHAT_MODEL = originalDeepSeekModel;
+  }
+});
+
 test('reports an unreachable Ollama registry as a retryable service outage', async () => {
   const originalFetch = globalThis.fetch;
   const originalUrl = process.env.OLLAMA_API_URL;
+  const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
   process.env.OLLAMA_API_URL = 'http://offline-ollama.test:11434/api/chat';
+  delete process.env.DEEPSEEK_API_KEY;
   globalThis.fetch = async () => {
     throw new TypeError('fetch failed');
   };
@@ -414,6 +475,8 @@ test('reports an unreachable Ollama registry as a retryable service outage', asy
     globalThis.fetch = originalFetch;
     if (originalUrl === undefined) delete process.env.OLLAMA_API_URL;
     else process.env.OLLAMA_API_URL = originalUrl;
+    if (originalDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
   }
 });
 

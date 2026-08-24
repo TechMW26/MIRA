@@ -55,6 +55,7 @@ import {
 import { groupConversationsByDate } from '../../utils/helpers';
 import { stopChatGeneration } from '../../services/api';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
+import { MISSING_CONVERSATION_GRACE_MS } from '../../services/chatHydration.js';
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
@@ -69,6 +70,7 @@ export default function Sidebar() {
   // Auto-hide only after the pointer has remained outside for three seconds.
   // Internal navigation never closes the sidebar; the close button remains explicit.
   const hideTimer = useRef(null);
+  const missingConversationTimer = useRef(null);
   const cancelHide = useCallback(() => {
     if (hideTimer.current) {
       clearTimeout(hideTimer.current);
@@ -159,16 +161,29 @@ export default function Sidebar() {
   }, [activeProjectId]);
 
   useEffect(() => {
+    if (missingConversationTimer.current) {
+      clearTimeout(missingConversationTimer.current);
+      missingConversationTimer.current = null;
+    }
     if (currentConversationId) {
       if (activeProjectId && !sharedProjectConversationsReady) return;
       if (!activeProjectId && conversations.length === 0) return;
       const exists = conversations.some((conversation) => conversation.id === currentConversationId)
         || sharedProjectConversations.some((conversation) => conversation.id === currentConversationId);
       if (!exists) {
-        stopChatGeneration();
-        setCurrentConversationId(null);
+        missingConversationTimer.current = setTimeout(() => {
+          stopChatGeneration();
+          setCurrentConversationId(null);
+          missingConversationTimer.current = null;
+        }, MISSING_CONVERSATION_GRACE_MS);
       }
     }
+    return () => {
+      if (missingConversationTimer.current) {
+        clearTimeout(missingConversationTimer.current);
+        missingConversationTimer.current = null;
+      }
+    };
   }, [activeProjectId, currentConversationId, conversations, setCurrentConversationId, sharedProjectConversations, sharedProjectConversationsReady]);
 
   useEffect(() => {

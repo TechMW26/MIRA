@@ -77,6 +77,10 @@ import {
 import { detectDocumentRequest, sanitizeDocumentContent } from '../utils/documentContent.js';
 import { diagnosticLog, diagnosticWarn } from '../services/diagnostics.js';
 import { sendDesktopNotification } from '../services/desktopBridge.js';
+import {
+  conversationHydrationTimeline,
+  hasConversationHydrated,
+} from '../services/chatHydration.js';
 import { buildSearchToolGuidance, decideRetrievalPolicy } from '../services/retrievalPolicy.js';
 import {
   cleanImagePrompt,
@@ -1019,6 +1023,7 @@ export default function useChat() {
   const generationRunRef = useRef(0);
   const activeResponseRef = useRef(null);
   const workspaceHistoryRef = useRef([]);
+  const optimisticConversationIdRef = useRef(null);
 
   const refreshWorkspaceHistory = useCallback(async () => {
     try {
@@ -1214,14 +1219,20 @@ export default function useChat() {
 
   useEffect(() => {
     if (!currentConversationId) {
+      optimisticConversationIdRef.current = null;
       setMessages(workspaceHistoryRef.current);
       return;
     }
 
-    // Do not render the previous chat while the requested URL-backed session
-    // is loading its own realtime timeline.
-    setMessages([]);
+    const preserveOptimistic = optimisticConversationIdRef.current === currentConversationId;
+    setMessages((previous) => conversationHydrationTimeline(previous, { preserveOptimistic }));
     const unsub = subscribeMessages(currentConversationId, (msgs) => {
+      if (
+        optimisticConversationIdRef.current === currentConversationId
+        && hasConversationHydrated(msgs)
+      ) {
+        optimisticConversationIdRef.current = null;
+      }
       setMessages((previous) => {
         const previousById = new Map((previous || []).map((msg) => [msg.id, msg]));
         const next = (msgs || []).map((incoming) => {
@@ -1518,6 +1529,7 @@ export default function useChat() {
           isNewChat = true;
           const conv = await createConversation(user.uid, 'New Chat');
           convId = conv.id;
+          optimisticConversationIdRef.current = convId;
           setCurrentConversationId(convId);
           if (activeProjectId) {
             await addConversationToProject(user.uid, activeProjectId, convId);

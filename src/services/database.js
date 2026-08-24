@@ -121,7 +121,11 @@ export async function createConversation(uid, title = 'New Chat') {
     updatedAt: Date.now(),
   };
   await restPut(`conversations/${uid}/${convRef.key}`, conv);
-  return { id: convRef.key, ...conv };
+  const created = { id: convRef.key, ...conv };
+  const cacheKey = `mira-conversations-${uid}`;
+  const cached = readSubscriptionCache(cacheKey);
+  writeSubscriptionCache(cacheKey, [created, ...cached.filter((item) => item?.id !== created.id)]);
+  return created;
 }
 
 export function subscribeConversations(uid, callback) {
