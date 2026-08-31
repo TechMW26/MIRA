@@ -68,8 +68,14 @@ GOOGLE_SEARCH_CX=
 POLLINATIONS_API_KEY=
 POLLINATIONS_VIDEO_MODEL=wan-pro
 
-# DeepSeek desktop coding/workspace completions only.
-# Web chat, voice, search-query planning, and task workflows use Ollama.
+# Primary web chat provider (OpenAI-compatible). Falls back to DeepSeek, then Ollama.
+MIRA_BASE_URL=
+MIRA_OPENAI_BASE_URL=
+MIRA_API_TOKEN=
+MIRA_CHAT_MODEL=MIRA:latest
+MIRA_MAX_TOKENS=12000
+
+# DeepSeek is the web chat fallback and desktop coding/workspace provider.
 DEEPSEEK_API_URL=https://api.deepseek.com
 DEEPSEEK_AGENT_MODEL=deepseek-v4-pro
 DEEPSEEK_CHAT_MODEL=deepseek-v4-flash
@@ -90,7 +96,7 @@ MIRA_DESKTOP_CODING_PROVIDER=deepseek
 - **Backend:** Vercel Serverless Functions (Edge Runtime)
 - **Database:** Firebase Realtime Database
 - **Auth:** Custom auth via Firebase RTB (SHA-256 hashed passwords)
-- **AI:** DeepSeek Flash for fast chat, dynamically discovered Ollama models as fallback, DeepSeek Pro plus Pollinations for coding workspaces, Pollinations for media generation, and Gemini isolated to image-analysis fallback
+- **AI:** MIRA (OpenAI-compatible endpoint) for primary chat with DeepSeek Flash as fallback, dynamically discovered Ollama models as the final recovery path, DeepSeek Pro plus Pollinations for coding workspaces, Pollinations for media generation, and Gemini isolated to image-analysis fallback
 
 ## Internet Search Orchestration
 

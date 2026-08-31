@@ -63,6 +63,9 @@ export default defineConfig({
           });
         },
       },
+      '/api/auth': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/analyze': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/analyse': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/health': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search-query': { target: 'http://localhost:3002', changeOrigin: true },
@@ -81,6 +84,8 @@ export default defineConfig({
       '/api/image': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/generate-image': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/generate-video': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/media': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/cleanup-media': { target: 'http://localhost:3002', changeOrigin: true },
     },
   },
 });

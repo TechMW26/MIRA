@@ -1,5 +1,5 @@
 import { parseOllamaKeepAlive } from './ollamaConfig.js';
-import { requestDeepSeekChat, requestManagedChat } from './code-assist.js';
+import { requestDeepSeekChat, requestManagedChat, prepareDeepSeekTools } from './code-assist.js';
 import { guardRequest } from './_requestSecurity.js';
 import {
   composeMiraSystemPrompt,
@@ -63,6 +63,22 @@ const RETRYABLE_UPSTREAM_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const DEEPSEEK_FAILURE_COOLDOWN_MS = 30 * 1000;
 let deepSeekUnavailableUntil = 0;
 let webDeepSeekUnavailableUntil = 0;
+
+const MIRA_BASE_URL = String(process.env.MIRA_BASE_URL || '').trim().replace(/\/+$/, '');
+const MIRA_OPENAI_BASE_URL = String(
+  process.env.MIRA_OPENAI_BASE_URL || (MIRA_BASE_URL ? `${MIRA_BASE_URL}/v1` : ''),
+).trim().replace(/\/+$/, '');
+const MIRA_CHAT_API_URL = MIRA_OPENAI_BASE_URL
+  ? `${MIRA_OPENAI_BASE_URL}/chat/completions`
+  : '';
+const MIRA_CHAT_API_KEY = String(process.env.MIRA_API_TOKEN || '').trim();
+const MIRA_CHAT_MODEL = String(process.env.MIRA_CHAT_MODEL || 'MIRA:latest').trim();
+const MIRA_FAILURE_COOLDOWN_MS = 30 * 1000;
+const MIRA_PRIMARY_TIMEOUT_MS = 40 * 1000;
+const MIRA_MAX_TOKENS = Number(process.env.MIRA_MAX_TOKENS || 12000);
+const MIRA_STREAM_IDLE_MS = 45_000;
+const MIRA_STREAM_TOTAL_MS = 240_000;
+let miraUnavailableUntil = 0;
 
 function prefersDeepSeekDesktopCoding() {
   return String(
@@ -483,6 +499,120 @@ export async function deepSeekChatResponse(body, signal, { recovery = '' } = {})
   });
 }
 
+export async function miraChatResponse(body, signal, { recovery = '' } = {}) {
+  if (!MIRA_CHAT_API_URL) throw new Error('MIRA chat provider is not configured.');
+  const chatMessages = normalizeMessages(body?.messages, body?.systemPrompt, body?.requestClass);
+  if (!chatMessages.length) throw new Error('MIRA chat requires messages.');
+  const { tools: preparedTools } = prepareDeepSeekTools(sanitizeTools(body?.tools));
+  // MIRA:latest only separates reasoning from the final answer when streaming.
+  // Non-streaming aggregation returns empty `content`, so always stream and
+  // proxy the OpenAI-style SSE chunks to the client parser.
+  const payload = {
+    model: MIRA_CHAT_MODEL,
+    messages: chatMessages,
+    stream: true,
+    max_tokens: Math.max(512, Math.min(MIRA_MAX_TOKENS, Number(body?.max_tokens) || MIRA_MAX_TOKENS)),
+    temperature: OLLAMA_TEMPERATURE,
+    ...(preparedTools.length ? { tools: preparedTools, tool_choice: 'auto' } : {}),
+  };
+
+  const attemptController = new AbortController();
+  const abortAttempt = () => attemptController.abort();
+  if (signal?.aborted) abortAttempt();
+  else signal?.addEventListener?.('abort', abortAttempt, { once: true });
+  const connectTimer = setTimeout(() => attemptController.abort(), MIRA_PRIMARY_TIMEOUT_MS);
+  let upstream;
+  try {
+    upstream = await fetch(MIRA_CHAT_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': '1',
+        ...(MIRA_CHAT_API_KEY ? { Authorization: `Bearer ${MIRA_CHAT_API_KEY}` } : {}),
+      },
+      body: JSON.stringify(payload),
+      signal: attemptController.signal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (attemptController.signal.aborted) {
+      const timeoutError = new Error('The MIRA provider did not begin responding in time.');
+      timeoutError.code = 'mira_connect_timeout';
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(connectTimer);
+    signal?.removeEventListener?.('abort', abortAttempt);
+  }
+
+  if (!upstream.ok) {
+    const detail = await upstream.text().catch(() => '');
+    const error = new Error(detail || `MIRA chat request failed (${upstream.status}).`);
+    error.status = upstream.status;
+    throw error;
+  }
+
+  const proxiedBody = new ReadableStream({
+    async start(streamController) {
+      const reader = upstream.body?.getReader();
+      if (!reader) {
+        streamController.close();
+        return;
+      }
+      const onAbort = () => {
+        reader.cancel().catch?.(() => {});
+        try { streamController.close(); } catch {}
+      };
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      const streamStartedAt = Date.now();
+      let wroteChunk = false;
+      try {
+        while (!signal?.aborted) {
+          const remainingMs = MIRA_STREAM_TOTAL_MS - (Date.now() - streamStartedAt);
+          if (remainingMs <= 0) {
+            const error = new Error('The MIRA provider took too long to complete the response.');
+            error.code = 'upstream_stream_timeout';
+            throw error;
+          }
+          const { value, done } = await readUpstreamChunk(
+            reader,
+            Math.min(MIRA_STREAM_IDLE_MS, remainingMs),
+          );
+          if (done) break;
+          wroteChunk = true;
+          streamController.enqueue(value);
+        }
+      } catch (error) {
+        if (!signal?.aborted && error?.code === 'upstream_stream_timeout' && !wroteChunk) {
+          const payload = `${JSON.stringify({
+            error: error.message,
+            code: error.code,
+            done: true,
+          })}\n`;
+          try { streamController.enqueue(new TextEncoder().encode(payload)); } catch {}
+        }
+        try { await reader.cancel(error); } catch {}
+      } finally {
+        signal?.removeEventListener?.('abort', onAbort);
+        try { streamController.close(); } catch {}
+      }
+    },
+    cancel() {},
+  });
+
+  return new Response(proxiedBody, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+      'X-Mira-Provider': 'mira',
+      ...(recovery ? { 'X-Mira-Recovery': recovery } : {}),
+    },
+  });
+}
+
 export async function POST(req) {
   const guarded = guardRequest(req, { limit: 24, windowMs: 60_000, key: 'chat' });
   if (guarded) return guarded;
@@ -612,8 +742,25 @@ export async function POST(req) {
       }, 503));
     }
 
-    // Web chat and task workflows prefer Ollama. DeepSeek Flash is used only
-    // after Ollama's registry/model retry path has been exhausted.
+    // The configured MIRA endpoint is the primary web chat/task provider.
+    // DeepSeek Flash is the first fallback, and Ollama remains the final
+    // recovery path when both are unavailable.
+    if (MIRA_CHAT_API_URL && Date.now() >= miraUnavailableUntil) {
+      try {
+        const response = await miraChatResponse(body, controller.signal);
+        miraUnavailableUntil = 0;
+        return finishEarlyResponse(response);
+      } catch (error) {
+        if (controller.signal.aborted || req.signal?.aborted) throw error;
+        miraUnavailableUntil = Date.now() + MIRA_FAILURE_COOLDOWN_MS;
+        const fallback = await tryWebDeepSeekFallback('mira-unavailable');
+        if (fallback) return finishEarlyResponse(fallback);
+      }
+    }
+
+    // Web chat and task workflows fall back to Ollama when the MIRA endpoint
+    // is unavailable. DeepSeek Flash is used only after Ollama's registry/model
+    // retry path has been exhausted.
     upstreamStartTimer = setTimeout(() => {
       upstreamStartTimedOut = true;
       ollamaController.abort();

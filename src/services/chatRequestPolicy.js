@@ -1,7 +1,7 @@
 export const CHAT_REQUEST_TIMEOUTS = Object.freeze({
   responseHeadersMs: 65000,
-  streamIdleMs: 30000,
-  totalAttemptMs: 120000,
+  streamIdleMs: 45000,
+  totalAttemptMs: 240000,
 });
 
 export function getResponseHeadersTimeout() {
