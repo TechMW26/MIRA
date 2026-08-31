@@ -18,18 +18,17 @@ test('uses conversation context only to resolve a referential follow-up', () => 
   );
 });
 
-test('uses Ollama to resolve the latest message into a contextual search query', async () => {
+test('uses DeepSeek to resolve the latest message into a contextual search query', async () => {
   const originalFetch = globalThis.fetch;
-  const originalUrl = process.env.OLLAMA_API_URL;
-  process.env.OLLAMA_API_URL = 'https://ollama-query.test/api/chat';
+  const originalKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = 'deepseek-server-secret';
   let upstreamBody;
-  globalThis.fetch = async (url, options = {}) => {
-    if (String(url).endsWith('/api/tags')) {
-      return Response.json({ models: [{ name: 'mira', capabilities: ['completion'] }] });
-    }
-    if (String(url).endsWith('/api/ps')) return Response.json({ models: [{ name: 'mira' }] });
+  globalThis.fetch = async (_url, options = {}) => {
     upstreamBody = JSON.parse(options.body);
-    return Response.json({ message: { content: 'Ankita Pandey Lucknow content creator' } });
+    return Response.json({
+      model: 'deepseek-v4-flash',
+      choices: [{ message: { content: 'Ankita Pandey Lucknow content creator' } }],
+    });
   };
   try {
     const response = await POST(new Request('https://www.itsmira.cloud/api/search-query', {
@@ -47,22 +46,21 @@ test('uses Ollama to resolve the latest message into a contextual search query',
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
       query: 'Ankita Pandey Lucknow content creator',
-      source: 'ollama',
+      source: 'deepseek',
     });
+    assert.equal(upstreamBody.model, 'deepseek-v4-flash');
     assert.match(upstreamBody.messages.at(-1).content, /Ankita Pandey Lucknow/);
-    assert.equal(upstreamBody.stream, false);
-    assert.match(upstreamBody.messages.at(-1).content, /^\/no_think/);
   } finally {
     globalThis.fetch = originalFetch;
-    if (originalUrl === undefined) delete process.env.OLLAMA_API_URL;
-    else process.env.OLLAMA_API_URL = originalUrl;
+    if (originalKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalKey;
   }
 });
 
 test('falls back deterministically when the AI query planner is unavailable', async () => {
   const originalFetch = globalThis.fetch;
-  const originalUrl = process.env.OLLAMA_API_URL;
-  process.env.OLLAMA_API_URL = 'https://ollama-query.test/api/chat';
+  const originalKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = 'deepseek-server-secret';
   globalThis.fetch = async () => { throw new Error('planner offline'); };
   try {
     const response = await POST(new Request('https://www.itsmira.cloud/api/search-query', {
@@ -81,7 +79,7 @@ test('falls back deterministically when the AI query planner is unavailable', as
     });
   } finally {
     globalThis.fetch = originalFetch;
-    if (originalUrl === undefined) delete process.env.OLLAMA_API_URL;
-    else process.env.OLLAMA_API_URL = originalUrl;
+    if (originalKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalKey;
   }
 });

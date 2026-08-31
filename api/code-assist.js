@@ -281,7 +281,6 @@ export async function requestDeepSeekChat({
   const result = await deepSeekJson({
     model,
     messages: chatMessages,
-    max_tokens: Math.max(256, Math.min(4_000, Number(maxTokens) || 1_600)),
     temperature: 0.15,
     thinking: { type: think === true ? 'enabled' : 'disabled' },
     ...(think === true ? { reasoning_effort: 'max' } : {}),
@@ -332,7 +331,6 @@ export async function requestManagedChat({
   const model = await assistModel(key, signal);
   const payload = {
     messages: chatMessages,
-    max_tokens: Math.max(256, Math.min(2_000, Number(maxTokens) || 1_200)),
     temperature: 0.15,
     ...(Array.isArray(tools) && tools.length ? { tools: tools.slice(0, 32), tool_choice: 'auto' } : {}),
     ...(model ? { model } : {}),

@@ -1,6 +1,6 @@
 import { formSearchQuery } from './_searchQuery.js';
 import { guardRequest } from './_requestSecurity.js';
-import { buildUpstreamPayload, selectRegistryModel } from './chat.js';
+import { requestDeepSeekChat } from './code-assist.js';
 
 export const config = { maxDuration: 30 };
 
@@ -14,28 +14,7 @@ function cleanQuery(value = '') {
     .slice(0, 220);
 }
 
-async function requestOllamaQuery({ latestMessage, context, signal }) {
-  const chatUrl = String(process.env.OLLAMA_API_URL || '').trim();
-  const baseUrl = chatUrl.replace(/\/api\/.*/i, '');
-  if (!chatUrl || !baseUrl) throw new Error('Ollama is not configured.');
-
-  const [registryResponse, residencyResponse] = await Promise.all([
-    fetch(`${baseUrl}/api/tags`, { signal, cache: 'no-store' }),
-    fetch(`${baseUrl}/api/ps`, { signal, cache: 'no-store' }).catch(() => null),
-  ]);
-  if (!registryResponse.ok) throw new Error('Ollama registry is unavailable.');
-  const registry = await registryResponse.json().catch(() => ({}));
-  const residency = residencyResponse?.ok
-    ? await residencyResponse.json().catch(() => ({}))
-    : {};
-  const residentNames = (Array.isArray(residency?.models) ? residency.models : [])
-    .map((model) => String(model?.name || model?.model || '').trim())
-    .filter(Boolean);
-  const selected = selectRegistryModel(registry?.models, process.env.OLLAMA_CHAT_MODEL, {
-    residentNames,
-  });
-  if (!selected) throw new Error('No Ollama completion model is available.');
-
+async function requestDeepSeekQuery({ latestMessage, context, signal }) {
   const prompt = [
     'Create one search-engine-ready web query for MIRA.',
     'Resolve pronouns and follow-up phrases from the supplied conversation context.',
@@ -45,24 +24,14 @@ async function requestOllamaQuery({ latestMessage, context, signal }) {
     `LATEST MESSAGE:\n${latestMessage}`,
     `CONVERSATION CONTEXT:\n${context || '(none)'}`,
   ].join('\n\n');
-  const payload = buildUpstreamPayload({
-    registryModel: selected,
+  const result = await requestDeepSeekChat({
     messages: [{ role: 'user', content: prompt }],
+    systemPrompt: 'You are a concise search-query planner for MIRA.',
+    maxTokens: 256,
     think: false,
-    maxTokens: 128,
-    tools: [],
-  });
-  payload.stream = false;
-  const response = await fetch(chatUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
     signal,
-    cache: 'no-store',
   });
-  if (!response.ok) throw new Error(`Ollama query planner returned ${response.status}.`);
-  const result = await response.json().catch(() => ({}));
-  return cleanQuery(result?.message?.content || result?.response || '');
+  return cleanQuery(result.answer || '');
 }
 
 export async function POST(req) {
@@ -82,15 +51,15 @@ export async function POST(req) {
 
     let query = cleanQuery(fallback?.query);
     let source = 'deterministic-fallback';
-    if (String(process.env.OLLAMA_API_URL || '').trim()) {
+    if (String(process.env.DEEPSEEK_API_KEY || '').trim()) {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 20_000);
         try {
-          const aiQuery = await requestOllamaQuery({ latestMessage, context, signal: controller.signal });
+          const aiQuery = await requestDeepSeekQuery({ latestMessage, context, signal: controller.signal });
           if (aiQuery) {
             query = aiQuery;
-            source = 'ollama';
+            source = 'deepseek';
           }
         } finally {
           clearTimeout(timeout);

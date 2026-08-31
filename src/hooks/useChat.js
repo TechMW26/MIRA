@@ -1712,8 +1712,8 @@ export default function useChat() {
           : wantsVideoGeneration
             ? 'CURRENT TURN MODE: The user explicitly requested video generation or refinement. Video generation is allowed for this turn.'
             : 'CURRENT TURN MODE: Respond in text. Do not generate or refine images or videos, do not call media-generation tools, and do not carry a prior media task into this turn.';
-        // Mira's stable identity and behavior contract live in the Ollama
-        // model. Only small request-specific context crosses the network.
+        // Mira's stable identity and behavior contract live in the system
+        // prompt. Only small request-specific context crosses the network.
         const runtimeContextBlock = [
           modalityBoundary,
           desktopWorkspaceRequest.active

@@ -384,10 +384,10 @@ export async function runAgentTask({
             if (!retryableTaskError(error)) throw error;
             generationUnavailable = true;
             usedGenerationRecovery = true;
-            // A temporarily cold or overloaded local model must not invalidate
+            // A temporarily cold or overloaded model must not invalidate
             // evidence that earlier steps already gathered. The workflow can
             // still produce a useful handoff and the normal final synthesis
-            // will refine it whenever Ollama is available.
+            // will refine it when the model is available.
             return buildReasonStepFallback({ goal, context, step, results });
           }
         },

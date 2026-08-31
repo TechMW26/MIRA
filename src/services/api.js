@@ -427,7 +427,7 @@ export function stopChatGeneration() {
 
   // 1) Abort the in-flight client fetch synchronously. Closing this TCP
   //    connection makes our server fire its `req.signal`/`req.close`
-  //    listener, which in turn aborts the upstream Ollama fetch.
+  //    listener, which in turn aborts the upstream provider fetch.
   if (controller && !controller.signal.aborted) {
     diagnosticWarn('stream', 'user cancellation requested', { requestId });
     try { controller.abort(); } catch { /* ignore */ }

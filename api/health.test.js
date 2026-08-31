@@ -2,56 +2,67 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GET } from './health.js';
 
-test('reports sanitized Ollama readiness without exposing model names', async () => {
-  const originalFetch = globalThis.fetch;
-  const originalUrl = process.env.OLLAMA_API_URL;
-  process.env.OLLAMA_API_URL = 'http://ollama.test:11434/api/chat';
-  globalThis.fetch = async (url) => new Response(JSON.stringify(
-    String(url).endsWith('/api/tags')
-      ? { models: [{ name: 'private-model-name', capabilities: ['completion', 'thinking'] }] }
-      : { models: [{ name: 'private-model-name' }] },
-  ), { status: 200 });
-
+test('reports ready when at least one chat provider is configured', async () => {
+  const previousBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  process.env.MIRA_OPENAI_BASE_URL = 'https://mira.example.test/v1';
+  delete process.env.DEEPSEEK_API_KEY;
   try {
-    const response = await GET(new Request('http://localhost/api/health'));
-    const text = await response.text();
-    const payload = JSON.parse(text);
+    const response = await GET();
     assert.equal(response.status, 200);
+    const payload = await response.json();
     assert.equal(payload.ready, true);
+    assert.equal(payload.registryReachable, true);
+    assert.equal(payload.completionModelCount, 1);
     assert.equal(payload.loadedModelCount, 1);
     assert.equal(payload.modelWarm, true);
     assert.equal(payload.state, 'ready');
-    assert.equal(text.includes('private-model-name'), false);
+    assert.deepEqual(payload.providers, ['mira']);
   } finally {
-    globalThis.fetch = originalFetch;
-    if (originalUrl === undefined) delete process.env.OLLAMA_API_URL;
-    else process.env.OLLAMA_API_URL = originalUrl;
+    if (previousBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
+    else process.env.MIRA_OPENAI_BASE_URL = previousBaseUrl;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
   }
 });
 
-test('keeps readiness healthy when only the optional residency probe fails', async () => {
-  const originalFetch = globalThis.fetch;
-  const originalUrl = process.env.OLLAMA_API_URL;
-  process.env.OLLAMA_API_URL = 'http://ollama.test:11434/api/chat';
-  globalThis.fetch = async (url) => {
-    if (String(url).endsWith('/api/ps')) throw new TypeError('temporary connection failure');
-    return new Response(JSON.stringify({
-      models: [{ name: 'runtime-model', capabilities: ['completion'] }],
-    }), { status: 200 });
-  };
-
+test('reports both providers when MIRA and DeepSeek are configured', async () => {
+  const previousBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  process.env.MIRA_OPENAI_BASE_URL = 'https://mira.example.test/v1';
+  process.env.DEEPSEEK_API_KEY = 'deepseek-server-secret';
   try {
-    const response = await GET(new Request('http://localhost/api/health'));
-    const payload = await response.json();
-    assert.equal(response.status, 200);
+    const payload = await (await GET()).json();
     assert.equal(payload.ready, true);
-    assert.equal(payload.registryReachable, true);
-    assert.equal(payload.loadedModelCount, 0);
-    assert.equal(payload.modelWarm, false);
-    assert.equal(payload.state, 'cold');
+    assert.equal(payload.completionModelCount, 2);
+    assert.deepEqual(payload.providers, ['mira', 'deepseek']);
   } finally {
-    globalThis.fetch = originalFetch;
-    if (originalUrl === undefined) delete process.env.OLLAMA_API_URL;
-    else process.env.OLLAMA_API_URL = originalUrl;
+    if (previousBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
+    else process.env.MIRA_OPENAI_BASE_URL = previousBaseUrl;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
+  }
+});
+
+test('reports unconfigured when no chat provider is configured', async () => {
+  const previousBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const previousBase = process.env.MIRA_BASE_URL;
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  delete process.env.MIRA_OPENAI_BASE_URL;
+  delete process.env.MIRA_BASE_URL;
+  delete process.env.DEEPSEEK_API_KEY;
+  try {
+    const response = await GET();
+    assert.equal(response.status, 503);
+    const payload = await response.json();
+    assert.equal(payload.ready, false);
+    assert.equal(payload.state, 'unconfigured');
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
+    else process.env.MIRA_OPENAI_BASE_URL = previousBaseUrl;
+    if (previousBase === undefined) delete process.env.MIRA_BASE_URL;
+    else process.env.MIRA_BASE_URL = previousBase;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
   }
 });

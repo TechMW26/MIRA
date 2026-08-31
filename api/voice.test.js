@@ -19,18 +19,22 @@ async function withVoiceEnvironment(run) {
   }
 }
 
-async function withOllamaEnvironment(run) {
+async function withDeepSeekEnvironment(run) {
   const originalFetch = globalThis.fetch;
-  const previousUrl = process.env.OLLAMA_API_URL;
-  const previousModel = process.env.OLLAMA_VOICE_MODEL;
-  process.env.OLLAMA_API_URL = 'https://ollama.example.test/api/chat';
-  delete process.env.OLLAMA_VOICE_MODEL;
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  const previousUrl = process.env.DEEPSEEK_API_URL;
+  const previousModel = process.env.DEEPSEEK_CHAT_MODEL;
+  process.env.DEEPSEEK_API_KEY = 'deepseek-server-secret';
+  process.env.DEEPSEEK_API_URL = 'https://deepseek.example.test';
+  process.env.DEEPSEEK_CHAT_MODEL = 'deepseek-v4-flash';
   try { await run(); } finally {
     globalThis.fetch = originalFetch;
-    if (previousUrl === undefined) delete process.env.OLLAMA_API_URL;
-    else process.env.OLLAMA_API_URL = previousUrl;
-    if (previousModel === undefined) delete process.env.OLLAMA_VOICE_MODEL;
-    else process.env.OLLAMA_VOICE_MODEL = previousModel;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
+    if (previousUrl === undefined) delete process.env.DEEPSEEK_API_URL;
+    else process.env.DEEPSEEK_API_URL = previousUrl;
+    if (previousModel === undefined) delete process.env.DEEPSEEK_CHAT_MODEL;
+    else process.env.DEEPSEEK_CHAT_MODEL = previousModel;
   }
 }
 
@@ -77,22 +81,14 @@ test('voice speech proxy keeps its VPS credential server-side', async () => {
   });
 });
 
-test('voice chat streams from the self-hosted non-vision model with Mira and conversation context', async () => {
-  await withOllamaEnvironment(async () => {
+test('voice chat streams from the DeepSeek voice provider with Mira and conversation context', async () => {
+  await withDeepSeekEnvironment(async () => {
     let upstream;
     globalThis.fetch = async (url, options) => {
-      if (String(url).endsWith('/api/tags')) {
-        return Response.json({
-          models: [
-            { name: 'vision-runtime', capabilities: ['completion', 'vision', 'tools', 'thinking'] },
-            { name: 'qwen-runtime', capabilities: ['completion', 'tools'] },
-          ],
-        });
-      }
       upstream = { url: String(url), options };
-      return new Response('{"message":{"role":"assistant","content":"Hello"},"done":false}\n', {
+      return new Response('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\ndata: [DONE]\n\n', {
         status: 200,
-        headers: { 'Content-Type': 'application/x-ndjson' },
+        headers: { 'Content-Type': 'text/event-stream' },
       });
     };
     const response = await chat(new Request('http://localhost/api/voice-chat', {
@@ -107,14 +103,13 @@ test('voice chat streams from the self-hosted non-vision model with Mira and con
       }),
     }));
     assert.equal(response.status, 200);
-    assert.match(await response.text(), /Hello/);
-    assert.equal(upstream.url, 'https://ollama.example.test/api/chat');
-    assert.equal(upstream.options.headers.Authorization, undefined);
+    assert.equal(response.headers.get('x-mira-provider'), 'deepseek');
+    assert.equal(upstream.url, 'https://deepseek.example.test/chat/completions');
+    assert.equal(upstream.options.headers.Authorization, 'Bearer deepseek-server-secret');
     const body = JSON.parse(upstream.options.body);
-    assert.equal(body.model, 'qwen-runtime');
+    assert.equal(body.model, 'deepseek-v4-flash');
     assert.equal(body.stream, true);
-    assert.equal(body.think, undefined);
-    assert.equal(body.options.num_predict, 480);
+    assert.equal(body.thinking.type, 'disabled');
     assert.match(body.messages[0].content, /You are Mira/);
     assert.match(body.messages[0].content, /no Markdown/);
     assert.match(body.messages[0].content, /\[MIRA_WEB_SEARCH: concise search query\]/);
@@ -124,38 +119,24 @@ test('voice chat streams from the self-hosted non-vision model with Mira and con
       { role: 'assistant', content: 'Earlier context' },
       { role: 'user', content: 'Hello' },
     ]);
-    assert.doesNotMatch(upstream.options.body, /deepseek/i);
   });
 });
 
-test('voice chat stays on Ollama even when a DeepSeek key is configured', async () => {
-  const originalKey = process.env.DEEPSEEK_API_KEY;
-  process.env.DEEPSEEK_API_KEY = 'deepseek-server-secret';
+test('voice chat requires a DeepSeek key and reports a clear configuration error', async () => {
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  delete process.env.DEEPSEEK_API_KEY;
   try {
-    await withOllamaEnvironment(async () => {
-      const requestedUrls = [];
-      globalThis.fetch = async (url) => {
-        requestedUrls.push(String(url));
-        if (String(url).endsWith('/api/tags')) {
-          return Response.json({ models: [{ name: 'voice-model', capabilities: ['completion'] }] });
-        }
-        return new Response('{"message":{"content":"Hello from Ollama voice."},"done":true}\n', {
-          status: 200,
-          headers: { 'Content-Type': 'application/x-ndjson' },
-        });
-      };
-      const response = await chat(new Request('http://localhost/api/voice-chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
-      }));
-      assert.equal(response.status, 200);
-      assert.equal(response.headers.get('x-mira-provider'), 'ollama');
-      assert.match(await response.text(), /Hello from Ollama voice/);
-      assert.equal(requestedUrls.some((url) => /deepseek/i.test(url)), false);
+    const response = await chat(new Request('http://localhost/api/voice-chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
+    }));
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), {
+      error: 'Voice conversations are not configured on this deployment.',
     });
   } finally {
-    if (originalKey === undefined) delete process.env.DEEPSEEK_API_KEY;
-    else process.env.DEEPSEEK_API_KEY = originalKey;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
   }
 });
