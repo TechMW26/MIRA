@@ -119,10 +119,10 @@ test('routes web chat through the MIRA primary provider when configured', async 
     const target = String(url);
     requestedUrls.push(target);
     if (target === 'https://mira-primary.test/v1/chat/completions') {
-      return new Response(JSON.stringify({
-        model: 'MIRA:latest',
-        choices: [{ message: { content: 'Primary MIRA answer.' } }],
-      }), { status: 200 });
+      return new Response('data: {"choices":[{"delta":{"content":"Primary MIRA answer."}}]}\n\ndata: [DONE]\n\n', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
     }
     throw new Error(`Unexpected provider request: ${target}`);
   };
@@ -179,6 +179,51 @@ test('falls back to DeepSeek Flash when the MIRA primary provider fails', async 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('x-mira-provider'), 'deepseek');
     assert.equal(response.headers.get('x-mira-recovery'), 'mira-unavailable');
+    assert.match(await response.text(), /DeepSeek recovered/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
+    else process.env.MIRA_OPENAI_BASE_URL = originalBaseUrl;
+    if (originalKey === undefined) delete process.env.MIRA_API_TOKEN;
+    else process.env.MIRA_API_TOKEN = originalKey;
+    if (originalDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
+  }
+});
+
+test('fails over to DeepSeek when the MIRA gateway returns a 200 error page', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const originalKey = process.env.MIRA_API_TOKEN;
+  const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  process.env.MIRA_OPENAI_BASE_URL = 'https://mira-buffered-error.test/v1';
+  process.env.MIRA_API_TOKEN = 'mira-server-secret';
+  process.env.DEEPSEEK_API_KEY = 'web-fallback-key';
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target === 'https://mira-buffered-error.test/v1/chat/completions') {
+      return new Response('<!DOCTYPE html><html><body>The tunnel is temporarily unavailable.</body></html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      });
+    }
+    if (target === 'https://api.deepseek.com/chat/completions') {
+      return new Response(JSON.stringify({
+        model: 'deepseek-v4-flash',
+        choices: [{ message: { content: 'DeepSeek recovered.' } }],
+      }), { status: 200 });
+    }
+    throw new Error(`Unexpected provider request: ${target}`);
+  };
+  try {
+    const freshModule = await import(`./chat.js?mira-buffered-error=${Date.now()}`);
+    const response = await freshModule.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-mira-provider'), 'deepseek');
     assert.match(await response.text(), /DeepSeek recovered/);
   } finally {
     globalThis.fetch = originalFetch;

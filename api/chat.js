@@ -59,6 +59,7 @@ const MIRA_CHAT_API_KEY = String(process.env.MIRA_API_TOKEN || '').trim();
 const MIRA_CHAT_MODEL = String(process.env.MIRA_CHAT_MODEL || 'MIRA:latest').trim();
 const MIRA_FAILURE_COOLDOWN_MS = 30 * 1000;
 const MIRA_PRIMARY_TIMEOUT_MS = 40 * 1000;
+const MIRA_FIRST_CHUNK_TIMEOUT_MS = 20 * 1000;
 const MIRA_STREAM_IDLE_MS = 45_000;
 const MIRA_STREAM_TOTAL_MS = 240_000;
 let miraUnavailableUntil = 0;
@@ -244,16 +245,57 @@ export async function miraChatResponse(body, signal, { recovery = '' } = {}) {
     const detail = await upstream.text().catch(() => '');
     const error = new Error(detail || `MIRA chat request failed (${upstream.status}).`);
     error.status = upstream.status;
+    error.code = 'mira_upstream_error';
+    throw error;
+  }
+
+  // Fail over immediately when the ngrok gateway buffers an HTML error page or
+  // a JSON error into a 200 response instead of an upstream error status.
+  const contentType = String(upstream.headers.get('content-type') || '').toLowerCase();
+  if (contentType && !contentType.includes('text/event-stream')) {
+    const detail = await upstream.text().catch(() => '');
+    const error = new Error(detail.slice(0, 300) || `MIRA chat returned an unexpected ${contentType || 'response'}.`);
+    error.status = upstream.status;
+    error.code = 'mira_invalid_response';
+    throw error;
+  }
+
+  const reader = upstream.body?.getReader();
+  if (!reader) {
+    const error = new Error('The MIRA provider returned an empty response body.');
+    error.code = 'mira_empty_response';
+    throw error;
+  }
+
+  // Peek the first SSE chunk so a "service unavailable" body is detected and
+  // rerouted to DeepSeek before any bytes reach the client.
+  let firstChunk = null;
+  try {
+    const first = await readUpstreamChunk(reader, MIRA_FIRST_CHUNK_TIMEOUT_MS);
+    if (first.done) {
+      const error = new Error('The MIRA provider returned an empty response body.');
+      error.code = 'mira_empty_response';
+      throw error;
+    }
+    firstChunk = first.value;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    await reader.cancel(error).catch(() => {});
+    throw error;
+  }
+
+  const firstChunkText = new TextDecoder().decode(firstChunk).trim();
+  const errorLikeChunk = /<html|<!doctype|\{"error"|"error"\s*:|service (?:is )?(?:temporarily )?unavailable|temporarily unavailable|tunnel .*not found|bad gateway/i
+    .test(firstChunkText);
+  if (errorLikeChunk && !firstChunkText.startsWith('data:')) {
+    await reader.cancel(new Error(firstChunkText.slice(0, 200))).catch(() => {});
+    const error = new Error(firstChunkText.slice(0, 200) || 'The MIRA provider returned an invalid stream.');
+    error.code = 'mira_invalid_response';
     throw error;
   }
 
   const proxiedBody = new ReadableStream({
     async start(streamController) {
-      const reader = upstream.body?.getReader();
-      if (!reader) {
-        streamController.close();
-        return;
-      }
       const onAbort = () => {
         reader.cancel().catch?.(() => {});
         try { streamController.close(); } catch {}
@@ -262,6 +304,10 @@ export async function miraChatResponse(body, signal, { recovery = '' } = {}) {
       const streamStartedAt = Date.now();
       let wroteChunk = false;
       try {
+        if (firstChunk) {
+          streamController.enqueue(firstChunk);
+          wroteChunk = true;
+        }
         while (!signal?.aborted) {
           const remainingMs = MIRA_STREAM_TOTAL_MS - (Date.now() - streamStartedAt);
           if (remainingMs <= 0) {
@@ -292,7 +338,9 @@ export async function miraChatResponse(body, signal, { recovery = '' } = {}) {
         try { streamController.close(); } catch {}
       }
     },
-    cancel() {},
+    cancel() {
+      reader.cancel().catch?.(() => {});
+    },
   });
 
   return new Response(proxiedBody, {
