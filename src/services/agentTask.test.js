@@ -98,10 +98,11 @@ test('executes planned research and reasoning sequentially before returning the 
     search: async () => ({ results: [{ title: 'Benchmark', snippet: 'Measured results', url: 'https://example.com' }] }),
     onPhase: (phase) => phases.push(phase),
   });
-  assert.equal(generatedPrompts.length, 2);
+  assert.equal(generatedPrompts.length, 3);
   assert.deepEqual(generationOptions, [
     { phase: 'planning', think: false, maxTokens: 900 },
     { phase: 'executing', think: false, maxTokens: 1600 },
+    { phase: 'synthesizing', think: false, maxTokens: 4000 },
   ]);
   assert.match(output, /Benchmark/);
   assert.match(output, /product A for speed/);
@@ -120,7 +121,7 @@ test('executes planned research and reasoning sequentially before returning the 
   assert.match(phases[3].result, /Benchmark/);
 });
 
-test('marks the final reasoning result as the user-visible task answer', async () => {
+test('uses a dedicated conclusion rather than the last reasoning result', async () => {
   const output = await runAgentTask({
     goal: 'Use the earlier Canact context to propose engagement improvements',
     context: 'Canact is a people ratings and civic score application, not a social network.',
@@ -129,13 +130,50 @@ test('marks the final reasoning result as the user-visible task answer', async (
         { title: 'Assess', instruction: 'Assess the constraints', tool: 'reason' },
         { title: 'Answer', instruction: 'Produce the final answer', tool: 'reason' },
       ])
-      : options.maxTokens === 1600
+      : options.phase === 'synthesizing'
         ? 'Use verified-rating prompts and transparent score explanations while preserving the civic-score framing.'
-        : '',
+        : 'Intermediate analysis.',
   });
   const answer = extractAgentTaskAnswer(output);
   assert.match(answer, /civic-score framing/i);
   assert.doesNotMatch(answer, /Completed internal work|USER-SAFE TASK/i);
+});
+
+test('preserves a formatted conclusion and excludes raw step reports from the final answer', async () => {
+  const conclusion = `## Recommendation\n\nLaunch a small pilot first.\n\n## Plan\n\n1. Week 1: prepare the prototype.\n2. Week 2: test with five users.\n\n${'Supporting detail. '.repeat(320)}\n\n## Next action\n\nBook the first feedback session.`;
+  let finalPrompt = '';
+  const output = await runAgentTask({
+    goal: 'Plan a two-week prototype launch',
+    context: 'One developer is available and the budget is fixed.',
+    generate: async (prompt, options) => {
+      if (options.phase === 'planning') return JSON.stringify([
+        { title: 'Draft', instruction: 'Prepare the plan', tool: 'reason' },
+        { title: 'Verify', instruction: 'Check the constraints', tool: 'reason' },
+      ]);
+      if (options.phase === 'synthesizing') { finalPrompt = prompt; return conclusion; }
+      return 'RAW_STEP_REPORT: constraints checked.';
+    },
+  });
+  assert.equal(extractAgentTaskAnswer(output), conclusion);
+  assert.match(finalPrompt, /One developer/);
+  assert.match(finalPrompt, /RAW_STEP_REPORT/);
+  assert.doesNotMatch(extractAgentTaskAnswer(output), /RAW_STEP_REPORT/);
+});
+
+test('empty final synthesis yields an honest summary failure, not a raw-data answer', async () => {
+  const output = await runAgentTask({
+    goal: 'Plan an onboarding workshop',
+    generate: async (_prompt, options) => {
+      if (options.phase === 'planning') return JSON.stringify([
+        { title: 'Draft', instruction: 'Draft the workshop', tool: 'reason' },
+        { title: 'Review', instruction: 'Review the draft', tool: 'reason' },
+      ]);
+      return options.phase === 'synthesizing' ? '' : 'RAW_PRIVATE_WORKSHOP_NOTES';
+    },
+  });
+  assert.equal(extractAgentTaskAnswer(output), '');
+  assert.doesNotMatch(extractAgentTaskFallback(output), /RAW_PRIVATE_WORKSHOP_NOTES/);
+  assert.match(extractAgentTaskFallback(output), /couldn't finish a reliable final answer/);
 });
 
 test('stops the workflow immediately when generation is cancelled', async () => {
@@ -166,13 +204,13 @@ test('retries empty task steps and completes after a transient failure', async (
     onPhase: (phase) => phases.push(phase),
   });
 
-  assert.equal(stepAttempts, 3);
+  assert.equal(stepAttempts, 4);
   assert.equal(phases.filter((phase) => phase.phase === 'step-retrying').length, 1);
   assert.match(output, /Draft completed/);
   assert.match(output, /Verification completed/);
 });
 
-test('completes a reasoning step from available context when the model is temporarily unavailable', async () => {
+test('marks unavailable reasoning as incomplete instead of duplicating previous evidence', async () => {
   let executionCalls = 0;
   const output = await runAgentTask({
     goal: 'Research and summarize a market',
@@ -192,13 +230,12 @@ test('completes a reasoning step from available context when the model is tempor
 
   const fallback = extractAgentTaskFallback(output);
   assert.equal(executionCalls, 1);
-  assert.match(fallback, /available evidence supports/i);
-  assert.doesNotMatch(fallback, /Incomplete areas/i);
+  assert.match(fallback, /Incomplete areas/i);
   assert.match(fallback, /Unavailable source/);
   assert.equal(agentTaskUsedRecovery(output), true);
 });
 
-test('does not contact the model again after planning confirms it is unavailable', async () => {
+test('attempts final synthesis of gathered evidence after a planning outage without dumping raw data', async () => {
   let calls = 0;
   const output = await runAgentTask({
     goal: 'Research a civic app market',
@@ -211,9 +248,10 @@ test('does not contact the model again after planning confirms it is unavailable
       results: [{ title: 'Benchmark', snippet: 'Verified evidence', url: 'https://example.com' }],
     }),
   });
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
   assert.equal(agentTaskUsedRecovery(output), true);
-  assert.match(extractAgentTaskFallback(output), /Verified evidence/);
+  assert.doesNotMatch(extractAgentTaskFallback(output), /Verified evidence/);
+  assert.match(extractAgentTaskFallback(output), /couldn't finish a reliable final answer/i);
 });
 
 test('uses a different research query on each empty-result retry', async () => {

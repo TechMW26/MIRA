@@ -3184,13 +3184,14 @@ export default function useChat() {
                   current?.runId === runId
                     ? (() => {
                       const failedSteps = (current.steps || []).filter((step) => step.status === 'error').length;
+                      const summaryMissing = !extractAgentTaskAnswer(toolResult);
                       return {
                         ...current,
-                        phase: failedSteps ? 'partial' : 'completed',
-                        status: failedSteps ? 'partial' : 'completed',
+                        phase: failedSteps || summaryMissing ? 'partial' : 'completed',
+                        status: failedSteps || summaryMissing ? 'partial' : 'completed',
                         error: failedSteps
                           ? `${failedSteps} workflow step${failedSteps === 1 ? '' : 's'} could not be completed.`
-                          : '',
+                          : summaryMissing ? 'The final answer could not be completed. Task details are preserved.' : '',
                         updatedAt: Date.now(),
                       };
                     })()
