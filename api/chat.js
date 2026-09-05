@@ -58,11 +58,72 @@ const MIRA_CHAT_API_URL = MIRA_OPENAI_BASE_URL
 const MIRA_CHAT_API_KEY = String(process.env.MIRA_API_TOKEN || '').trim();
 const MIRA_CHAT_MODEL = String(process.env.MIRA_CHAT_MODEL || 'MIRA:latest').trim();
 const MIRA_FAILURE_COOLDOWN_MS = 30 * 1000;
+const MIRA_PRIMARY_ATTEMPTS = 2;
+const MIRA_RETRY_DELAY_MS = 250;
 const MIRA_PRIMARY_TIMEOUT_MS = 40 * 1000;
 const MIRA_FIRST_CHUNK_TIMEOUT_MS = 20 * 1000;
 const MIRA_STREAM_IDLE_MS = 45_000;
 const MIRA_STREAM_TOTAL_MS = 240_000;
 let miraUnavailableUntil = 0;
+
+export function isMiraFallbackEligible(error) {
+  const status = Number(error?.status || 0);
+  const code = String(error?.code || '');
+  if ([408, 425, 429].includes(status) || status >= 500) return true;
+  if ([
+    'mira_connect_timeout',
+    'mira_empty_response',
+    'mira_invalid_response',
+    'upstream_stream_timeout',
+  ].includes(code)) return true;
+  return error instanceof TypeError;
+}
+
+function waitForMiraRetry(signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason || new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason || new DOMException('Aborted', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', onAbort);
+      resolve();
+    }, MIRA_RETRY_DELAY_MS);
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+  });
+}
+
+async function requestMiraPrimary(body, signal) {
+  let lastError;
+  for (let attempt = 1; attempt <= MIRA_PRIMARY_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await miraChatResponse(body, signal);
+      response.headers.set('X-Mira-Primary-Attempts', String(attempt));
+      return response;
+    } catch (error) {
+      lastError = error;
+      error.primaryAttempts = attempt;
+      if (!isMiraFallbackEligible(error) || attempt >= MIRA_PRIMARY_ATTEMPTS) throw error;
+      await waitForMiraRetry(signal);
+    }
+  }
+  throw lastError;
+}
+
+function miraConfigurationError(error = null) {
+  const authenticationFailed = [401, 403].includes(Number(error?.status || 0));
+  return jsonResponse({
+    error: authenticationFailed
+      ? 'The MIRA API credential is missing or invalid.'
+      : 'The MIRA API is not fully configured.',
+    code: authenticationFailed ? 'mira_primary_authentication_failed' : 'mira_primary_not_configured',
+    retryable: false,
+  }, 503);
+}
 
 function prefersDeepSeekDesktopCoding() {
   return String(
@@ -477,22 +538,30 @@ export async function POST(req) {
       }, 503));
     }
 
-    // The configured MIRA endpoint is the primary web chat/task provider.
-    // DeepSeek Flash is the fallback when MIRA is unavailable or unconfigured.
+    // MIRA is mandatory for web chat/task traffic. DeepSeek is only an outage
+    // fallback after MIRA has been attempted and failed with a retryable
+    // transport, timeout, rate-limit, or upstream-service error.
+    if (!MIRA_CHAT_API_URL || !MIRA_CHAT_API_KEY) {
+      return finishEarlyResponse(miraConfigurationError());
+    }
+
     if (MIRA_CHAT_API_URL && Date.now() >= miraUnavailableUntil) {
       try {
-        const response = await miraChatResponse(body, controller.signal);
+        const response = await requestMiraPrimary(body, controller.signal);
         miraUnavailableUntil = 0;
         return finishEarlyResponse(response);
       } catch (error) {
         if (controller.signal.aborted || req.signal?.aborted) throw error;
+        if (!isMiraFallbackEligible(error)) {
+          return finishEarlyResponse(miraConfigurationError(error));
+        }
         miraUnavailableUntil = Date.now() + MIRA_FAILURE_COOLDOWN_MS;
-        const fallback = await tryWebDeepSeekFallback('mira-unavailable');
+        const fallback = await tryWebDeepSeekFallback('mira-retryable-outage');
         if (fallback) return finishEarlyResponse(fallback);
       }
     }
 
-    const fallback = await tryWebDeepSeekFallback(MIRA_CHAT_API_URL ? 'mira-unavailable' : 'mira-not-configured');
+    const fallback = await tryWebDeepSeekFallback('mira-circuit-open');
     if (fallback) return finishEarlyResponse(fallback);
 
     return finishEarlyResponse(jsonResponse({

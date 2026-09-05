@@ -4,9 +4,17 @@ import {
   deepSeekChatResponse,
   managedFallbackResponse,
   miraChatResponse,
+  isMiraFallbackEligible,
   POST,
   sanitizeTools,
 } from './chat.js';
+
+test('allows fallback only for retryable MIRA outages', () => {
+  assert.equal(isMiraFallbackEligible(Object.assign(new Error('busy'), { status: 503 })), true);
+  assert.equal(isMiraFallbackEligible(Object.assign(new Error('rate limited'), { status: 429 })), true);
+  assert.equal(isMiraFallbackEligible(Object.assign(new Error('bad token'), { status: 401 })), false);
+  assert.equal(isMiraFallbackEligible(Object.assign(new Error('bad request'), { status: 400 })), false);
+});
 
 test('returns a stream-compatible DeepSeek response for desktop coding fallback', async () => {
   const originalFetch = globalThis.fetch;
@@ -156,9 +164,11 @@ test('falls back to DeepSeek Flash when the MIRA primary provider fails', async 
   process.env.MIRA_OPENAI_BASE_URL = 'https://mira-down.test/v1';
   process.env.MIRA_API_TOKEN = 'mira-server-secret';
   process.env.DEEPSEEK_API_KEY = 'web-fallback-key';
+  let miraAttempts = 0;
   globalThis.fetch = async (url) => {
     const target = String(url);
     if (target === 'https://mira-down.test/v1/chat/completions') {
+      miraAttempts += 1;
       return new Response(JSON.stringify({ error: 'model loading' }), { status: 503 });
     }
     if (target === 'https://api.deepseek.com/chat/completions') {
@@ -177,9 +187,51 @@ test('falls back to DeepSeek Flash when the MIRA primary provider fails', async 
       body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
     }));
     assert.equal(response.status, 200);
+    assert.equal(miraAttempts, 2);
     assert.equal(response.headers.get('x-mira-provider'), 'deepseek');
-    assert.equal(response.headers.get('x-mira-recovery'), 'mira-unavailable');
+    assert.equal(response.headers.get('x-mira-recovery'), 'mira-retryable-outage');
     assert.match(await response.text(), /DeepSeek recovered/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
+    else process.env.MIRA_OPENAI_BASE_URL = originalBaseUrl;
+    if (originalKey === undefined) delete process.env.MIRA_API_TOKEN;
+    else process.env.MIRA_API_TOKEN = originalKey;
+    if (originalDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
+  }
+});
+
+test('never hides MIRA authentication failures behind DeepSeek', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const originalKey = process.env.MIRA_API_TOKEN;
+  const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  process.env.MIRA_OPENAI_BASE_URL = 'https://mira-auth.test/v1';
+  process.env.MIRA_API_TOKEN = 'invalid-mira-secret';
+  process.env.DEEPSEEK_API_KEY = 'web-fallback-key';
+  const requestedUrls = [];
+  globalThis.fetch = async (url) => {
+    requestedUrls.push(String(url));
+    return new Response(JSON.stringify({ error: 'invalid bearer token' }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    const freshModule = await import(`./chat.js?mira-auth-failure=${Date.now()}`);
+    const response = await freshModule.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
+    }));
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), {
+      error: 'The MIRA API credential is missing or invalid.',
+      code: 'mira_primary_authentication_failed',
+      retryable: false,
+    });
+    assert.deepEqual(requestedUrls, ['https://mira-auth.test/v1/chat/completions']);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
@@ -266,12 +318,14 @@ test('accepts the desktop screen-context schema for the native companion relay',
   assert.equal(tools[0].function.name, 'desktop.screen_context');
 });
 
-test('returns a retryable outage when both web providers are unavailable', async () => {
+test('requires MIRA primary configuration even when DeepSeek exists', async () => {
   const originalFetch = globalThis.fetch;
   const originalBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const originalMiraKey = process.env.MIRA_API_TOKEN;
   const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
   delete process.env.MIRA_OPENAI_BASE_URL;
-  delete process.env.DEEPSEEK_API_KEY;
+  delete process.env.MIRA_API_TOKEN;
+  process.env.DEEPSEEK_API_KEY = 'fallback-only-key';
   globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
   try {
     const freshModule = await import(`./chat.js?all-unavailable=${Date.now()}`);
@@ -282,14 +336,16 @@ test('returns a retryable outage when both web providers are unavailable', async
     }));
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), {
-      error: 'The chat service is temporarily unavailable. Please try again shortly.',
-      code: 'chat_service_unavailable',
-      retryable: true,
+      error: 'The MIRA API is not fully configured.',
+      code: 'mira_primary_not_configured',
+      retryable: false,
     });
   } finally {
     globalThis.fetch = originalFetch;
     if (originalBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
     else process.env.MIRA_OPENAI_BASE_URL = originalBaseUrl;
+    if (originalMiraKey === undefined) delete process.env.MIRA_API_TOKEN;
+    else process.env.MIRA_API_TOKEN = originalMiraKey;
     if (originalDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
     else process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
   }
