@@ -349,10 +349,10 @@ export async function requestManagedChat({
     result = await request(providerDefaultPayload);
   }
   const toolCalls = result?.choices?.[0]?.message?.tool_calls;
-  if (Array.isArray(toolCalls) && toolCalls.length) return { toolCalls };
+  if (Array.isArray(toolCalls) && toolCalls.length) return { toolCalls, finishReason: 'tool_calls' };
   const suggestion = cleanSuggestion(result?.choices?.[0]?.message?.content, 6_000);
   if (!suggestion) throw new Error('Managed chat fallback returned no response.');
-  return { suggestion };
+  return { suggestion, finishReason: result?.choices?.[0]?.finish_reason || 'stop' };
 }
 
 export async function POST(request) {

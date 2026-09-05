@@ -4,9 +4,25 @@ import {
   POST,
   prepareDeepSeekTools,
   requestDeepSeekChat,
+  requestManagedChat,
   selectAssistModel,
   selectEmbeddingModel,
 } from './code-assist.js';
+
+test('managed desktop fallback preserves the provider cutoff status', async () => {
+  const originalFetch=globalThis.fetch;
+  const originalKey=process.env.POLLINATIONS_API_KEY;
+  process.env.POLLINATIONS_API_KEY='test-only';
+  globalThis.fetch=async url=>String(url).endsWith('/models') ? Response.json([]) : Response.json({choices:[{message:{content:'Partial task answer'},finish_reason:'length'}]});
+  try {
+    const result=await requestManagedChat({messages:[{role:'user',content:'Plan a workshop'}]});
+    assert.equal(result.suggestion,'Partial task answer');
+    assert.equal(result.finishReason,'length');
+  } finally {
+    globalThis.fetch=originalFetch;
+    if(originalKey===undefined)delete process.env.POLLINATIONS_API_KEY;else process.env.POLLINATIONS_API_KEY=originalKey;
+  }
+});
 
 test('retains long chat responses and the provider finish reason', async () => {
   const originalFetch=globalThis.fetch;

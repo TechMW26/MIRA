@@ -676,13 +676,13 @@ async function requestPollinationsFallback({ messages, systemPrompt, tools, maxT
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new ChatHttpError(response.status, payload?.error || 'Fallback completion failed.');
     const control = toolCallsToControl(payload?.toolCalls);
-    const answer = control || String(payload?.suggestion || '').trim();
+    const answer = control || String(payload?.answer || payload?.suggestion || '').trim();
     if (!answer) throw new Error('The fallback completion returned no result.');
     diagnosticWarn('model', 'primary model unavailable; Pollinations completion fallback succeeded', {
       toolCall: Boolean(control),
       answerChars: answer.length,
     });
-    return { answer, thinking: '' };
+    return { answer, thinking: '', finishReason: payload?.finishReason, incomplete: payload?.finishReason === 'length' };
   } finally {
     clearTimeout(timeout);
     if (activeChatAbortController === controller) activeChatAbortController = null;
@@ -773,12 +773,13 @@ export async function sendChatMessage(messages, onChunk, images = [], {
       error: error?.message || 'Unknown model failure',
     });
     try {
-      streamed = await requestPollinationsFallback({
+      streamed = await completeChatResponse({
         messages,
         systemPrompt: composeMiraSystemPrompt(systemPrompt),
         tools,
         maxTokens,
-      });
+        requestClass,
+      }, requestPollinationsFallback);
     } catch (fallbackError) {
       if (desktopProviderError?.code === 'provider_reconnect_required') {
         throw desktopProviderError;
