@@ -295,14 +295,15 @@ export async function requestDeepSeekChat({
       arguments: parseToolArguments(call?.function?.arguments),
     },
   })).filter((call) => call.function.name);
-  const answer = cleanSuggestion(message.content, 12_000);
-  const thinking = cleanSuggestion(message.reasoning_content, 12_000);
+  const answer = String(message.content || '').trim();
+  const thinking = String(message.reasoning_content || '').trim();
   if (!answer && !toolCalls.length) throw new Error('DeepSeek chat returned no response.');
   return {
     ...(answer ? { answer } : {}),
     ...(thinking ? { thinking } : {}),
     ...(toolCalls.length ? { toolCalls } : {}),
     model: String(result?.model || model),
+    finishReason: result?.choices?.[0]?.finish_reason || 'stop',
   };
 }
 

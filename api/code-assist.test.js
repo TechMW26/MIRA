@@ -8,6 +8,23 @@ import {
   selectEmbeddingModel,
 } from './code-assist.js';
 
+test('retains long chat responses and the provider finish reason', async () => {
+  const originalFetch=globalThis.fetch;
+  const originalKey=process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY='test-key';
+  const content='## Long report\n\n'+ 'Planning detail. '.repeat(1500)+'\n\nFinal action item.';
+  globalThis.fetch=async()=>Response.json({choices:[{message:{content},finish_reason:'length'}]});
+  try {
+    const result=await requestDeepSeekChat({messages:[{role:'user',content:'Write a long report'}]});
+    assert.equal(result.answer,content);
+    assert.equal(result.finishReason,'length');
+  } finally {
+    globalThis.fetch=originalFetch;
+    if(originalKey===undefined)delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY=originalKey;
+  }
+});
+
 test('aliases dotted MIRA tool names for DeepSeek and restores them in tool calls', async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.DEEPSEEK_API_KEY;

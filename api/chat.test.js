@@ -35,6 +35,7 @@ test('returns a stream-compatible DeepSeek response for desktop coding fallback'
       model: 'deepseek-v4-flash',
       message: { content: 'Fast answer.' },
       done: true,
+      done_reason: 'stop',
     });
   } finally {
     globalThis.fetch = originalFetch;

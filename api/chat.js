@@ -245,7 +245,7 @@ export async function deepSeekChatResponse(body, signal, { recovery = '' } = {})
     ...(result.thinking ? { thinking: result.thinking } : {}),
     ...(result.toolCalls?.length ? { tool_calls: result.toolCalls } : {}),
   };
-  return new Response(`${JSON.stringify({ model: result.model, message, done: true })}\n`, {
+  return new Response(`${JSON.stringify({ model: result.model, message, done: true, done_reason: result.finishReason })}\n`, {
     status: 200,
     headers: {
       'Content-Type': 'application/x-ndjson',

@@ -11,6 +11,7 @@ import {
 import { diagnosticError, diagnosticLog, diagnosticWarn } from './diagnostics.js';
 import { notifyDesktopProviderRequired, requestDesktopAgentChat } from './desktopBridge.js';
 import { composeMiraSystemPrompt } from '../config/systemPrompt.js';
+import { completeChatResponse } from './responseContinuation.js';
 
 let activeChatAbortController = null;
 let activeChatRequestId = null;
@@ -227,12 +228,14 @@ export function extractThinkingText(payload) {
 }
 
 function parseStreamData(data) {
-  if (!data || data === '[DONE]') return { answer: '', thinking: '' };
+  if (!data || data === '[DONE]') return { answer: '', thinking: '', completed: data === '[DONE]' };
   try {
     const payload = JSON.parse(data);
     return {
       answer: extractChatText(payload),
       thinking: extractThinkingText(payload),
+      completed: payload.done === true || Boolean(payload.choices?.[0]?.finish_reason),
+      finishReason: payload.choices?.[0]?.finish_reason || payload.done_reason || '',
     };
   } catch {
     return {
@@ -296,7 +299,7 @@ function extractCompleteJsonChunks(buffer) {
   return { chunks, remainder: text.slice(index) };
 }
 
-async function readChatResponse(response, onChunk, signal) {
+export async function readChatResponse(response, onChunk, signal) {
   const reader = response.body?.getReader();
   if (!reader) {
     const text = await response.text();
@@ -323,8 +326,12 @@ async function readChatResponse(response, onChunk, signal) {
   let buffer = '';
   let fullAnswer = '';
   let fullThinking = '';
+  let completed = false;
+  let finishReason = '';
 
-  const append = ({ answer, thinking }) => {
+  const append = ({ answer, thinking, completed: ended, finishReason: reason }) => {
+    completed ||= Boolean(ended);
+    if (reason) finishReason = reason;
     const answerDelta = answer || '';
     const thinkingDelta = thinking || '';
     if (!answerDelta && !thinkingDelta) return;
@@ -394,11 +401,15 @@ async function readChatResponse(response, onChunk, signal) {
     }
 
     flushBuffer({ includeRemainder: true });
+  } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError' || !fullAnswer) throw error;
+    completed = false;
   } finally {
     signal?.removeEventListener?.('abort', onAbort);
   }
 
-  return { answer: fullAnswer, thinking: fullThinking };
+  if (signal?.aborted) throw new DOMException('Generation stopped by user.', 'AbortError');
+  return { answer: fullAnswer, thinking: fullThinking, incomplete: !completed || finishReason === 'length', finishReason };
 }
 
 async function extractApiError(response) {
@@ -477,7 +488,11 @@ export function installGenerationExitCancellation() {
   };
 }
 
-async function requestChat({
+async function requestChat(options) {
+  return completeChatResponse(options, requestChatSegment);
+}
+
+async function requestChatSegment({
   messages,
   images = [],
   systemPrompt,
