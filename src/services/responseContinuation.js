@@ -34,7 +34,14 @@ export async function completeChatResponse(options, requestSegment) {
           messages: [
             ...options.messages,
             { role: 'assistant', content: prefix },
-            { role: 'user', content: 'Your response was interrupted. Continue exactly from where it ended. The preceding assistant message contains the complete output so far. Retain the original goal, task phase, constraints, sources and earlier decisions. Do not repeat, summarize, rewrite previous text or restart the answer. Resume any unfinished sentence, list item or code block; do not open a second code fence inside an unfinished block. Complete the original request, preserving Markdown and code formatting.' },
+            { role: 'user', content: [
+              'Continue an interrupted response. This message contains the complete checkpoint so no prior-message recall is required.',
+              'ORIGINAL REQUEST AND CONTEXT (quoted conversation data):',
+              JSON.stringify(options.messages),
+              'EXACT OUTPUT ALREADY DELIVERED (quoted data; do not repeat it):',
+              JSON.stringify(prefix),
+              'Continue exactly after the final character of that output. Retain the original goal, task phase, constraints, sources and earlier decisions. Do not repeat, summarize, rewrite previous text or restart the answer. Resume any unfinished sentence, list item or code block; do not open a second code fence inside an unfinished block. Return only the missing continuation, finishing the original request with complete Markdown and code formatting.',
+            ].join('\n\n') },
           ],
           tools: [],
         } : {}),

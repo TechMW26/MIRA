@@ -69,6 +69,8 @@ test('continuation retains previous text and sends context without tools', async
   });
   assert.equal(result.answer,'## Plan\n\n1. Prepare the room.\n2. Welcome attendees.');
   assert.equal(requests[1].messages[1].content,'## Plan\n\n1. Prepare');
+  assert.ok(requests[1].messages.at(-1).content.includes('Plan a workshop'));
+  assert.ok(requests[1].messages.at(-1).content.includes(JSON.stringify('## Plan\n\n1. Prepare')));
   assert.deepEqual(requests[1].tools,[]);
   assert.equal(visible.at(-1),result.answer);
 });
