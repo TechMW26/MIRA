@@ -138,6 +138,7 @@ async function requestDeepSeekChat({
   return {
     answer: cleanText(message.content, 100_000).trim(),
     thinking: cleanText(message.reasoning_content, 100_000).trim(),
+    finishReason: result?.choices?.[0]?.finish_reason || 'stop',
     toolCalls,
     model: String(result?.model || payload.model),
   };

@@ -3,6 +3,22 @@ import assert from 'node:assert/strict';
 import { appendContinuation, completeChatResponse } from './responseContinuation.js';
 import { readChatResponse } from './api.js';
 
+test('preserves partial continuation tokens if a later stream throws', async () => {
+  let calls=0;
+  const result=await completeChatResponse({messages:[],requestClass:'task'},async options=>{
+    if(++calls===1)return {answer:'First section. ',incomplete:true};
+    options.onChunk({answerFull:'Second section in progress.'});
+    throw Error('Connection lost');
+  });
+  assert.equal(result.answer,'First section. Second section in progress.');
+  assert.equal(result.incomplete,true);
+});
+
+test('deduplicates a repeated passage longer than 4000 characters', () => {
+  const overlap='A long paragraph. '.repeat(500);
+  assert.equal(appendContinuation('Beginning. '+overlap,overlap+'Final action.'),'Beginning. '+overlap+'Final action.');
+});
+
 test('continues progressing responses beyond three segments without cutting content', async () => {
   let calls = 0;
   const result = await completeChatResponse({messages:[]}, async () => ({answer:`Section ${++calls}.\n`,incomplete:calls < 6}));

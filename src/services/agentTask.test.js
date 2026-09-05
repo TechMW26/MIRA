@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { completeChatResponse } from './responseContinuation.js';
 import {
   agentTaskUsedRecovery,
   agentTaskRequiresResearch,
@@ -10,7 +11,50 @@ import {
   runAgentTask,
   shouldRunAgentTask,
   buildTaskConclusionPrompt,
+  buildTaskConversationContext,
 } from './agentTask.js';
+
+test('task worker keeps old constraints, project context and complete continued step output', async () => {
+  const history = [{role:'user',content:'ORIGINAL_CONSTRAINT: no weekend sessions.'}, ...Array.from({length:10},()=>({role:'assistant',content:'Later discussion.'}))];
+  const context = buildTaskConversationContext(history, 'PROJECT_CONSTRAINT: online workshop.');
+  const long = '## Workshop plan\n' + 'Detailed material.\n'.repeat(1000);
+  let execution = 0;
+  const handoff = await runAgentTask({goal:'Plan the workshop',context,generate:async (prompt, options) => {
+    assert.match(prompt,/ORIGINAL_CONSTRAINT/);
+    assert.match(prompt,/PROJECT_CONSTRAINT/);
+    assert.equal(options.maxTokens,undefined);
+    if(options.phase==='planning') return JSON.stringify([{title:'Draft',instruction:'Draft plan',tool:'reason'},{title:'Review',instruction:'Review plan',tool:'reason'}]);
+    if(options.phase==='executing' && ++execution===1) {
+      let segment=0;
+      return completeChatResponse({messages:[{role:'user',content:prompt}],requestClass:'task'},async request=>{
+        segment++;
+        if(segment===1)return {answer:long,incomplete:true,finishReason:'length'};
+        assert.equal(request.messages[0].content,prompt);
+        assert.equal(request.messages[1].content,long);
+        return {answer:'FINAL_STEP_DETAIL',incomplete:false};
+      });
+    }
+    assert.ok(prompt.includes('FINAL_STEP_DETAIL'));
+    return {answer:'A complete workshop plan with next actions.',incomplete:false};
+  }});
+  assert.match(extractAgentTaskAnswer(handoff),/complete workshop plan/);
+});
+
+test('incomplete steps are preserved as failed and incomplete conclusions are not marked final', async () => {
+  const phases=[];
+  let execution=0;
+  const output=await runAgentTask({goal:'Plan a workshop',onPhase:p=>phases.push(p),generate:async(_,options)=>{
+    if(options.phase==='planning')return JSON.stringify([{title:'Draft',instruction:'Draft plan',tool:'reason'},{title:'Review',instruction:'Review plan',tool:'reason'}]);
+    if(options.phase==='executing') return ++execution===1 ? {answer:'PRESERVED_PARTIAL_STEP',incomplete:true} : {answer:'Review complete',incomplete:false};
+    return {answer:'PRESERVED_PARTIAL_CONCLUSION',incomplete:true};
+  }});
+  assert.equal(phases.filter(p=>p.phase==='step-error').length,1);
+  assert.equal(phases.filter(p=>p.phase==='step-completed').length,1);
+  assert.ok(output.includes('PRESERVED_PARTIAL_STEP'));
+  assert.equal(extractAgentTaskAnswer(output),'');
+  assert.match(extractAgentTaskFallback(output),/PRESERVED_PARTIAL_CONCLUSION/);
+  assert.ok(phases.some(p=>p.phase==='summary-error'));
+});
 
 test('conclusion receives full formatted evidence and conversation context', () => {
   const long = 'Detailed planning evidence.\n'.repeat(2000) + 'FINAL_CRITICAL_DETAIL';
@@ -108,9 +152,9 @@ test('executes planned research and reasoning sequentially before returning the 
   });
   assert.equal(generatedPrompts.length, 3);
   assert.deepEqual(generationOptions, [
-    { phase: 'planning', think: false, maxTokens: 900 },
-    { phase: 'executing', think: false, maxTokens: 1600 },
-    { phase: 'synthesizing', think: false, maxTokens: 4000 },
+    { phase: 'planning', think: false },
+    { phase: 'executing', think: false },
+    { phase: 'synthesizing', think: false },
   ]);
   assert.match(output, /Benchmark/);
   assert.match(output, /product A for speed/);

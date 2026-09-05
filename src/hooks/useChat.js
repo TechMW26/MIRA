@@ -113,6 +113,7 @@ import {
   extractAgentTaskAnswer,
   extractAgentTaskFallback,
   runAgentTask,
+  buildTaskConversationContext,
   shouldRunAgentTask,
 } from '../services/agentTask.js';
 import { isChatTimeoutError } from '../services/chatRequestPolicy.js';
@@ -3056,13 +3057,14 @@ export default function useChat() {
                       throw cancelled;
                     }
                     let result = '';
-                    await sendChatMessage(
+                    const response = await sendChatMessage(
                       [{ role: 'user', content: prompt }],
                       (accumulated) => { result = stripAllControlText(accumulated); },
                       [],
                       {
                         desktopCoding: desktopWorkspaceRequest.active,
                         requestClass: 'task',
+                        returnDetails: true,
                         think: generationOptions.think ?? true,
                         maxTokens: generationOptions.maxTokens,
                         tools: [],
@@ -3074,8 +3076,9 @@ export default function useChat() {
                       cancelled.name = 'AbortError';
                       throw cancelled;
                     }
-                    if (!result.trim()) throw new Error('The task step returned no result.');
-                    return result.trim();
+                    const finalResult = stripAllControlText(response?.answer || result).trim();
+                    if (!finalResult) throw new Error('The task step returned no result.');
+                    return { ...response, answer: finalResult };
                   };
                   return await runAgentTask({
                     goal,
@@ -3083,7 +3086,7 @@ export default function useChat() {
                       latestConversationSubject
                         ? `Recent subject anchor: ${latestConversationSubject}`
                         : '',
-                      buildRecentConversationContext(historySource),
+                      buildTaskConversationContext(historySource, sharedProjectContextBlock),
                     ].filter(Boolean).join('\n'),
                     requiresResearch: agentTaskRequiresResearch(goal, taskRequiresResearch),
                     freshness: needsFreshInformation(content),

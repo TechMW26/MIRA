@@ -699,6 +699,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
   voice = false,
   desktopCoding = false,
   requestClass = 'chat',
+  returnDetails = false,
 } = {}) {
   let latestAnswer = '';
   let latestThinking = '';
@@ -706,21 +707,32 @@ export async function sendChatMessage(messages, onChunk, images = [], {
   let desktopProviderError = null;
   if (desktopCoding && !images.length && !voice) {
     try {
-      const desktop = await requestDesktopAgentChat({
+      const desktopOptions = {
         messages,
         systemPrompt: composeMiraSystemPrompt(systemPrompt),
         tools,
         think,
         maxTokens,
-      });
+      };
+      let desktop = await requestDesktopAgentChat(desktopOptions);
       if (desktop) {
+        if (desktop.finishReason === 'length') {
+          const firstSegment = desktop;
+          let first = true;
+          desktop = await completeChatResponse({ ...desktopOptions, requestClass }, async options => {
+            const segment = first ? firstSegment : await requestDesktopAgentChat(options);
+            first = false;
+            if (!segment) throw new Error('The desktop coding provider became unavailable.');
+            return { ...segment, incomplete: segment.finishReason === 'length' };
+          });
+        }
         const control = toolCallsToControl(desktop.toolCalls);
         const answer = control || String(desktop.answer || '').trim();
         if (!answer) throw new Error('The desktop coding provider returned no result.');
         const thinking = String(desktop.thinking || '').trim();
         if (thinking) onThinking?.(thinking);
         onChunk?.(answer, answer);
-        return answer;
+        return returnDetails ? { ...desktop, answer, incomplete: desktop.incomplete || desktop.finishReason === 'length' } : answer;
       }
     } catch (error) {
       desktopProviderError = error;
@@ -790,7 +802,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
     .trim();
   const finalAnswer = split.answer || latestAnswer || rawWithoutThinkTags;
   if (finalThinking) onThinking?.(finalThinking);
-  if (finalAnswer) return finalAnswer;
+  if (finalAnswer) return returnDetails ? { ...streamed, answer: finalAnswer } : finalAnswer;
 
   // Never promote private reasoning into the visible answer.
   throw new Error('No result in response');
