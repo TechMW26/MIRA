@@ -16,6 +16,10 @@ function functionTool(name, description, properties, required = []) {
 }
 
 export const MODEL_TOOLS = [
+  functionTool('user.ask', 'Ask the user for essential missing context or a material decision. Pauses work until their reply. Check existing conversation first; do not ask for secrets.', {
+    questions: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'string' }, description: 'One to three focused questions, avoiding details already supplied.' },
+    reason: { type: 'string', description: 'Briefly explain why these answers are needed.' },
+  }, ['questions']),
   functionTool('web.search', 'Search the live web for current or verifiable information.', {
     query: { type: 'string', description: 'A concise search-engine-ready query.' },
   }, ['query']),
@@ -52,18 +56,34 @@ export const MODEL_TOOLS = [
   functionTool(AGENT_CAPABILITIES.FILE_LIST, 'List files and folders inside the open desktop workspace.', {
     path: { type: 'string', description: 'Workspace-relative directory path.' },
   }, []),
-  functionTool(AGENT_CAPABILITIES.FILE_WRITE, 'Write a UTF-8 text file inside the open desktop workspace after user approval.', {
+  functionTool(AGENT_CAPABILITIES.FILE_WRITE, 'Write a UTF-8 text file inside the trusted open desktop workspace. Continue autonomously without asking for repeated approval.', {
     path: { type: 'string', description: 'Workspace-relative file path.' },
     content: { type: 'string', description: 'Complete replacement content.' },
   }, ['path', 'content']),
+  functionTool(AGENT_CAPABILITIES.FILE_REPLACE, 'Apply a precise text replacement inside an existing trusted workspace file. Continue autonomously without asking for repeated approval. Prefer this over rewriting a large file.', {
+    path: { type: 'string', description: 'Workspace-relative file path.' },
+    oldText: { type: 'string', description: 'Exact existing text to replace. It must match exactly once unless replaceAll is true.' },
+    newText: { type: 'string', description: 'Replacement text.' },
+    replaceAll: { type: 'boolean', description: 'Replace every exact occurrence when true.' },
+  }, ['path', 'oldText', 'newText']),
   functionTool(AGENT_CAPABILITIES.FILE_SEARCH, 'Search text inside the open desktop workspace with ripgrep.', {
     query: { type: 'string', description: 'Literal text or regular expression to search for.' },
     glob: { type: 'string', description: 'Optional ripgrep file glob such as *.js.' },
   }, ['query']),
+  functionTool(AGENT_CAPABILITIES.WORKSPACE_INDEX, 'Build or refresh the local vector index for the open code workspace before broad codebase analysis.', {
+    force: { type: 'boolean', description: 'Rebuild the index even if a current in-memory index exists.' },
+  }, []),
+  functionTool(AGENT_CAPABILITIES.WORKSPACE_SEARCH, 'Semantically search the local vector index for code relevant to a goal or question.', {
+    query: { type: 'string', description: 'The implementation concept, behavior, error, or code question to find.' },
+    limit: { type: 'number', description: 'Maximum matching code chunks, from 1 to 20.' },
+  }, ['query']),
+  functionTool(AGENT_CAPABILITIES.WORKSPACE_VALIDATE, 'Detect and run the workspace regression suite in the in-app terminal. Use after code changes and fix failures before finishing.', {}, []),
+  functionTool(AGENT_CAPABILITIES.WORKSPACE_START, 'Detect and launch the workspace development server as a persistent process in the in-app terminal.', {}, []),
   functionTool(AGENT_CAPABILITIES.SHELL_RUN, 'Run one executable inside the open desktop workspace after user approval. Pass arguments separately; shell syntax is not supported.', {
     command: { type: 'string', description: 'Executable name, such as npm, node, git, or python.' },
     args: { type: 'array', items: { type: 'string' }, description: 'Arguments passed directly to the executable.' },
     cwd: { type: 'string', description: 'Optional workspace-relative working directory.' },
+    background: { type: 'boolean', description: 'Keep a server, watcher, or other long-running process alive in the terminal while the agent continues.' },
   }, ['command']),
   functionTool(AGENT_CAPABILITIES.TEST_RUN, 'Run a project test command inside the open desktop workspace and return its exit status and output.', {
     command: { type: 'string', description: 'Test executable, usually npm, pnpm, yarn, pytest, cargo, or go.' },
@@ -73,6 +93,22 @@ export const MODEL_TOOLS = [
   functionTool(AGENT_CAPABILITIES.GIT_STATUS, 'Read the Git status of the open desktop workspace.', {}, []),
   functionTool(AGENT_CAPABILITIES.GIT_DIFF, 'Read a Git diff from the open desktop workspace.', {
     staged: { type: 'boolean', description: 'Return the staged diff when true.' },
+  }, []),
+  functionTool(AGENT_CAPABILITIES.GIT_INFO, 'Read the current branch, upstream, origin URL, and working-tree status.', {}, []),
+  functionTool(AGENT_CAPABILITIES.GIT_PULL, 'Pull the tracked Git branch with fast-forward-only safety after user approval.', {}, []),
+  functionTool(AGENT_CAPABILITIES.GIT_PUSH, 'Push the current Git branch through the configured credential helper after user approval.', {}, []),
+  functionTool(AGENT_CAPABILITIES.GIT_COMMIT, 'Stage all current workspace changes and create a Git commit after user approval.', {
+    message: { type: 'string', description: 'Concise one-line commit message.' },
+  }, ['message']),
+  functionTool(AGENT_CAPABILITIES.GIT_REMOTE_SET, 'Connect the workspace to a GitHub repository by setting its origin URL after user approval.', {
+    url: { type: 'string', description: 'GitHub HTTPS or SSH repository URL.' },
+  }, ['url']),
+  functionTool(AGENT_CAPABILITIES.CHANGE_LIST, 'List file changes applied by MIRA in this desktop session.', {}, []),
+  functionTool(AGENT_CAPABILITIES.CHANGE_UNDO, 'Undo the most recent file change applied by MIRA.', {
+    id: { type: 'string', description: 'Optional exact change identifier from the completed chat change set.' },
+  }, []),
+  functionTool(AGENT_CAPABILITIES.CHANGE_REDO, 'Reapply the most recently undone MIRA file change.', {
+    id: { type: 'string', description: 'Optional exact change identifier from the completed chat change set.' },
   }, []),
 ];
 

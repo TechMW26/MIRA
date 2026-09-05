@@ -13,17 +13,20 @@ import { needsFreshInformation, processQuery, shouldUseModelThinking } from '../
 import { assessAndRefinePrompt, shouldRunEnhancer } from '../services/promptEnhancer';
 import {
   createConversation,
+  deleteConversation,
   addMessage,
   updateMessage,
   deleteMessage,
   updateConversation,
   updateConversationTitle,
   addConversationToProject,
+  removeConversationFromProject,
   updateProjectConversation,
   enqueueConversationPrompt,
   acquireConversationRun,
   releaseConversationRun,
   subscribeMessages,
+  getProjectConversation,
   getProjectContext,
   saveProjectContextTurn,
 } from '../services/database';
@@ -48,7 +51,7 @@ import {
 } from '../services/webSearchControl';
 import { buildEvidenceFallbackAnswer, searchWeb } from '../services/webSearch';
 import { expandCompoundWords } from '../services/searchRelevance.js';
-import { formSearchQuery } from '../services/searchQuery';
+import { formSearchQuery, modelSearchQuery } from '../services/searchQuery';
 import {
   extractBrowserRequest,
   isPotentialBrowserControl,
@@ -67,47 +70,215 @@ import {
   toLegacyBrowserRequest,
 } from '../services/toolControl';
 import { executeHostTool } from '../services/toolExecutor';
+import { parseClarification, formatClarification, pendingClarification, clarificationReplyContext } from '../services/clarification.js';
 import {
   assessResponseQuality,
   buildQualityCorrectionPrompt,
   humanizeAssistantText,
   polishAssistantAnswer,
 } from '../services/responseQuality';
-import { detectDocumentRequest, exportDocument, sanitizeDocumentContent } from '../utils/documentExport';
+import { detectDocumentRequest, sanitizeDocumentContent } from '../utils/documentContent.js';
 import { diagnosticLog, diagnosticWarn } from '../services/diagnostics.js';
+import { sendDesktopNotification } from '../services/desktopBridge.js';
+import {
+  conversationHydrationTimeline,
+  hasConversationHydrated,
+  mergeRealtimeAssistantSnapshot,
+} from '../services/chatHydration.js';
 import { buildSearchToolGuidance, decideRetrievalPolicy } from '../services/retrievalPolicy.js';
 import {
   cleanImagePrompt,
   imagePromptSeed,
+  resolveImageSceneContext,
   normalizeImageGenerationOutput,
 } from '../services/imagePrompt.js';
 import {
+  buildAssistantIdentityResponse,
   buildGreetingResponse,
   getPreviousGeneratedImageContext,
   getMostRecentAssistantMessage,
   isPreviousImageEditRequest,
+  isAssistantIdentityQuestion,
   isSimpleGreeting,
 } from '../services/contextPolicy.js';
 import { selectModelTools } from '../services/modelTools.js';
-import { getAgentRuntimeCapabilities } from '../services/agentCapabilities.js';
 import {
+  AGENT_CAPABILITIES,
+  classifyDesktopWorkspaceRequest,
+  extractWorkspaceFileReferences,
+  getAgentRuntimeCapabilities,
+} from '../services/agentCapabilities.js';
+import {
+  agentTaskUsedRecovery,
   agentTaskRequiresResearch,
+  extractAgentTaskAnswer,
   extractAgentTaskFallback,
   runAgentTask,
+  extractTaskClarification,
+  buildTaskConversationContext,
   shouldRunAgentTask,
 } from '../services/agentTask.js';
 import { isChatTimeoutError } from '../services/chatRequestPolicy.js';
 import { buildProjectContextPrompt, buildProjectContextTurn } from '../services/projectContext.js';
+import {
+  extractContextEntities,
+  getLatestConversationSubject,
+  getRecentContextEntities,
+} from '../services/conversationContext.js';
+import { resolveProjectConversationTarget } from '../services/projectChatRecovery.js';
+import { createThrottledRealtimeWriter } from '../services/realtimeSync.js';
+import { createChatSendGate } from '../services/chatStartup.js';
+import {
+  appendDesktopWorkspaceTurn,
+  getDesktopWorkspaceMemory,
+} from '../services/desktopBridge.js';
+import {
+  buildWorkspaceHistoryMessages,
+  buildWorkspaceMemoryPrompt,
+  mergeWorkspaceHistoryMessages,
+} from '../services/workspaceMemory.js';
+import {
+  buildLocalWorkspaceSummary,
+  requestWorkspaceSynthesis,
+} from '../services/workspaceSynthesis.js';
+import {
+  buildDesktopWorkflowSteps,
+  buildRegressionValidationCalls,
+  desktopGoalNeedsMoreWork,
+  desktopWorkflowStageForTool,
+} from '../services/desktopAgentPolicy.js';
 
 const CURRENT_ATTACHMENT_CHAR_LIMIT = 60000;
+const MAX_DESKTOP_AGENT_ROUNDS = 32;
+const MAX_DESKTOP_AGENT_REMINDERS = 4;
+const MAX_DESKTOP_TOOL_RESULT_CHARS = 16000;
+// Additional model passes can double or triple grounded-response latency.
+// Deterministic evidence fallbacks are safer when a completed model draft is
+// unusable or the provider is already failing.
+const ENABLE_MODEL_QUALITY_RETRIES = false;
+
+const DESKTOP_TOOL_NAMES = new Set([
+  AGENT_CAPABILITIES.FILE_READ,
+  AGENT_CAPABILITIES.FILE_LIST,
+  AGENT_CAPABILITIES.FILE_WRITE,
+  AGENT_CAPABILITIES.FILE_REPLACE,
+  AGENT_CAPABILITIES.FILE_SEARCH,
+  AGENT_CAPABILITIES.WORKSPACE_INDEX,
+  AGENT_CAPABILITIES.WORKSPACE_SEARCH,
+  AGENT_CAPABILITIES.WORKSPACE_VALIDATE,
+  AGENT_CAPABILITIES.WORKSPACE_START,
+  AGENT_CAPABILITIES.SHELL_RUN,
+  AGENT_CAPABILITIES.TEST_RUN,
+  AGENT_CAPABILITIES.GIT_STATUS,
+  AGENT_CAPABILITIES.GIT_DIFF,
+  AGENT_CAPABILITIES.GIT_INFO,
+  AGENT_CAPABILITIES.GIT_PULL,
+  AGENT_CAPABILITIES.GIT_PUSH,
+  AGENT_CAPABILITIES.GIT_COMMIT,
+  AGENT_CAPABILITIES.GIT_REMOTE_SET,
+  AGENT_CAPABILITIES.CHANGE_LIST,
+  AGENT_CAPABILITIES.CHANGE_UNDO,
+  AGENT_CAPABILITIES.CHANGE_REDO,
+]);
+
+function desktopToolTitle(call = {}) {
+  const path = String(call.arguments?.path || '').trim();
+  return ({
+    [AGENT_CAPABILITIES.FILE_LIST]: path ? `Inspect ${path}` : 'Inspect workspace',
+    [AGENT_CAPABILITIES.FILE_READ]: path ? `Read ${path}` : 'Read source file',
+    [AGENT_CAPABILITIES.FILE_SEARCH]: 'Search source code',
+    [AGENT_CAPABILITIES.WORKSPACE_INDEX]: 'Build local code index',
+    [AGENT_CAPABILITIES.WORKSPACE_SEARCH]: 'Search local code index',
+    [AGENT_CAPABILITIES.WORKSPACE_VALIDATE]: 'Run regression suite',
+    [AGENT_CAPABILITIES.WORKSPACE_START]: 'Start development server',
+    [AGENT_CAPABILITIES.FILE_WRITE]: path ? `Apply ${path}` : 'Apply file change',
+    [AGENT_CAPABILITIES.FILE_REPLACE]: path ? `Patch ${path}` : 'Patch source file',
+    [AGENT_CAPABILITIES.SHELL_RUN]: 'Run workspace command',
+    [AGENT_CAPABILITIES.TEST_RUN]: 'Run validation',
+    [AGENT_CAPABILITIES.GIT_STATUS]: 'Check working tree',
+    [AGENT_CAPABILITIES.GIT_DIFF]: 'Review applied diff',
+    [AGENT_CAPABILITIES.GIT_INFO]: 'Inspect Git connection',
+    [AGENT_CAPABILITIES.GIT_PULL]: 'Pull Git changes',
+    [AGENT_CAPABILITIES.GIT_PUSH]: 'Push Git changes',
+    [AGENT_CAPABILITIES.GIT_COMMIT]: 'Commit workspace changes',
+    [AGENT_CAPABILITIES.GIT_REMOTE_SET]: 'Connect GitHub repository',
+    [AGENT_CAPABILITIES.CHANGE_LIST]: 'Review MIRA changes',
+    [AGENT_CAPABILITIES.CHANGE_UNDO]: 'Undo MIRA change',
+    [AGENT_CAPABILITIES.CHANGE_REDO]: 'Redo MIRA change',
+  })[call.name] || 'Work on workspace';
+}
+
+function compactActivityLines(value = '', prefix = '', limit = 5) {
+  return String(value || '')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((line) => `${prefix}${line.slice(0, 220)}`);
+}
+
+function boundedChangeLines(value = '', limit = 80) {
+  const lines = String(value || '').split('\n').slice(0, limit).map((line) => line.slice(0, 500));
+  return lines.join('\n').slice(0, 12_000).split('\n');
+}
+
+function desktopChangeSummary(call = {}, result = '') {
+  if (![AGENT_CAPABILITIES.FILE_WRITE, AGENT_CAPABILITIES.FILE_REPLACE].includes(call.name)) return null;
+  let payload = {};
+  try { payload = JSON.parse(String(result || '{}')); } catch {}
+  if (!payload.changeId || !payload.path) return null;
+  const args = call.arguments || {};
+  return {
+    id: payload.changeId,
+    path: payload.path,
+    additions: Array.isArray(payload.additions)
+      ? payload.additions.map((line) => String(line).slice(0, 500))
+      : boundedChangeLines(call.name === AGENT_CAPABILITIES.FILE_WRITE ? args.content : args.newText),
+    removals: Array.isArray(payload.removals)
+      ? payload.removals.map((line) => String(line).slice(0, 500))
+      : call.name === AGENT_CAPABILITIES.FILE_REPLACE ? boundedChangeLines(args.oldText) : [],
+  };
+}
+
+function desktopToolActivity(call = {}, status = 'running', result = '') {
+  const title = desktopToolTitle(call);
+  const marker = status === 'error' ? '✕' : status === 'done' ? '✓' : '•';
+  const lines = [`${marker} ${status === 'running' ? `${title}…` : title}`];
+  const args = call.arguments || {};
+
+  if (status === 'done' && [AGENT_CAPABILITIES.FILE_REPLACE, AGENT_CAPABILITIES.FILE_WRITE].includes(call.name)) {
+    let payload = {};
+    try { payload = JSON.parse(String(result || '{}')); } catch {}
+    const removals = Array.isArray(payload.removals) ? payload.removals.join('\n') : args.oldText;
+    const additions = Array.isArray(payload.additions)
+      ? payload.additions.join('\n')
+      : call.name === AGENT_CAPABILITIES.FILE_WRITE ? args.content : args.newText;
+    lines.push(...compactActivityLines(removals, '  - '));
+    lines.push(...compactActivityLines(additions, '  + '));
+  } else if (status === 'running' && [AGENT_CAPABILITIES.SHELL_RUN, AGENT_CAPABILITIES.TEST_RUN].includes(call.name)) {
+    const command = [args.command, ...(Array.isArray(args.args) ? args.args : [])].filter(Boolean).join(' ');
+    if (command) lines.push(`  $ ${command.slice(0, 300)}`);
+  } else if (status === 'error') {
+    const message = String(result || 'The operation failed.').replace(/\s+/g, ' ').trim();
+    lines.push(`  ${message.slice(0, 320)}`);
+  }
+
+  return lines.join('\n');
+}
 
 function stripAllControlText(text = '') {
   return stripToolControl(stripBrowserControl(stripWebSearchControl(text)));
 }
 
+function isToolNarration(text = '') {
+  return /\b(?:let me|i(?:'ll|\s+will)|checking|searching|browsing|looking\s+up)\b[\s\S]{0,100}\b(?:search|check|verify|browse|internet|web|tool)\b/i
+    .test(String(text || ''));
+}
+
 function applyTaskWorkflowPhase(workflow, update = {}) {
   if (!workflow) return workflow;
   const next = { ...workflow, updatedAt: Date.now() };
+  if (update.phase === 'awaiting-input') return { ...next, phase: 'awaiting-input', status: 'awaiting-input', clarification: update.clarification };
   if (update.phase === 'planning') return { ...next, phase: 'planning', status: 'running' };
   if (update.phase === 'planned') {
     return {
@@ -182,11 +353,10 @@ const EXPLICIT_MEDIA_SEARCH_PATTERN = /\b(show|find|fetch|get|search|look\s+up|p
 const EXPLICIT_VISUAL_WEB_SEARCH_PATTERN = /\b(who\s+is\s+this|who\s+is\s+in\s+this\s+image|find\s+this\s+online|find\s+this\s+on\s+the\s+web|search\s+this\s+product|search\s+this\s+image|search\s+this\s+online|look\s+this\s+up|look\s+this\s+up\s+online|check\s+this\s+online|verify\s+this\s+online|find\s+out\s+what\s+product\s+this\s+is|search\s+the\s+web\s+for\s+this|identify\s+this\s+online)\b/i;
 const EXPLICIT_EXTERNAL_SEARCH_PATTERN = /\b(search|browse|look\s+up|find\s+online|web|internet|online|latest|current|today|recent|live|news|verify|fact[-\s]?check|cross[-\s]?check|up[-\s]?to[-\s]?date)\b/i;
 const CONTEXTUAL_DEVICE_MEDIA_PATTERN = /\b(this|that|the)\s+(device|product|tool|item|object|thing|model|prototype|machine|system)\b|\b(tell me more|more about|details about|background on|explain)\b[^.!?]{0,70}\b(this|that|it|device|product|object|thing|model|prototype|machine|system)\b/i;
-const CONTEXT_REFERENCE_PATTERN = /\b(it|its|this|that|these|those|they|them|the\s+(device|product|tool|item|object|thing|company|brand|manufacturer|maker|producer|person|model|app|software|platform|service|system|prototype|machine))\b/i;
+const CONTEXT_REFERENCE_PATTERN = /\b(it|its|this|that|these|those|they|them|their|theirs|his|her|hers|same|former|latter|(?:the|this|that)\s+(device|product|tool|item|object|thing|company|brand|manufacturer|maker|producer|person|model|app|software|platform|service|system|prototype|machine|game|studio|developer|publisher|market))\b/i;
 const CONTEXTUAL_WEB_RESEARCH_PATTERN = /\b(company|companies|manufacturer|manufactures?|producer|produces?|producing|maker|made\s+by|built\s+by|created\s+by|developed\s+by|owner|owned\s+by|founder|team|organization|brand|official|website|source|origin|specs?|features?|pricing|price|cost|availability|launch|release|details?|in[-\s]?depth|deep\s+dive|full\s+information|complete\s+information|let\s+me\s+know|tell\s+me\s+more|more\s+about|background|research|explain)\b/i;
 const SHORT_CONTEXT_FOLLOWUP_PATTERN = /\b(are\s+you\s+sure|sure\s+about\s+that|really|seriously|wait|why\??|how\s+so|what\s+do\s+you\s+mean|continue|go\s+on|tell\s+me\s+more|more|elaborate|explain\s+that)\b/i;
-const SEARCH_WORTHY_CONTEXT_PATTERN = /\b(company|manufacturer|maker|producer|brand|official\s+website|specs?|pricing|price|cost|availability|launch|release|latest|current|current\s+status|who\s+makes|who\s+owns|what\s+company|where\s+to\s+buy|how\s+much|how\s+many)\b/i;
-const CONTEXT_ENTITY_STOP = new Set(['I', 'The', 'A', 'An', 'It', 'This', 'That', 'These', 'Those', 'You', 'He', 'She', 'We', 'They', 'My', 'Your', 'MIRA', 'AI', 'PDF', 'DOCX', 'PPTX']);
+const SEARCH_WORTHY_CONTEXT_PATTERN = /\b(company|manufacturer|maker|producer|brand|official\s+website|specs?|pricing|price|cost|availability|launch|release|latest|current|current\s+status|market|marketplace|research|analysis|revenue|sales|audience|competitors?|who\s+makes|who\s+owns|what\s+company|where\s+to\s+buy|how\s+much|how\s+many)\b/i;
 const TEXT_ENTITY_RESEARCH_PATTERN = /\b(tell\s+me\s+about|tell\s+me\s+more\s+about|details?\s+about|information\s+about|info\s+about|background\s+on|research|explain|what\s+is|what\s+are|what\s+an|what\s+a|what's|overview\s+of|in\s+detail|deep\s+dive|let\s+me\s+know\s+what)\b/i;
 const MEDIA_RELEVANCE_STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'to', 'for', 'in', 'on', 'with', 'about',
@@ -516,30 +686,6 @@ function wantsContextualDeviceMedia(text = '') {
   return CONTEXTUAL_DEVICE_MEDIA_PATTERN.test(String(text || ''));
 }
 
-function extractContextEntities(text = '') {
-  const matches = String(text || '')
-    .slice(0, 2600)
-    .match(/"([^"]{2,60})"|“([^”]{2,60})”|\b([A-Z][A-Za-z0-9]+(?:[-\s]+[A-Z][A-Za-z0-9]+){0,4})\b|\b([A-Z0-9]{2,}(?:[-\s]+[A-Z0-9]{2,}){0,3})\b/g) || [];
-
-  return Array.from(new Set(
-    matches
-      .map((value) => value.replace(/["“”]/g, '').trim())
-      .filter((value) => value.length > 2 && !CONTEXT_ENTITY_STOP.has(value))
-  ));
-}
-
-function getRecentContextEntities(historySource = []) {
-  const recent = Array.isArray(historySource) ? historySource.slice(-8) : [];
-  const entities = [];
-  for (let index = recent.length - 1; index >= 0; index -= 1) {
-    const message = recent[index];
-    const text = normalizeMessageContent(message?.promptContent || message?.content || '');
-    entities.push(...extractContextEntities(text));
-    if (message?.media?.query) entities.push(...extractContextEntities(message.media.query));
-  }
-  return Array.from(new Set(entities)).slice(0, 5);
-}
-
 function getRecentContextAnchor(historySource = []) {
   const recent = Array.isArray(historySource) ? historySource.slice(-6) : [];
   const source = [...recent].reverse().find((message) => {
@@ -808,7 +954,7 @@ function formatRecentContextMessage(message) {
     text = `${text} Related media/search topic: ${message.media.query}.`.trim();
   }
   if (!text) return '';
-  return `${role}: ${text.slice(0, 700)}`;
+  return `${role}: ${text}`;
 }
 
 function buildRecentConversationContext(historySource = []) {
@@ -817,7 +963,7 @@ function buildRecentConversationContext(historySource = []) {
     .map(formatRecentContextMessage)
     .filter(Boolean);
   if (!recent.length) return '';
-  return recent.join('\n').slice(0, 1800);
+  return recent.join('\n');
 }
 
 function needsRecentConversationContext(text = '', historySource = []) {
@@ -865,11 +1011,12 @@ export default function useChat() {
   const {
     chatConversations,
     currentConversationId,
-    setCurrentConversationId,
     isGenerating,
     setIsGenerating,
+    setIsStartingChat,
     setIsSearching,
     activeProjectId,
+    reserveConversationRoute,
   } = useChatContext();
   const [messages, setMessages] = useState([]);
   const [streamingContent, setStreamingContent] = useState('');
@@ -886,7 +1033,29 @@ export default function useChat() {
   const thinkingRafRef = useRef(null);
   const titleSessionRef = useRef({ conversationId: null, messages: [] });
   const generationRunRef = useRef(0);
+  const sendSequenceRef = useRef(0);
   const activeResponseRef = useRef(null);
+  const workspaceHistoryRef = useRef([]);
+  const optimisticConversationIdRef = useRef(null);
+  const sendGateRef = useRef(createChatSendGate());
+
+  const refreshWorkspaceHistory = useCallback(async () => {
+    try {
+      const memory = await getDesktopWorkspaceMemory();
+      const history = buildWorkspaceHistoryMessages(memory);
+      workspaceHistoryRef.current = history;
+      setMessages((previous) => mergeWorkspaceHistoryMessages(
+        history,
+        currentConversationId
+          ? previous.filter((message) => !message?.workspaceHistory)
+          : [],
+      ));
+    } catch (error) {
+      diagnosticWarn('context', 'desktop workspace history could not be restored', {
+        error: error?.message || 'Unknown workspace history error',
+      });
+    }
+  }, [currentConversationId]);
 
   const persistConversationUpdate = useCallback(async (conversationId, data) => {
     if (!user?.uid || !conversationId) return;
@@ -906,7 +1075,14 @@ export default function useChat() {
     if (abortRef.current) return;
     const visibleValue = humanizeAssistantText(value);
     pendingStreamRef.current = visibleValue;
-    if (activeResponseRef.current) activeResponseRef.current.content = visibleValue;
+    if (activeResponseRef.current) {
+      activeResponseRef.current.content = visibleValue;
+      activeResponseRef.current.syncWriter?.push({
+        content: visibleValue,
+        isStreaming: true,
+        streamUpdatedAt: Date.now(),
+      });
+    }
     if (streamRafRef.current != null) return;
     const schedule = typeof requestAnimationFrame === 'function'
       ? requestAnimationFrame
@@ -948,6 +1124,7 @@ export default function useChat() {
     if (!active?.conversationId || !active?.messageId) return;
 
     const partialContent = String(active.content || '').trim();
+    await active.syncWriter?.finish();
     if (partialContent) {
       setMessages((prev) => prev.map((message) => (
         message.id === active.messageId
@@ -957,6 +1134,7 @@ export default function useChat() {
       await updateMessage(active.conversationId, active.messageId, {
         content: partialContent,
         interrupted: true,
+        isStreaming: false,
       });
       return;
     }
@@ -1012,6 +1190,12 @@ export default function useChat() {
   }, []);
 
   useEffect(() => {
+    refreshWorkspaceHistory();
+    window.addEventListener('mira:workspace-changed', refreshWorkspaceHistory);
+    return () => window.removeEventListener('mira:workspace-changed', refreshWorkspaceHistory);
+  }, [refreshWorkspaceHistory]);
+
+  useEffect(() => {
     const previous = titleSessionRef.current;
     if (previous.conversationId && previous.conversationId !== currentConversationId) {
       refreshConversationTitle(previous.conversationId, previous.messages).catch(() => {});
@@ -1049,11 +1233,20 @@ export default function useChat() {
 
   useEffect(() => {
     if (!currentConversationId) {
-      setMessages([]);
+      optimisticConversationIdRef.current = null;
+      setMessages(workspaceHistoryRef.current);
       return;
     }
 
+    const preserveOptimistic = optimisticConversationIdRef.current === currentConversationId;
+    setMessages((previous) => conversationHydrationTimeline(previous, { preserveOptimistic }));
     const unsub = subscribeMessages(currentConversationId, (msgs) => {
+      if (
+        optimisticConversationIdRef.current === currentConversationId
+        && hasConversationHydrated(msgs)
+      ) {
+        optimisticConversationIdRef.current = null;
+      }
       setMessages((previous) => {
         const previousById = new Map((previous || []).map((msg) => [msg.id, msg]));
         const next = (msgs || []).map((incoming) => {
@@ -1067,40 +1260,68 @@ export default function useChat() {
             lastStableAssistantByIdRef.current.set(incoming.id, incomingContent);
           }
 
-          // Realtime snapshots can briefly emit empty assistant content during
-          // write propagation; keep the last stable finalized content.
-          if (
-            isAssistant
-            && !incomingContent.trim()
-            && !incoming.isStreaming
-            && (stable || String(prev?.content || '').trim())
-          ) {
-            return {
-              ...incoming,
-              content: stable || prev.content,
-            };
-          }
-
-          return incoming;
+          return mergeRealtimeAssistantSnapshot(incoming, prev, stable);
         });
 
         // Preserve local echoes that were rendered instantly on send, until
         // Firebase catches up with the persisted server message.
         const pendingLocalEchoes = (previous || []).filter((msg) => msg?.localEcho);
-        if (!pendingLocalEchoes.length) return next;
+        const merged = mergeWorkspaceHistoryMessages(workspaceHistoryRef.current, next);
+        if (!pendingLocalEchoes.length) return merged;
 
-        const incomingFingerprints = new Set(next.map((msg) => messageFingerprint(msg)));
+        const incomingFingerprints = new Set(merged.map((msg) => messageFingerprint(msg)));
         const unresolvedEchoes = pendingLocalEchoes.filter(
           (msg) => !incomingFingerprints.has(messageFingerprint(msg)),
         );
 
-        if (!unresolvedEchoes.length) return next;
-        return [...next, ...unresolvedEchoes];
+        if (!unresolvedEchoes.length) return merged;
+        return [...merged, ...unresolvedEchoes];
 
       });
     });
     return unsub;
   }, [currentConversationId]);
+
+  useEffect(() => {
+    if (!currentConversationId || activeProjectId || isGenerating) return undefined;
+    const interrupted = messages.filter((message) => (
+      message?.role === 'assistant' && message?.isStreaming
+    ));
+    if (!interrupted.length) return undefined;
+
+    const timer = setTimeout(() => {
+      if (activeResponseRef.current?.conversationId === currentConversationId) return;
+      const interruptedIds = new Set(interrupted.map((message) => message.id));
+      setMessages((previous) => previous.map((message) => (
+        interruptedIds.has(message.id)
+          ? {
+            ...message,
+            content: String(message.content || '').trim()
+              || 'This response was interrupted when the session reloaded. Please retry to continue.',
+            interrupted: true,
+            isStreaming: false,
+          }
+          : message
+      )));
+      interrupted.forEach((message) => {
+        updateMessage(currentConversationId, message.id, {
+          content: String(message.content || '').trim()
+            || 'This response was interrupted when the session reloaded. Please retry to continue.',
+          interrupted: true,
+          isStreaming: false,
+          streamCompletedAt: Date.now(),
+        }).catch((error) => {
+          diagnosticWarn('stream', 'interrupted response recovery failed', {
+            conversationId: currentConversationId,
+            messageId: message.id,
+            error: error?.message || 'Unknown persistence error',
+          });
+        });
+      });
+    }, 2500);
+
+    return () => clearTimeout(timer);
+  }, [activeProjectId, currentConversationId, isGenerating, messages]);
 
   const stopGenerating = useCallback(() => {
     generationRunRef.current += 1;
@@ -1123,11 +1344,24 @@ export default function useChat() {
 
   useEffect(() => {
     const removeExitCancellation = installGenerationExitCancellation();
+    const cancelRouteRun = () => {
+      generationRunRef.current += 1;
+      abortRef.current = true;
+      sendGateRef.current.reset();
+      cancelPendingStreamFlushes();
+      setStreamingContent('');
+      setThinkingContent('');
+      finalizeActiveResponse().catch((error) => {
+        console.warn('Failed to finalize response during chat navigation:', error?.message || error);
+      });
+    };
+    window.addEventListener('mira:chat-route-changing', cancelRouteRun);
     return () => {
       stopChatGeneration();
+      window.removeEventListener('mira:chat-route-changing', cancelRouteRun);
       removeExitCancellation();
     };
-  }, []);
+  }, [cancelPendingStreamFlushes, finalizeActiveResponse]);
 
   const pruneMessagesAfter = useCallback(async (convId, messageId, sourceMessages = messages) => {
     const index = sourceMessages.findIndex((message) => message.id === messageId);
@@ -1143,29 +1377,130 @@ export default function useChat() {
       if ((!content.trim() && attachments.length === 0) || !user) return;
       const interruptExisting = Boolean(options.interruptExisting || options.replaceMessageId);
       if (isGenerating && !interruptExisting) return;
-      const runId = generationRunRef.current + 1;
+      const runId = Math.max(generationRunRef.current, sendSequenceRef.current) + 1;
+      sendSequenceRef.current = runId;
+      if (!sendGateRef.current.acquire(runId, { interrupt: interruptExisting })) {
+        return { busy: true };
+      }
+      setIsStartingChat(true);
+      generationRunRef.current = runId;
+      abortRef.current = false;
       const projectRunToken = `${user.uid}-${Date.now()}-${runId}`;
       const messageAuthor = options.author?.uid ? options.author : profile;
       const isActingForAnotherUser = messageAuthor.uid !== user.uid;
       const requestProfile = isActingForAnotherUser ? messageAuthor : profile;
       let lockedConversationId = null;
-
-      if (activeProjectId && currentConversationId) {
-        const acquired = await acquireConversationRun(currentConversationId, projectRunToken, messageAuthor);
-        if (!acquired) {
-          if (options.queueOnBusy !== false) {
-            await enqueueConversationPrompt(currentConversationId, {
-              content,
-              attachments,
-              webSearch,
-              conversationId: currentConversationId,
-            }, messageAuthor);
-          }
-          return { queued: true };
+      let convId = currentConversationId;
+      let isNewChat = false;
+      let createdConversationId = null;
+      let projectConversationAttached = false;
+      const isStartupCurrent = () => generationRunRef.current === runId && !abortRef.current;
+      const discardCreatedConversation = async () => {
+        if (!createdConversationId) return;
+        if (projectConversationAttached && activeProjectId) {
+          await removeConversationFromProject(user.uid, activeProjectId, createdConversationId).catch(() => {});
         }
-        lockedConversationId = currentConversationId;
+        await deleteConversation(user.uid, createdConversationId).catch(() => {});
+        createdConversationId = null;
+      };
+
+      try {
+        if (activeProjectId && convId) {
+          // A bookmarked/project URL can outlive its deleted conversation.
+          // Recover it as a new chat instead of writing orphan messages and
+          // appearing to ignore the send action.
+          const projectConversation = await getProjectConversation(activeProjectId, convId);
+          const target = resolveProjectConversationTarget({
+            projectId: activeProjectId,
+            conversationId: convId,
+            conversation: projectConversation,
+          });
+          convId = target.conversationId;
+          if (!target.recoveredMissingConversation) {
+            const acquired = await acquireConversationRun(convId, projectRunToken, messageAuthor);
+            if (!acquired) {
+              if (options.queueOnBusy !== false) {
+                await enqueueConversationPrompt(convId, {
+                  content,
+                  attachments,
+                  webSearch,
+                  conversationId: convId,
+                }, messageAuthor);
+              }
+              sendGateRef.current.release(runId);
+              setIsStartingChat(false);
+              return { queued: true };
+            }
+            lockedConversationId = convId;
+          }
+        }
+
+        if (!convId) {
+          isNewChat = true;
+          const conversation = await createConversation(user.uid, 'New Chat');
+          convId = conversation.id;
+          createdConversationId = convId;
+          if (!isStartupCurrent()) {
+            await discardCreatedConversation();
+            sendGateRef.current.release(runId);
+            setIsStartingChat(false);
+            return { cancelled: true };
+          }
+          if (activeProjectId) {
+            await addConversationToProject(user.uid, activeProjectId, convId);
+            projectConversationAttached = true;
+            const acquired = await acquireConversationRun(convId, projectRunToken, messageAuthor);
+            if (!acquired) throw new Error('This project chat became busy. Please send again.');
+            lockedConversationId = convId;
+          }
+
+          if (!isStartupCurrent()) {
+            if (lockedConversationId) {
+              releaseConversationRun(lockedConversationId, projectRunToken).catch(() => {});
+              lockedConversationId = null;
+            }
+            await discardCreatedConversation();
+            sendGateRef.current.release(runId);
+            setIsStartingChat(false);
+            return { cancelled: true };
+          }
+
+          // The persisted conversation and its unique route are prerequisites
+          // for rendering a user turn or dispatching any model work.
+          optimisticConversationIdRef.current = convId;
+          await reserveConversationRoute(convId);
+        }
+
+        if (generationRunRef.current !== runId || abortRef.current) {
+          if (lockedConversationId) {
+            releaseConversationRun(lockedConversationId, projectRunToken).catch(() => {});
+            lockedConversationId = null;
+          }
+          await discardCreatedConversation();
+          sendGateRef.current.release(runId);
+          setIsStartingChat(false);
+          return { cancelled: true };
+        }
+      } catch (preflightError) {
+        if (lockedConversationId) {
+          releaseConversationRun(lockedConversationId, projectRunToken).catch(() => {});
+          lockedConversationId = null;
+        }
+        await discardCreatedConversation();
+        sendGateRef.current.release(runId);
+        setIsStartingChat(false);
+        const failureText = `Sorry, I couldn't start that chat. ${preflightError?.message || 'Please try again.'}`;
+        setMessages((previous) => [...previous, {
+          id: `local-assistant-error-${Date.now()}`,
+          role: 'assistant',
+          content: failureText,
+          type: 'text',
+          isStreaming: false,
+          localOnly: true,
+        }]);
+        sendDesktopNotification({ title: 'MIRA needs your attention', body: failureText }).catch(() => {});
+        return { error: preflightError, answer: failureText };
       }
-      generationRunRef.current = runId;
       const interruptedResponse = options.steering && activeResponseRef.current?.content
         ? { ...activeResponseRef.current }
         : null;
@@ -1180,15 +1515,15 @@ export default function useChat() {
       }
 
       const isCurrentRun = () => generationRunRef.current === runId && !abortRef.current;
-      abortRef.current = false;
       cancelPendingStreamFlushes();
+      setIsStartingChat(false);
       setIsGenerating(true);
       setStreamingContent('');
       setThinkingContent('');
 
-      let convId = currentConversationId;
       const replaceMessageId = options.replaceMessageId || null;
       let assistantMsgId = null;
+      let completedAnswer = '';
 
       const textAttachments = attachments.filter((a) => !a.isImage);
       const imageAttachments = attachments.filter((a) => a.isImage);
@@ -1263,6 +1598,10 @@ export default function useChat() {
       let wantsImageGeneration = promptInterpretation.imageIntent === true;
       let wantsVideoGeneration = promptInterpretation.videoIntent === true;
       const simpleGreeting = !hasImages && attachments.length === 0 && isSimpleGreeting(content);
+      const assistantIdentityQuestion = !hasImages
+        && attachments.length === 0
+        && isAssistantIdentityQuestion(content);
+      const directConversation = simpleGreeting || assistantIdentityQuestion;
       const requestedDocumentFormat = (wantsImageGeneration || wantsVideoGeneration)
         ? null
         : detectDocumentRequest(content, textAttachments.length > 0);
@@ -1274,22 +1613,11 @@ export default function useChat() {
       let documentVisualImages = [];
 
       try {
-        let isNewChat = false;
-        if (!convId) {
-          isNewChat = true;
-          const conv = await createConversation(user.uid, 'New Chat');
-          convId = conv.id;
-          setCurrentConversationId(convId);
-          if (activeProjectId) {
-            await addConversationToProject(user.uid, activeProjectId, convId);
-            const acquired = await acquireConversationRun(convId, projectRunToken, messageAuthor);
-            if (!acquired) throw new Error('This project chat became busy. Please send again.');
-            lockedConversationId = convId;
-          }
-        }
         if (!isCurrentRun()) return;
 
-        let historySource = isNewChat ? [] : messages;
+        let historySource = isNewChat
+          ? messages.filter((message) => message?.workspaceHistory)
+          : messages;
         if (interruptedResponse?.content) {
           const interruptedIndex = historySource.findIndex(
             (message) => message.id === interruptedResponse.messageId,
@@ -1312,8 +1640,10 @@ export default function useChat() {
         }
         if (!isCurrentRun()) return;
 
+        const pendingQuestion = pendingClarification(historySource);
         const previousImageContext = getPreviousGeneratedImageContext(historySource);
-        const previousImagePrompt = cleanImagePrompt(previousImageContext?.prompt || '').slice(0, 4000);
+        const previousImagePrompt = cleanImagePrompt(previousImageContext?.prompt || '');
+        const imageSceneContext = resolveImageSceneContext(content, historySource);
         const previousImageReference = String(previousImageContext?.referenceImage || '').trim();
         const previousVideoPrompt = getLatestGeneratedVideoPrompt(historySource);
         const wantsImageRefinementFollowup = (
@@ -1354,21 +1684,34 @@ export default function useChat() {
           engineNeedsSearch: hasAuthoritativeContext ? false : engineResult.needsSearch,
           websiteInspection: Boolean(websiteInspectionRequest),
           simpleGreeting,
+          directConversation,
           mediaRequested: wantsMediaGallery,
           visualSearch: shouldUseVisualAnchor,
           contextualSearch: shouldUseContextualSearch,
           contextualMedia: shouldAttachContextualMedia || Boolean(textResearchMediaScope),
           hasAuthoritativeContext,
         });
+        const agentRuntime = getAgentRuntimeCapabilities();
+        const desktopWorkspaceRequest = classifyDesktopWorkspaceRequest(content, agentRuntime);
+        let workspaceMemoryBlock = '';
+        if (agentRuntime.runtime === 'desktop' && !directConversation) {
+          try {
+            workspaceMemoryBlock = buildWorkspaceMemoryPrompt(await getDesktopWorkspaceMemory());
+          } catch (memoryError) {
+            diagnosticWarn('context', 'desktop workspace memory could not be loaded', {
+              error: memoryError?.message || 'Unknown workspace memory error',
+            });
+          }
+        }
         const allowedModelTools = selectModelTools({
-          disableTools: simpleGreeting,
+          disableTools: directConversation,
           allowWebSearch: retrievalPolicy.allowSearchTool,
           allowImageGeneration: wantsImageGeneration,
           allowVideoGeneration: wantsVideoGeneration,
-          runtime: getAgentRuntimeCapabilities(),
+          runtime: agentRuntime,
         });
 
-        const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: simpleGreeting });
+        const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: directConversation });
 
         // ── Adaptive user context (token-efficient) ──
         // Cache profile locally so heuristic + future sessions can use it.
@@ -1378,7 +1721,7 @@ export default function useChat() {
           : null;
         let projectImageAnalyses = [];
         let sharedProjectContext = null;
-        if (activeProjectId && !simpleGreeting) {
+        if (activeProjectId && !directConversation) {
           try {
             sharedProjectContext = await getProjectContext(activeProjectId);
           } catch (contextError) {
@@ -1411,6 +1754,22 @@ export default function useChat() {
             });
           }
         };
+        const persistWorkspaceTurn = async (assistantText) => {
+          if (agentRuntime.runtime !== 'desktop' || !String(assistantText || '').trim()) return;
+          try {
+            await appendDesktopWorkspaceTurn({
+              conversationId: convId,
+              turnId: assistantMsgId,
+              user: content,
+              assistant: assistantText,
+              attachments: attachmentData.map((attachment) => attachment.name).filter(Boolean),
+            });
+          } catch (memoryError) {
+            diagnosticWarn('context', 'desktop workspace turn could not be saved', {
+              error: memoryError?.message || 'Unknown workspace memory error',
+            });
+          }
+        };
         const isFirstTurn = (historySource?.length || 0) === 0;
         const contextMode = decideContextMode(content, isFirstTurn);
         const adaptiveLearningEnabled = !isActingForAnotherUser && profile?.preferences?.adaptiveLearning !== false;
@@ -1431,12 +1790,16 @@ export default function useChat() {
           : wantsVideoGeneration
             ? 'CURRENT TURN MODE: The user explicitly requested video generation or refinement. Video generation is allowed for this turn.'
             : 'CURRENT TURN MODE: Respond in text. Do not generate or refine images or videos, do not call media-generation tools, and do not carry a prior media task into this turn.';
-        // Mira's stable identity and behavior contract live in the Ollama
-        // model. Only small request-specific context crosses the network.
+        // Mira's stable identity and behavior contract live in the system
+        // prompt. Only small request-specific context crosses the network.
         const runtimeContextBlock = [
           modalityBoundary,
+          desktopWorkspaceRequest.active
+            ? `DESKTOP WORKSPACE REQUEST: Work against the open workspace now. Begin by inspecting the actual files, continue calling the provided filesystem, command, test, change-review, and Git tools until the request is complete, then report only confirmed results. ${desktopWorkspaceRequest.mutation ? 'This is an implementation request: do not stop at recommendations; apply the requested changes, inspect the resulting diff, run regression validation, and fix failures before answering.' : 'This is an inspection request: read representative source and configuration files before summarizing.'} ${desktopWorkspaceRequest.execution ? 'The user requested execution: run the relevant command in the in-app terminal and use its actual result.' : ''} ${desktopWorkspaceRequest.serverStart ? 'This is a server-start request: launch the detected development server as a persistent terminal process; do not substitute a project summary.' : ''}`
+            : '',
           buildSearchToolGuidance(retrievalPolicy),
           sharedProjectContextBlock,
+          workspaceMemoryBlock,
           responsePreferencesBlock,
           adaptiveContext,
         ]
@@ -1450,6 +1813,8 @@ export default function useChat() {
           type: 'text',
           timestamp: assistantTimestamp,
           generatedBy: messageAuthor,
+          isStreaming: true,
+          streamStartedAt: assistantTimestamp,
         });
         if (replaceMessageId) {
           [, assistantMsgId] = await Promise.all([
@@ -1482,19 +1847,60 @@ export default function useChat() {
           return;
         }
 
+        // The realtime subscription can arrive after a model has already begun
+        // working. Insert the persisted assistant placeholder locally so MIRA's
+        // activity bubble is visible immediately and final updates always have
+        // a timeline record to update.
+        setMessages((previous) => {
+          if (previous.some((message) => message.id === assistantMsgId)) return previous;
+          return [...previous, {
+            id: assistantMsgId,
+            role: 'assistant',
+            content: '',
+            type: 'text',
+            timestamp: assistantTimestamp,
+            generatedBy: messageAuthor,
+            isStreaming: true,
+            streamStartedAt: assistantTimestamp,
+            localEcho: true,
+          }];
+        });
+
         activeResponseRef.current = {
           runId,
           conversationId: convId,
           messageId: assistantMsgId,
           content: '',
+          syncWriter: createThrottledRealtimeWriter(
+            (payload) => updateMessage(convId, assistantMsgId, payload),
+            {
+              intervalMs: activeProjectId ? 250 : 400,
+              onError: (error) => console.warn('Answer live sync failed:', error?.message || error),
+            },
+          ),
         };
 
         if (simpleGreeting) {
           const greetingResponse = buildGreetingResponse(content);
-          await updateMessage(convId, assistantMsgId, { content: greetingResponse });
+          await updateMessage(convId, assistantMsgId, { content: greetingResponse, isStreaming: false });
           setMessages((prev) => prev.map((message) => (
-            message.id === assistantMsgId ? { ...message, content: greetingResponse } : message
+            message.id === assistantMsgId
+              ? { ...message, content: greetingResponse, isStreaming: false, localEcho: false }
+              : message
           )));
+          await persistWorkspaceTurn(greetingResponse);
+          return;
+        }
+
+        if (assistantIdentityQuestion) {
+          const identityResponse = buildAssistantIdentityResponse();
+          await updateMessage(convId, assistantMsgId, { content: identityResponse, isStreaming: false });
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, content: identityResponse, isStreaming: false, localEcho: false }
+              : message
+          )));
+          await persistWorkspaceTurn(identityResponse);
           return;
         }
 
@@ -1512,7 +1918,7 @@ export default function useChat() {
           hasImages,
           hasAttachments: textAttachments.length > 0,
           isReplay: Boolean(replaceMessageId),
-          isGreeting: simpleGreeting,
+          isGreeting: directConversation,
           isDocument: Boolean(requestedDocumentFormat),
         });
         if (enhancerEligible) {
@@ -1523,6 +1929,7 @@ export default function useChat() {
                 await updateMessage(convId, assistantMsgId, {
                   content: decision.question,
                   isClarification: true,
+                  isStreaming: false,
                 });
                 if (isNewChat) {
                   generateSmartTitle(content, decision.question).then((title) => {
@@ -1534,6 +1941,7 @@ export default function useChat() {
                   { role: 'user', content },
                   { role: 'assistant', content: decision.question },
                 ]).catch(() => {});
+                await persistWorkspaceTurn(decision.question);
                 return;
               }
               if (decision.action === 'enhance' && decision.prompt) {
@@ -1550,6 +1958,7 @@ export default function useChat() {
         // into the LLM prompt (would bloat tokens and confuse the model).
         let mediaForMessage = null;
         let generatedMediaForMessage = null;
+        let workspaceChangesForMessage = [];
         let deterministicMediaReply = null;
         let groundingSearchData = null;
         let groundingSearchQuery = '';
@@ -1562,11 +1971,12 @@ export default function useChat() {
           }
 
           const recentContextAnchor = getRecentContextAnchor(historySource);
+          const latestConversationSubject = getLatestConversationSubject(historySource);
           const recentConversationContext = needsRecentConversationContext(content, historySource)
             ? buildRecentConversationContext(historySource)
             : '';
           const recentConversationContextBlock = recentConversationContext
-            ? `\n\n=== RECENT CONVERSATION CONTEXT FOR THIS FOLLOW-UP ===\n${recentConversationContext}\n=== END RECENT CONVERSATION CONTEXT ===\n\nUse this context to resolve the current short follow-up before answering. If the previous turn generated an image, treat questions like "are you sure?" as referring to that generated image/prompt unless the user clearly changes topic.`
+            ? `\n\n=== RECENT CONVERSATION CONTEXT FOR THIS FOLLOW-UP ===\n${latestConversationSubject ? `Immediate subject: ${latestConversationSubject}\n` : ''}${recentConversationContext}\n=== END RECENT CONVERSATION CONTEXT ===\n\nThe immediately preceding exchange is the highest-priority context. Resolve pronouns and possessives such as “it”, “their”, “that game”, or “the company” against that exchange. Do not substitute an older project or search topic unless the user explicitly refers back to it. If the previous turn generated an image, treat questions like "are you sure?" as referring to that generated image/prompt unless the user clearly changes topic.`
             : '';
           if (recentConversationContextBlock) {
             userContent = `${userContent}${recentConversationContextBlock}`;
@@ -1680,17 +2090,17 @@ export default function useChat() {
             const cleanedWords = cleaned.split(/\s+/).filter(Boolean);
             const useCleaned = cleaned && cleanedWords.length >= 1 && cleanedWords.length <= 12;
 
-            const PRONOUN_RE = /\b(it|its|this|that|these|those|they|them|the (device|product|tool|item|object|thing|company|brand|manufacturer|maker|producer|person|model|app|software|platform|service|prototype|machine|system))\b/i;
+            const PRONOUN_RE = CONTEXT_REFERENCE_PATTERN;
             const looksReferential = current.length < 80 || PRONOUN_RE.test(current);
             const fallback = useCleaned ? cleaned : current;
             if (!looksReferential || historySource.length === 0) return fallback;
 
-            const dedup = getRecentContextEntities(historySource).slice(0, 3);
+            const dedup = latestConversationSubject ? [latestConversationSubject] : [];
             if (!dedup.length) return fallback;
 
             // Pull a couple of meaningful keywords from the current message
             // (skip stopwords and the pronouns we used to detect referentiality).
-            const STOP_KW = new Set(['can','you','tell','me','more','about','this','that','the','a','an','is','are','was','were','do','does','did','what','how','why','when','where','please','it','its','they','them','these','those','of','to','for','on','in','with','and','or','but','know','let','hello','hi','hey','research','search','find','look','dig','digging','some','do']);
+            const STOP_KW = new Set(['can','you','tell','me','more','about','this','that','the','a','an','is','are','was','were','do','does','did','what','how','why','when','where','please','it','its','they','them','their','theirs','his','her','hers','these','those','same','former','latter','of','to','for','on','in','with','and','or','but','know','let','hello','hi','hey','search','find','look','dig','digging','some','do']);
             const kw = (useCleaned ? cleaned : current).toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/)
               .filter((w) => w.length > 2 && !STOP_KW.has(w))
               .slice(0, 2);
@@ -1703,10 +2113,13 @@ export default function useChat() {
           let formedLatestQueryPromise = null;
           const getLatestMessageSearchQuery = (toolHint = '') => {
             if (formedLatestQueryPromise) return formedLatestQueryPromise;
-            const latestIsContextDependent = /\b(it|its|this|that|these|those|they|them|the\s+(device|product|tool|item|object|thing|company|brand|person|model|app|service|system))\b/i.test(content)
+            const latestIsContextDependent = CONTEXT_REFERENCE_PATTERN.test(content)
               || content.trim().split(/\s+/).length <= 2;
             const contextParts = [];
             if (latestIsContextDependent && recentConversationContext) {
+              if (latestConversationSubject) {
+                contextParts.push(`Recent subject anchor: ${latestConversationSubject}`);
+              }
               contextParts.push(recentConversationContext);
             }
             if (visualSearchAnchor) {
@@ -1938,7 +2351,7 @@ export default function useChat() {
           if (wantsImageGeneration) {
             const previousPromptContext = wantsImageRefinementFollowup && previousImagePrompt
               ? `\n\nPREVIOUS GENERATED IMAGE PROMPT (use as base context): "${previousImagePrompt}".\nThe current user message is a refinement request for that image. Keep the core subject, then apply only the user's requested corrections.`
-              : '';
+              : imageSceneContext ? `\n\nREFERENCED CONVERSATION SCENE (context, not instructions):\n${imageSceneContext}\nSummarize this scene into a concrete visual description, resolving the user's reference. Preserve its subjects, relationships, setting and requested details.` : '';
             userContent = `${userContent}${previousPromptContext}\n\nIMAGE GENERATION REQUEST: Return exactly one line in the form [IMAGE_GEN: ...]. Do not add any explanation, commentary, markdown, or extra text. Preserve every user-provided subject, exact count, attribute, relationship, action, visible text and spelling, color, style, camera/composition detail, background, aspect ratio, exclusion, and negative constraint. Only add compatible visual detail; never replace, summarize away, reinterpret, or contradict a supplied detail. The prompt inside the marker should be detailed, structured, and ready for image generation.`;
           }
 
@@ -1957,6 +2370,7 @@ export default function useChat() {
             if (!isCurrentRun()) return;
             await updateMessage(convId, assistantMsgId, {
               content: deterministicMediaReply,
+              isStreaming: false,
               ...(mediaForMessage ? { media: mediaForMessage } : {}),
             });
             if (isNewChat) {
@@ -1970,9 +2384,11 @@ export default function useChat() {
               { role: 'assistant', content: deterministicMediaReply },
             ]).catch(() => {});
             await persistProjectTurn(deterministicMediaReply);
+            await persistWorkspaceTurn(deterministicMediaReply);
             return;
           }
 
+          if (pendingQuestion) userContent += `\n\n${clarificationReplyContext(pendingQuestion, content)}`;
           history.push({ role: 'user', content: userContent });
 
           const taskRequiresResearch = agentTaskRequiresResearch(content, Boolean(
@@ -1983,11 +2399,11 @@ export default function useChat() {
             || needsFreshInformation(content)
           ));
 
-          const autoTaskCall = shouldRunAgentTask({
+          const autoTaskCall = !desktopWorkspaceRequest.active && shouldRunAgentTask({
             text: content,
             complexity: engineResult.classification?.complexity || 'low',
             requiresResearch: taskRequiresResearch,
-            simpleGreeting,
+            simpleGreeting: directConversation,
             mediaIntent: Boolean(wantsImageGeneration || wantsVideoGeneration || wantsOnlyMediaGallery),
             websiteInspection: Boolean(websiteInspectionRequest),
           }) ? {
@@ -2001,12 +2417,16 @@ export default function useChat() {
           if (!isCurrentRun()) return;
 
           let fullText = '';
+          let clarificationForMessage = null;
           let finalThinkingText = '';
           let requestFailed = false;
           let requestAborted = false;
           let requestedWebSearchQuery = '';
           let requestedBrowserInspection = null;
-          let requestedToolCall = websiteInspectionRequest || autoTaskCall;
+          let requestedToolCall = websiteInspectionRequest
+            || (desktopWorkspaceRequest.active
+              ? { name: AGENT_CAPABILITIES.FILE_LIST, arguments: { path: '' } }
+              : autoTaskCall);
 
           // ── Response cache check ──
           const cacheKey = makeCacheKey({
@@ -2014,7 +2434,20 @@ export default function useChat() {
             images,
           });
           const cached = cacheKey ? getCachedResponse(cacheKey) : null;
-          if (autoTaskCall && isCurrentRun()) {
+          if (desktopWorkspaceRequest.active && isCurrentRun()) {
+            const workflowSteps = buildDesktopWorkflowSteps(content, desktopWorkspaceRequest);
+            setTaskWorkflow({
+              id: `${convId || 'conversation'}:${runId}`,
+              runId,
+              goal: content.trim(),
+              phase: 'executing',
+              status: 'running',
+              currentStep: 0,
+              steps: workflowSteps,
+              startedAt: Date.now(),
+              updatedAt: Date.now(),
+            });
+          } else if (autoTaskCall && isCurrentRun()) {
             setTaskWorkflow({
               id: `${convId || 'conversation'}:${runId}`,
               runId,
@@ -2030,6 +2463,12 @@ export default function useChat() {
               complexity: engineResult.classification?.complexity || 'low',
               research: taskRequiresResearch,
             });
+          } else if (desktopWorkspaceRequest.active) {
+            // Desktop work starts with deterministic local inspection. Waiting
+            // for the model before the first tool made a busy server prevent
+            // the agent from touching the workspace at all.
+            fullText = '';
+            setIsSearching(false);
           } else if (cached && isCurrentRun()) {
             fullText = humanizeAssistantText(cached);
             setStreamingContent(fullText);
@@ -2076,16 +2515,22 @@ export default function useChat() {
                   requestedWebSearchQuery = controlRequest.query;
                   setIsSearching(true);
                 }
-                const visibleText = stripAllControlText(accumulated);
                 const controlPending = isPotentialToolControl(accumulated) || isPotentialWebSearchControl(accumulated) || isPotentialBrowserControl(accumulated);
+                const hasHiddenControl = Boolean(controlRequest || browserRequest || toolCall || controlPending);
+                const visibleText = hasHiddenControl ? '' : stripAllControlText(accumulated);
                 if (!firstChunkSeen && visibleText && !controlRequest && !browserRequest && !toolCall) { firstChunkSeen = true; setIsSearching(false); }
                 fullText = accumulated;
                 flushStreamingContent(visibleText);
+                if (options.voice && visibleText && !isToolNarration(visibleText)) {
+                  options.onResponseChunk?.(visibleText, { final: false });
+                }
               },
               images,
               {
+                desktopCoding: desktopWorkspaceRequest.active,
                 think: shouldThink,
                 tools: responseModelTools,
+                voice: Boolean(options.voice),
                 onThinking: (accumulated) => {
                   if (!isCurrentRun()) return;
                   const thinkingControlRequest = extractWebSearchRequest(accumulated);
@@ -2148,7 +2593,7 @@ export default function useChat() {
               cancelPendingStreamFlushes();
               setStreamingContent('');
               setThinkingContent('');
-              if (timedOut) {
+              if (timedOut || !ENABLE_MODEL_QUALITY_RETRIES) {
                 fullText = buildEvidenceFallbackAnswer(
                   groundingSearchData,
                   groundingSearchQuery || content,
@@ -2173,6 +2618,7 @@ export default function useChat() {
                     },
                     images,
                     {
+                      desktopCoding: desktopWorkspaceRequest.active,
                       think: false,
                       tools: [],
                     },
@@ -2250,6 +2696,7 @@ export default function useChat() {
                   },
                   images,
                   {
+                    desktopCoding: desktopWorkspaceRequest.active,
                     think: shouldThink,
                     tools: responseModelTools,
                   },
@@ -2261,6 +2708,9 @@ export default function useChat() {
             }
           }
           const finalToolCall = disallowedMediaTool ? null : proposedToolCall;
+          if (finalToolCall?.name === TOOL_NAMES.ASK_USER) {
+            clarificationForMessage = parseClarification(finalToolCall.arguments, pendingQuestion?.goal || content);
+          }
           const browserInspection = requestedBrowserInspection
             || toLegacyBrowserRequest(finalToolCall)
             || extractBrowserRequest(fullText);
@@ -2286,6 +2736,7 @@ export default function useChat() {
                 },
                 images,
                 {
+                  desktopCoding: desktopWorkspaceRequest.active,
                   think: shouldThink,
                   tools: responseModelTools,
                   onThinking: (accumulated) => {
@@ -2304,6 +2755,282 @@ export default function useChat() {
             }
           }
 
+          if (finalToolCall && DESKTOP_TOOL_NAMES.has(finalToolCall.name) && !requestFailed && isCurrentRun()) {
+            cancelPendingStreamFlushes();
+            setStreamingContent('');
+            setThinkingContent('');
+            const agentHistory = [...history];
+            const executedCalls = [];
+            const successfulCalls = [];
+            const desktopToolResults = [];
+            const desktopActivities = [];
+            const publishDesktopActivities = () => {
+              finalThinkingText = `[Agent activity]\n${desktopActivities.join('\n')}`;
+              flushThinkingContent(finalThinkingText);
+            };
+            let changesSinceValidation = false;
+            let validationFailures = [];
+            const pendingDeterministicCalls = extractWorkspaceFileReferences(content).map((path) => ({
+              name: AGENT_CAPABILITIES.FILE_READ,
+              arguments: { path },
+            }));
+            pendingDeterministicCalls.unshift(
+              { name: AGENT_CAPABILITIES.WORKSPACE_INDEX, arguments: {} },
+              { name: AGENT_CAPABILITIES.WORKSPACE_SEARCH, arguments: { query: content, limit: 8 } },
+            );
+            if (desktopWorkspaceRequest.serverStart) {
+              pendingDeterministicCalls.push({ name: AGENT_CAPABILITIES.WORKSPACE_START, arguments: {} });
+            }
+            let currentCall = finalToolCall;
+            let desktopAnswer = '';
+            try {
+              for (let round = 0; round < MAX_DESKTOP_AGENT_ROUNDS && currentCall; round += 1) {
+                if (!isCurrentRun()) return;
+                const stepTitle = desktopToolTitle(currentCall);
+                const workflowStage = desktopWorkflowStageForTool(currentCall.name);
+                setTaskWorkflow((current) => current?.runId === runId ? {
+                  ...current,
+                  phase: 'executing',
+                  status: 'running',
+                  updatedAt: Date.now(),
+                  currentStep: Math.max(0, (current.steps || []).findIndex((step) => step.stage === workflowStage)),
+                  steps: (current.steps || []).map((step) => (
+                    step.stage === workflowStage
+                      ? { ...step, instruction: stepTitle, status: 'running', result: '' }
+                      : step.status === 'running' ? { ...step, status: 'done' } : step
+                  )),
+                } : current);
+
+                const completedCall = currentCall;
+                const activityIndex = desktopActivities.push(desktopToolActivity(completedCall)) - 1;
+                publishDesktopActivities();
+                let toolResult = '';
+                let toolError = null;
+                try {
+                  toolResult = await executeHostTool(completedCall);
+                  successfulCalls.push(completedCall.name);
+                } catch (error) {
+                  toolError = error;
+                  toolResult = `ERROR: ${error?.message || 'The desktop operation failed.'}`;
+                }
+                executedCalls.push(completedCall.name);
+                desktopToolResults.push({
+                  name: completedCall.name,
+                  result: String(toolResult || ''),
+                  ok: !toolError,
+                });
+                desktopActivities[activityIndex] = desktopToolActivity(
+                  completedCall,
+                  toolError ? 'error' : 'done',
+                  toolResult,
+                );
+                if (!toolError) {
+                  const changeSummary = desktopChangeSummary(completedCall, toolResult);
+                  if (changeSummary) workspaceChangesForMessage = [...workspaceChangesForMessage, changeSummary];
+                }
+                publishDesktopActivities();
+                setTaskWorkflow((current) => current?.runId === runId ? {
+                  ...current,
+                  updatedAt: Date.now(),
+                  steps: (current.steps || []).map((step) => (
+                    step.stage === workflowStage
+                      ? { ...step, status: toolError ? 'error' : 'done', result: toolError ? toolResult : 'Completed' }
+                      : step
+                  )),
+                } : current);
+
+                if ([AGENT_CAPABILITIES.FILE_WRITE, AGENT_CAPABILITIES.FILE_REPLACE].includes(completedCall.name) && !toolError) {
+                  changesSinceValidation = true;
+                  validationFailures = [];
+                }
+                if ([AGENT_CAPABILITIES.TEST_RUN, AGENT_CAPABILITIES.WORKSPACE_VALIDATE].includes(completedCall.name) && toolError) {
+                  validationFailures.push(toolResult);
+                }
+
+                agentHistory.push({
+                  role: 'user',
+                  content: [
+                    `=== DESKTOP TOOL RESULT: ${completedCall.name} ===`,
+                    String(toolResult || '').slice(0, MAX_DESKTOP_TOOL_RESULT_CHARS),
+                    '=== END DESKTOP TOOL RESULT ===',
+                    toolError
+                      ? 'The operation failed. Diagnose the actual error, make any necessary correction, and retry or choose a better tool. Do not claim success.'
+                      : 'Continue the original workspace request now. Call the next required desktop tool, or give the final answer only when the requested work and validation are complete.',
+                  ].join('\n'),
+                });
+
+                if ([AGENT_CAPABILITIES.FILE_WRITE, AGENT_CAPABILITIES.FILE_REPLACE].includes(completedCall.name)
+                  && !toolError
+                  && !pendingDeterministicCalls.some((call) => call.name === AGENT_CAPABILITIES.GIT_DIFF)) {
+                  pendingDeterministicCalls.push({ name: AGENT_CAPABILITIES.GIT_DIFF, arguments: {} });
+                }
+
+                if (pendingDeterministicCalls.length) {
+                  currentCall = pendingDeterministicCalls.shift();
+                  desktopAnswer = '';
+                  continue;
+                }
+
+                currentCall = null;
+                for (let reminder = 0; reminder < MAX_DESKTOP_AGENT_REMINDERS; reminder += 1) {
+                  let nextToolCall = null;
+                  let continuation = '';
+                  let continuationError = null;
+                  for (let attempt = 0; attempt < 3; attempt += 1) {
+                    nextToolCall = null;
+                    continuation = '';
+                    try {
+                      await sendChatMessage(
+                        agentHistory,
+                        (accumulated) => {
+                          if (!isCurrentRun()) return;
+                          nextToolCall = extractToolCall(accumulated) || nextToolCall;
+                          continuation = stripAllControlText(accumulated);
+                          flushStreamingContent(continuation);
+                        },
+                        images,
+                        {
+                          desktopCoding: true,
+                          think: shouldThink,
+                          tools: responseModelTools,
+                          // Keep the chat's live work log focused on concrete
+                          // operations and diffs rather than private model
+                          // reasoning.
+                          onThinking: () => {
+                            if (isCurrentRun()) publishDesktopActivities();
+                          },
+                        },
+                      );
+                      continuationError = null;
+                      break;
+                    } catch (error) {
+                      continuationError = error;
+                      if (error?.name === 'AbortError' || attempt === 2 || !isCurrentRun()) throw error;
+                      diagnosticWarn('tool', 'desktop agent continuation failed; retrying', {
+                        runId,
+                        attempt: attempt + 1,
+                        error: error?.message || 'unknown error',
+                      });
+                      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+                    }
+                  }
+                  if (continuationError) throw continuationError;
+
+                  if (nextToolCall?.name === TOOL_NAMES.ASK_USER) {
+                    clarificationForMessage = parseClarification(nextToolCall.arguments, pendingQuestion?.goal || content);
+                    if (clarificationForMessage) {
+                      desktopAnswer = formatClarification(clarificationForMessage);
+                      currentCall = null;
+                      break;
+                    }
+                  }
+                  if (nextToolCall && DESKTOP_TOOL_NAMES.has(nextToolCall.name)) {
+                    currentCall = nextToolCall;
+                    desktopAnswer = '';
+                    break;
+                  }
+
+                  if (desktopWorkspaceRequest.mutation && changesSinceValidation) {
+                    cancelPendingStreamFlushes();
+                    setStreamingContent('');
+                    setThinkingContent('');
+                    pendingDeterministicCalls.push(...buildRegressionValidationCalls());
+                    changesSinceValidation = false;
+                    validationFailures = [];
+                    currentCall = pendingDeterministicCalls.shift();
+                    desktopAnswer = '';
+                    break;
+                  }
+
+                  const incomplete = desktopGoalNeedsMoreWork({
+                    request: desktopWorkspaceRequest,
+                    successfulCalls,
+                    validationFailures,
+                  });
+                  desktopAnswer = continuation.trim();
+                  if ((!incomplete.inspection && !incomplete.mutation && !incomplete.execution && !incomplete.validation)
+                    || reminder === MAX_DESKTOP_AGENT_REMINDERS - 1) break;
+                  agentHistory.push({
+                    role: 'user',
+                    content: incomplete.validation
+                      ? 'Regression validation failed. Inspect the failure, fix the code, and rerun the relevant validation before answering.'
+                      : incomplete.mutation
+                      ? 'You have not implemented the requested change yet. Continue with the appropriate filesystem inspection and write tools. Do not answer with intentions or recommendations.'
+                      : incomplete.execution
+                        ? 'The user asked you to execute work, but no workspace command has run. Call shell.run or test.run now and use the actual terminal result.'
+                        : 'You have only listed filenames. Read or search representative source and configuration files before answering. Respond with the next desktop tool call.',
+                  });
+                }
+              }
+
+              if (currentCall) throw new Error('The desktop agent reached its operation limit before finishing.');
+              if (!desktopAnswer.trim()) throw new Error('The desktop agent completed tools but returned no final response.');
+              fullText = desktopAnswer;
+              setTaskWorkflow((current) => current?.runId === runId ? {
+                ...current,
+                phase: clarificationForMessage ? 'awaiting-input' : 'completed',
+                status: clarificationForMessage ? 'awaiting-input' : 'completed',
+                updatedAt: Date.now(),
+                steps: (current.steps || []).map((step) => (
+                  !clarificationForMessage && (step.status === 'running' || step.status === 'pending')
+                    ? { ...step, status: 'done' }
+                    : step
+                )),
+              } : current);
+            } catch (desktopError) {
+              setTaskWorkflow((current) => current?.runId === runId ? {
+                ...current,
+                phase: 'error',
+                status: 'error',
+                error: desktopError.message,
+                updatedAt: Date.now(),
+                steps: (current.steps || []).map((step) => (
+                  step.status === 'running' ? { ...step, status: 'error', result: desktopError.message } : step
+                )),
+              } : current);
+              const completedSteps = executedCalls.length;
+              if (completedSteps) {
+                if (desktopWorkspaceRequest.serverStart
+                  && successfulCalls.includes(AGENT_CAPABILITIES.WORKSPACE_START)) {
+                  fullText = 'The development server is running in the in-app terminal. Its live output and local preview link will appear there.';
+                } else try {
+                  fullText = await requestWorkspaceSynthesis({
+                    request: content,
+                    toolResults: desktopToolResults,
+                  });
+                  setTaskWorkflow((current) => current?.runId === runId ? {
+                    ...current,
+                    phase: 'completed',
+                    status: 'completed',
+                    error: '',
+                    updatedAt: Date.now(),
+                  } : current);
+                } catch (fallbackError) {
+                  diagnosticWarn('tool', 'remote workspace synthesis unavailable; using local evidence summary', {
+                    runId,
+                    primaryError: desktopError?.message || 'unknown error',
+                    fallbackError: fallbackError?.message || 'unknown error',
+                  });
+                  fullText = buildLocalWorkspaceSummary(content, desktopToolResults);
+                }
+                setTaskWorkflow((current) => current?.runId === runId ? {
+                  ...current,
+                  phase: 'completed',
+                  status: 'completed',
+                  error: '',
+                  updatedAt: Date.now(),
+                  steps: (current.steps || []).map((step) => (
+                    step.status === 'running' || step.status === 'pending' || step.status === 'error'
+                      ? { ...step, status: 'done', result: step.result || 'Completed locally' }
+                      : step
+                  )),
+                } : current);
+              } else {
+                fullText = 'I could not access the selected workspace. Reopen the folder and try again.';
+              }
+            }
+          }
+
           const inlineToolNames = new Set([
             TOOL_NAMES.CALCULATOR,
             TOOL_NAMES.WEATHER,
@@ -2318,7 +3045,7 @@ export default function useChat() {
             TOOL_NAMES.GIT_STATUS,
             TOOL_NAMES.GIT_DIFF,
           ]);
-          if (finalToolCall && inlineToolNames.has(finalToolCall.name) && !requestFailed && isCurrentRun()) {
+          if (finalToolCall && !DESKTOP_TOOL_NAMES.has(finalToolCall.name) && inlineToolNames.has(finalToolCall.name) && !requestFailed && isCurrentRun()) {
             cancelPendingStreamFlushes();
             setStreamingContent('');
             setThinkingContent('');
@@ -2347,15 +3074,18 @@ export default function useChat() {
                       throw cancelled;
                     }
                     let result = '';
-                    await sendChatMessage(
+                    const response = await sendChatMessage(
                       [{ role: 'user', content: prompt }],
                       (accumulated) => { result = stripAllControlText(accumulated); },
                       [],
                       {
+                        desktopCoding: desktopWorkspaceRequest.active,
+                        requestClass: 'task',
+                        returnDetails: true,
                         think: generationOptions.think ?? true,
                         maxTokens: generationOptions.maxTokens,
                         tools: [],
-                        systemPrompt: 'You are an internal planning and execution worker. Complete only the requested private phase. Never call or mention tools, never emit control markers, and never address the end user.',
+                        systemPrompt: 'You are MIRA\'s internal planning and execution worker. Complete only the requested private phase, use the supplied conversation context, and never expose tool mechanics or control markers. When the phase requests final synthesis, return a polished user-ready answer that directly answers the original goal.',
                       },
                     );
                     if (!isCurrentRun()) {
@@ -2363,21 +3093,22 @@ export default function useChat() {
                       cancelled.name = 'AbortError';
                       throw cancelled;
                     }
-                    if (!result.trim()) throw new Error('The task step returned no result.');
-                    return result.trim();
+                    const finalResult = stripAllControlText(response?.answer || result).trim();
+                    if (!finalResult) throw new Error('The task step returned no result.');
+                    return { ...response, answer: finalResult };
                   };
                   return await runAgentTask({
                     goal,
                     context: [
-                      getRecentContextEntities(historySource)[0]
-                        ? `Recent subject anchor: ${getRecentContextEntities(historySource)[0]}`
+                      latestConversationSubject
+                        ? `Recent subject anchor: ${latestConversationSubject}`
                         : '',
-                      buildRecentConversationContext(historySource),
+                      buildTaskConversationContext(historySource, sharedProjectContextBlock),
                     ].filter(Boolean).join('\n'),
                     requiresResearch: agentTaskRequiresResearch(goal, taskRequiresResearch),
                     freshness: needsFreshInformation(content),
                     generate,
-                    search: async (query, { freshness }) => {
+                    search: async (query, { freshness, deepResearch }) => {
                       if (!isCurrentRun()) {
                         const cancelled = new Error('Task workflow was stopped.');
                         cancelled.name = 'AbortError';
@@ -2390,6 +3121,8 @@ export default function useChat() {
                         freshness,
                         includeMedia: false,
                         requireTextResults: true,
+                        deepResearch: Boolean(deepResearch),
+                        crawl: true,
                       }, {
                         attemptsPerQuery: 2,
                         retryEmpty: true,
@@ -2406,6 +3139,7 @@ export default function useChat() {
                 },
               });
               const isTaskResult = finalToolCall.name === TOOL_NAMES.TASK;
+              if (isTaskResult) clarificationForMessage = extractTaskClarification(toolResult);
               if (isTaskResult && isCurrentRun()) {
                 setTaskWorkflow((current) => (
                   current?.runId === runId
@@ -2420,7 +3154,19 @@ export default function useChat() {
                   : `${content}\n\n=== TOOL RESULT ===\n${toolResult}\n=== END TOOL RESULT ===\n\nContinue the original request using this result. Do not emit the same tool call again.`,
               };
               let continuedAnswer = '';
-              try {
+              const completedTaskAnswer = isTaskResult
+                ? (extractAgentTaskAnswer(toolResult) || extractAgentTaskFallback(toolResult))
+                : '';
+              if (completedTaskAnswer) {
+                if (agentTaskUsedRecovery(toolResult)) {
+                  diagnosticWarn('tool', 'task used completed evidence after model recovery', { runId });
+                } else {
+                  diagnosticLog('tool', 'task final answer accepted without redundant synthesis', { runId });
+                }
+                continuedAnswer = completedTaskAnswer;
+                fullText = completedTaskAnswer;
+                flushStreamingContent(completedTaskAnswer);
+              } else try {
                 await sendChatMessage(
                   history,
                   (accumulated) => {
@@ -2430,6 +3176,8 @@ export default function useChat() {
                   },
                   images,
                   {
+                    desktopCoding: desktopWorkspaceRequest.active,
+                    requestClass: isTaskResult ? 'task' : 'chat',
                     think: shouldThink,
                     tools: isTaskResult
                       ? []
@@ -2457,7 +3205,20 @@ export default function useChat() {
               if (isTaskResult && isCurrentRun()) {
                 setTaskWorkflow((current) => (
                   current?.runId === runId
-                    ? { ...current, phase: 'completed', status: 'completed', updatedAt: Date.now() }
+                    ? (() => {
+                      const failedSteps = (current.steps || []).filter((step) => step.status === 'error').length;
+                      const summaryMissing = !extractAgentTaskAnswer(toolResult);
+                      if (clarificationForMessage) return { ...current, phase: 'awaiting-input', status: 'awaiting-input', clarification: clarificationForMessage, error: '' };
+                      return {
+                        ...current,
+                        phase: failedSteps || summaryMissing ? 'partial' : 'completed',
+                        status: failedSteps || summaryMissing ? 'partial' : 'completed',
+                        error: failedSteps
+                          ? `${failedSteps} workflow step${failedSteps === 1 ? '' : 's'} could not be completed.`
+                          : summaryMissing ? 'The final answer could not be completed. Task details are preserved.' : '',
+                        updatedAt: Date.now(),
+                      };
+                    })()
                     : current
                 ));
               }
@@ -2487,8 +3248,15 @@ export default function useChat() {
             fullText = `[VIDEO_GEN: ${String(finalToolCall.arguments.prompt).trim()}]`;
           }
 
+          if (clarificationForMessage) {
+            fullText = formatClarification(clarificationForMessage);
+            wantsImageGeneration = false;
+            wantsVideoGeneration = false;
+            requestedWebSearchQuery = '';
+            setTaskWorkflow(current => current?.runId === runId ? { ...current, phase: 'awaiting-input', status: 'awaiting-input', clarification: clarificationForMessage } : current);
+          }
           if (wantsImageGeneration && !requestFailed) {
-            fullText = normalizeImageGenerationOutput(fullText, content, wantsImageRefinementFollowup ? previousImagePrompt : '');
+            fullText = normalizeImageGenerationOutput(fullText, content, wantsImageRefinementFollowup ? previousImagePrompt : imageSceneContext);
             const imagePrompt = extractImageGenerationPrompt(fullText);
             if (imagePrompt && isCurrentRun()) {
               const generation = {
@@ -2505,6 +3273,7 @@ export default function useChat() {
                   allowNsfw: false,
                   referenceImage: wantsImageRefinementFollowup ? previousImageReference : '',
                 });
+                if (!persistedImage?.url) throw new Error('Image persistence returned no asset URL.');
                 if (persistedImage?.url) {
                   generatedMediaForMessage = {
                     images: [persistedImage],
@@ -2513,6 +3282,10 @@ export default function useChat() {
                 }
               } catch (persistErr) {
                 console.warn('Generated image persistence failed:', persistErr?.message);
+                // Never leave a generation marker that the renderer can fetch
+                // again with a different result after persistence fails.
+                fullText = 'The image could not be saved. Please retry image generation.';
+                generatedMediaForMessage = null;
               }
             }
           } else if (wantsVideoGeneration && !requestFailed) {
@@ -2520,8 +3293,9 @@ export default function useChat() {
           }
 
           // ── Model-driven fallback web search ──
-          // Execute retrieval only after MIRA explicitly requests web.search.
-          // Host-side confidence heuristics must never initiate a search.
+          // The factual retrieval gate prefetches mandatory evidence above.
+          // This path handles additional web.search calls explicitly requested
+          // by MIRA when no prefetched result satisfied the turn.
           const explicitSearchRequest = extractWebSearchRequest(fullText);
           if (explicitSearchRequest?.query) {
             if (requestedWebSearchQuery !== explicitSearchRequest.query) {
@@ -2531,6 +3305,60 @@ export default function useChat() {
               });
             }
             requestedWebSearchQuery = explicitSearchRequest.query;
+          }
+
+          // If the host already attached live evidence, a repeated search call
+          // is a provider control mistake rather than a reason to browse twice.
+          // Re-run synthesis once without tools so the user receives the actual
+          // grounded answer and neither chat nor TTS exposes the control text.
+          const requestedSearchAlreadyGrounded = Boolean(
+            !requestFailed
+            && requestedWebSearchQuery
+            && groundingSearchData?.results?.length
+            && normalizeSearchComparison(requestedWebSearchQuery) === normalizeSearchComparison(groundingSearchQuery),
+          );
+          if (requestedSearchAlreadyGrounded && !ENABLE_MODEL_QUALITY_RETRIES && isCurrentRun()) {
+            fullText = buildEvidenceFallbackAnswer(
+              groundingSearchData,
+              groundingSearchQuery || content,
+            );
+            requestedWebSearchQuery = '';
+            if (requestedToolCall?.name === TOOL_NAMES.WEB_SEARCH) requestedToolCall = null;
+          } else if (requestedSearchAlreadyGrounded && isCurrentRun()) {
+            diagnosticWarn('search', 'model repeated an already-completed search; regenerating from attached evidence', {
+              runId,
+              query: String(requestedWebSearchQuery).slice(0, 180),
+            });
+            cancelPendingStreamFlushes();
+            setStreamingContent('');
+            setThinkingContent('');
+            let groundedRetryText = '';
+            try {
+              await sendChatMessage(
+                history,
+                (accumulated) => {
+                  if (!isCurrentRun()) return;
+                  groundedRetryText = stripAllControlText(accumulated);
+                  flushStreamingContent(groundedRetryText);
+                },
+                images,
+                {
+                  desktopCoding: desktopWorkspaceRequest.active,
+                  think: false,
+                  tools: [],
+                  voice: Boolean(options.voice),
+                },
+              );
+              if (groundedRetryText.trim()) fullText = groundedRetryText.trim();
+            } catch (groundedRetryError) {
+              diagnosticWarn('search', 'grounded control recovery failed; using evidence fallback', {
+                runId,
+                error: groundedRetryError?.message || 'Unknown grounded synthesis error',
+              });
+              fullText = buildEvidenceFallbackAnswer(groundingSearchData, groundingSearchQuery || content);
+            }
+            requestedWebSearchQuery = '';
+            if (requestedToolCall?.name === TOOL_NAMES.WEB_SEARCH) requestedToolCall = null;
           }
           const autoSearchEligible =
             !requestFailed &&
@@ -2567,6 +3395,7 @@ export default function useChat() {
               },
               images,
               {
+                desktopCoding: desktopWorkspaceRequest.active,
                 think: shouldThink,
                 tools: [],
                 onThinking: (accumulated) => {
@@ -2590,9 +3419,13 @@ export default function useChat() {
             setStreamingContent('');
             setThinkingContent('');
             try {
-              const fallbackQuery = await getLatestMessageSearchQuery(requestedWebSearchQuery)
+              // The model has already resolved conversation references and
+              // supplied a search-engine-ready tool argument. Preserve that
+              // decision exactly; the query planner and deterministic cleanup
+              // exist only for requests without a usable model tool query.
+              const fallbackQuery = modelSearchQuery(requestedWebSearchQuery)
+                || await getLatestMessageSearchQuery()
                 || buildContextualSearchQuery(content)
-                || requestedWebSearchQuery
                 || content;
               const fallbackFreshnessRequested = needsFreshInformation(content) || needsFreshInformation(fallbackQuery);
               const fallbackData = await searchWeb({
@@ -2653,6 +3486,7 @@ export default function useChat() {
                     },
                     images,
                     {
+                      desktopCoding: desktopWorkspaceRequest.active,
                       think: false,
                       tools: [],
                       onThinking: (accumulated) => {
@@ -2701,6 +3535,8 @@ export default function useChat() {
           // relevant evidence. Reject that draft and regenerate once with a
           // stronger model and a precise correction contract.
           const qualityEligible =
+            !clarificationForMessage
+            &&
             !requestFailed
             && isCurrentRun()
             && !wantsImageGeneration
@@ -2718,7 +3554,18 @@ export default function useChat() {
             })
             : { ok: true, reasons: [] };
 
-          if (!qualityAssessment.ok && isCurrentRun()) {
+          if (!qualityAssessment.ok && !ENABLE_MODEL_QUALITY_RETRIES && isCurrentRun()) {
+            diagnosticWarn('model', 'quality fallback activated without another model pass', {
+              runId,
+              reasons: qualityAssessment.reasons,
+            });
+            fullText = buildEvidenceFallbackAnswer(
+              groundingSearchData,
+              groundingSearchQuery || content,
+            );
+          }
+
+          if (!qualityAssessment.ok && ENABLE_MODEL_QUALITY_RETRIES && isCurrentRun()) {
             diagnosticWarn('model', 'quality rewrite activated', {
               runId,
               reasons: qualityAssessment.reasons,
@@ -2756,6 +3603,7 @@ export default function useChat() {
                 },
                 images,
                 {
+                  desktopCoding: desktopWorkspaceRequest.active,
                   think: true,
                   tools: responseModelTools,
                   onThinking: (accumulated) => {
@@ -2784,8 +3632,12 @@ export default function useChat() {
             fullText = polishAssistantAnswer(fullText, {
               grounded: Boolean(groundingSearchData),
             });
+            completedAnswer = fullText;
+            if (options.voice) {
+              options.onResponseChunk?.(fullText, { final: true });
+            }
 
-            const requestedFormat = requestedDocumentFormat;
+            const requestedFormat = clarificationForMessage ? null : requestedDocumentFormat;
             let titleSource = fullText;
             if (requestedFormat) {
               const sanitizedContent = ensureVerifiedDocumentImages(sanitizeDocumentContent(fullText), documentVisualImages);
@@ -2796,32 +3648,48 @@ export default function useChat() {
               titleSource = documentContent;
               const documentUpdate = {
                 content: documentContent,
+                isStreaming: false,
                 ...(finalThinkingText ? { thinkingContent: finalThinkingText } : {}),
+                ...(workspaceChangesForMessage.length ? { workspaceChanges: workspaceChangesForMessage } : {}),
                 exportFormat: requestedFormat,
                 exportStatus: 'ready',
               };
               try {
                 const filename = `mira-${requestedFormat}-${Date.now()}.${requestedFormat}`;
+                const { exportDocument } = await import('../utils/documentExport.js');
                 await exportDocument(documentContent, requestedFormat, filename);
               } catch (exportErr) {
                 documentUpdate.exportStatus = 'failed';
                 documentUpdate.exportError = exportErr?.message || 'Export failed';
               }
+              await activeResponseRef.current?.syncWriter?.finish();
               await updateMessage(convId, assistantMsgId, documentUpdate);
-              setMessages((prev) => prev.map((msg) => (
-                msg.id === assistantMsgId ? { ...msg, ...documentUpdate } : msg
-              )));
+              setMessages((prev) => {
+                const found = prev.some((msg) => msg.id === assistantMsgId);
+                const next = prev.map((msg) => (
+                  msg.id === assistantMsgId ? { ...msg, ...documentUpdate, localEcho: false } : msg
+                ));
+                return found ? next : [...next, { id: assistantMsgId, role: 'assistant', type: 'text', ...documentUpdate }];
+              });
             } else {
               const assistantUpdate = {
                 content: fullText,
+                ...(clarificationForMessage ? { clarification: clarificationForMessage } : {}),
+                isStreaming: false,
                 ...(finalThinkingText ? { thinkingContent: finalThinkingText } : {}),
+                ...(workspaceChangesForMessage.length ? { workspaceChanges: workspaceChangesForMessage } : {}),
                 ...(mediaForMessage ? { media: mediaForMessage } : {}),
                 ...(generatedMediaForMessage ? { generatedMedia: generatedMediaForMessage } : {}),
               };
+              await activeResponseRef.current?.syncWriter?.finish();
               await updateMessage(convId, assistantMsgId, assistantUpdate);
-              setMessages((prev) => prev.map((msg) => (
-                msg.id === assistantMsgId ? { ...msg, ...assistantUpdate } : msg
-              )));
+              setMessages((prev) => {
+                const found = prev.some((msg) => msg.id === assistantMsgId);
+                const next = prev.map((msg) => (
+                  msg.id === assistantMsgId ? { ...msg, ...assistantUpdate, localEcho: false } : msg
+                ));
+                return found ? next : [...next, { id: assistantMsgId, role: 'assistant', type: 'text', ...assistantUpdate }];
+              });
             }
 
             if (isNewChat) {
@@ -2836,45 +3704,89 @@ export default function useChat() {
             ];
             refreshConversationTitle(convId, titleTranscript).catch(() => {});
             await persistProjectTurn(titleSource);
+            await persistWorkspaceTurn(titleSource);
+            sendDesktopNotification({
+              title: 'MIRA',
+              body: fullText,
+            }).catch(() => {});
           }
         }
       } catch (err) {
         console.error('Send message error:', err);
-        if (generationRunRef.current === runId && !abortRef.current && assistantMsgId) {
+        if (generationRunRef.current === runId && !abortRef.current) {
           const failureText = `Sorry, I couldn't complete that response. ${err?.message || 'Please try again.'}`;
-          setMessages((prev) => prev.map((msg) => (
-            msg.id === assistantMsgId
-              ? { ...msg, content: failureText, isStreaming: false }
-              : msg
-          )));
-          updateMessage(convId, assistantMsgId, {
-            content: failureText,
-          }).catch((persistErr) => {
-            console.warn('Failed to persist terminal chat error:', persistErr?.message);
-          });
+          completedAnswer = failureText;
+          if (assistantMsgId) {
+            setMessages((prev) => {
+              const found = prev.some((msg) => msg.id === assistantMsgId);
+              const next = prev.map((msg) => (
+                msg.id === assistantMsgId
+                  ? { ...msg, content: failureText, isStreaming: false, localEcho: false }
+                  : msg
+              ));
+              return found ? next : [...next, {
+                id: assistantMsgId,
+                role: 'assistant',
+                content: failureText,
+                type: 'text',
+                isStreaming: false,
+              }];
+            });
+            await activeResponseRef.current?.syncWriter?.finish();
+            updateMessage(convId, assistantMsgId, {
+              content: failureText,
+              isStreaming: false,
+            }).catch((persistErr) => {
+              console.warn('Failed to persist terminal chat error:', persistErr?.message);
+            });
+          } else {
+            // Persistence can fail before an assistant record exists. Always
+            // surface a terminal response locally instead of leaving the user
+            // bubble beside an endless blank generation state.
+            setMessages((prev) => [...prev, {
+              id: `local-assistant-error-${Date.now()}`,
+              role: 'assistant',
+              content: failureText,
+              type: 'text',
+              isStreaming: false,
+              localOnly: true,
+            }]);
+          }
+          sendDesktopNotification({ title: 'MIRA needs your attention', body: failureText }).catch(() => {});
         }
       } finally {
+        sendGateRef.current.release(runId);
+        setIsStartingChat(false);
         if (lockedConversationId) {
           releaseConversationRun(lockedConversationId, projectRunToken).catch((error) => {
             console.warn('Failed to release project chat run:', error?.message);
           });
         }
         if (generationRunRef.current !== runId) return;
-        if (activeResponseRef.current?.runId === runId) activeResponseRef.current = null;
+        if (activeResponseRef.current?.runId === runId) {
+          await activeResponseRef.current.syncWriter?.finish();
+          await updateMessage(
+            activeResponseRef.current.conversationId,
+            activeResponseRef.current.messageId,
+            { isStreaming: false, streamCompletedAt: Date.now() },
+          ).catch(() => {});
+          activeResponseRef.current = null;
+        }
         cancelPendingStreamFlushes();
         setIsGenerating(false);
         setIsSearching(false);
         setStreamingContent('');
         setThinkingContent('');
       }
+      return { answer: completedAnswer };
     },
     [
       currentConversationId,
       isGenerating,
       messages,
       user,
-      setCurrentConversationId,
       setIsGenerating,
+      setIsStartingChat,
       setIsSearching,
       activeProjectId,
       normalizeImageForUpload,
@@ -2883,6 +3795,7 @@ export default function useChat() {
       persistConversationUpdate,
       finalizeActiveResponse,
       profile,
+      reserveConversationRoute,
     ]
   );
 

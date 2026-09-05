@@ -2,6 +2,8 @@ const TURN_TEXT_LIMIT = 900;
 const DOCUMENT_TEXT_LIMIT = 1100;
 const IMAGE_TEXT_LIMIT = 800;
 const DEFAULT_PROMPT_LIMIT = 9000;
+const PROJECT_INSTRUCTIONS_LIMIT = 6000;
+const PROJECT_REFERENCE_LIMIT = 2600;
 
 function cleanSharedText(value = '') {
   return String(value || '')
@@ -88,16 +90,19 @@ export function buildProjectContextPrompt(projectContext, {
   maxChars = DEFAULT_PROMPT_LIMIT,
 } = {}) {
   const conversations = projectContext?.conversations;
-  if (!conversations || typeof conversations !== 'object') return '';
+  const projectProfile = projectContext?.projectProfile || {};
+  const projectInstructions = summarizeProjectText(projectProfile.instructions, PROJECT_INSTRUCTIONS_LIMIT);
+  const projectReferences = Object.values(projectProfile.documents || {})
+    .filter((document) => document && typeof document === 'object' && document.summary);
 
   const turns = [];
-  Object.entries(conversations).forEach(([conversationId, conversation]) => {
+  Object.entries(conversations && typeof conversations === 'object' ? conversations : {}).forEach(([conversationId, conversation]) => {
     Object.entries(conversation?.turns || {}).forEach(([turnId, turn]) => {
       if (!turn || typeof turn !== 'object') return;
       turns.push({ ...turn, turnId, conversationId });
     });
   });
-  if (!turns.length) return '';
+  if (!turns.length && !projectInstructions && !projectReferences.length) return '';
 
   const chronologicalTurns = [...turns]
     .sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0));
@@ -113,6 +118,17 @@ export function buildProjectContextPrompt(projectContext, {
   const state = { length: 0, limit: Math.max(1800, Number(maxChars) || DEFAULT_PROMPT_LIMIT) };
   appendWithinLimit(lines, 'PROJECT SHARED CONTEXT (summarized across chats in this project)', state);
   appendWithinLimit(lines, 'Use this as background knowledge. Prefer the current user request and current-chat evidence if anything conflicts. Do not claim these summaries are verbatim source text.', state);
+
+  if (projectInstructions) {
+    appendWithinLimit(lines, `PROJECT INSTRUCTIONS: ${projectInstructions}`, state);
+  }
+  projectReferences.forEach((document) => {
+    appendWithinLimit(
+      lines,
+      `Project reference — ${summarizeProjectText(document.name || 'Untitled document', 180)}: ${summarizeProjectText(document.summary, PROJECT_REFERENCE_LIMIT)}`,
+      state,
+    );
+  });
 
   const documents = [];
   const images = [];

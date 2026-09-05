@@ -21,6 +21,10 @@ import {
   Users,
   Bell,
   Check,
+  BookOpen,
+  FileText,
+  Upload,
+  Save,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useChatContext } from '../../contexts/ChatContext';
@@ -29,6 +33,7 @@ import MiraLogo from '../common/MiraLogo';
 import useUserProfile from '../../hooks/useUserProfile';
 import {
   subscribeConversations,
+  getConversation,
   deleteConversation,
   subscribeProjects,
   createProject,
@@ -39,14 +44,23 @@ import {
   inviteProjectMember,
   removeProjectMember,
   subscribeProjectConversations,
+  getProjectConversation,
   subscribeProjectInvitations,
   subscribeOutgoingProjectInvitations,
   acceptProjectInvitation,
   declineProjectInvitation,
   cancelProjectInvitation,
+  updateProjectInstructions,
+  addProjectReferenceDocument,
+  removeProjectReferenceDocument,
 } from '../../services/database';
 import { groupConversationsByDate } from '../../utils/helpers';
 import { stopChatGeneration } from '../../services/api';
+import { extractFileText, isExtractableFile } from '../../utils/fileParser';
+import {
+  MISSING_CONVERSATION_GRACE_MS,
+  shouldDeferMissingConversationReset,
+} from '../../services/chatHydration.js';
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
@@ -56,11 +70,13 @@ export default function Sidebar() {
     startNewChat, sidebarOpen, setSidebarOpen, setShowSettings,
     activeProjectId, setActiveProjectId,
     unlockProject, isProjectUnlocked,
+    pendingConversationId, confirmConversationRoute,
   } = useChatContext();
 
   // Auto-hide only after the pointer has remained outside for three seconds.
   // Internal navigation never closes the sidebar; the close button remains explicit.
   const hideTimer = useRef(null);
+  const missingConversationTimer = useRef(null);
   const cancelHide = useCallback(() => {
     if (hideTimer.current) {
       clearTimeout(hideTimer.current);
@@ -81,6 +97,7 @@ export default function Sidebar() {
   }, [sidebarOpen, cancelHide]);
 
   const [conversations, setConversations] = useState([]);
+  const [conversationsReady, setConversationsReady] = useState(false);
   const [projects, setProjects] = useState([]);
   const [sharedProjectConversations, setSharedProjectConversations] = useState([]);
   const [sharedProjectConversationsReady, setSharedProjectConversationsReady] = useState(false);
@@ -106,13 +123,22 @@ export default function Sidebar() {
   const [inviteAction, setInviteAction] = useState('');
   const [inviteActionError, setInviteActionError] = useState('');
   const [dismissedInviteId, setDismissedInviteId] = useState('');
+  const [knowledgeProject, setKnowledgeProject] = useState(null);
+  const [projectInstructions, setProjectInstructions] = useState('');
+  const [knowledgeStatus, setKnowledgeStatus] = useState('');
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const projectFileInputRef = useRef(null);
   const sidebarRef = useRef(null);
   const contextMenuRef = useRef(null);
   const [moveMenuLeft, setMoveMenuLeft] = useState(false);
 
   useEffect(() => {
     if (!user) return;
-    const unsub1 = subscribeConversations(user.uid, setConversations);
+    setConversationsReady(false);
+    const unsub1 = subscribeConversations(user.uid, (next) => {
+      setConversations(next);
+      setConversationsReady(true);
+    });
     const unsub2 = subscribeProjects(user.uid, setProjects);
     const unsub3 = subscribeProjectInvitations(user.uid, setProjectInvitations);
     return () => { unsub1(); unsub2(); unsub3(); };
@@ -146,17 +172,64 @@ export default function Sidebar() {
   }, [activeProjectId]);
 
   useEffect(() => {
+    let cancelled = false;
+    if (missingConversationTimer.current) {
+      clearTimeout(missingConversationTimer.current);
+      missingConversationTimer.current = null;
+    }
     if (currentConversationId) {
-      if (activeProjectId && !sharedProjectConversationsReady) return;
-      if (!activeProjectId && conversations.length === 0) return;
       const exists = conversations.some((conversation) => conversation.id === currentConversationId)
         || sharedProjectConversations.some((conversation) => conversation.id === currentConversationId);
-      if (!exists) {
-        stopChatGeneration();
-        setCurrentConversationId(null);
+      if (exists) {
+        confirmConversationRoute(currentConversationId);
+      } else if (!shouldDeferMissingConversationReset({
+        conversationId: currentConversationId,
+        pendingConversationId,
+        conversationsReady: activeProjectId ? sharedProjectConversationsReady : conversationsReady,
+        existsInList: exists,
+      })) {
+        // Subscription lists can be stale after a REST write. Clear a route
+        // only after the database authoritatively confirms that it is absent.
+        missingConversationTimer.current = setTimeout(async () => {
+          try {
+            const conversation = activeProjectId
+              ? await getProjectConversation(activeProjectId, currentConversationId)
+              : await getConversation(user?.uid, currentConversationId);
+            if (cancelled) return;
+            if (conversation) {
+              confirmConversationRoute(currentConversationId);
+              return;
+            }
+            stopChatGeneration();
+            setCurrentConversationId(null);
+          } catch (error) {
+            // Network uncertainty must not destroy a valid in-progress route.
+            console.warn('Conversation existence check failed:', error?.message || error);
+          } finally {
+            missingConversationTimer.current = null;
+          }
+        }, MISSING_CONVERSATION_GRACE_MS);
       }
     }
-  }, [activeProjectId, currentConversationId, conversations, setCurrentConversationId, sharedProjectConversations, sharedProjectConversationsReady]);
+    return () => {
+      cancelled = true;
+      if (missingConversationTimer.current) {
+        clearTimeout(missingConversationTimer.current);
+        missingConversationTimer.current = null;
+      }
+    };
+  }, [
+    activeProjectId,
+    confirmConversationRoute,
+    conversations,
+    conversationsReady,
+    currentConversationId,
+    pendingConversationId,
+    setCurrentConversationId,
+    sharedProjectConversations,
+    sharedProjectConversationsReady,
+    user?.uid,
+  ]);
 
   useEffect(() => {
     if (activeProjectId && projects.length > 0) {
@@ -172,6 +245,12 @@ export default function Sidebar() {
     const updated = projects.find((project) => project.id === inviteProject.id);
     if (updated) setInviteProject(updated);
   }, [inviteProject?.id, projects]);
+
+  useEffect(() => {
+    if (!knowledgeProject) return;
+    const updated = projects.find((project) => project.id === knowledgeProject.id);
+    if (updated) setKnowledgeProject(updated);
+  }, [knowledgeProject?.id, projects]);
 
   // Close menus on outside click
   useEffect(() => {
@@ -222,6 +301,68 @@ export default function Sidebar() {
     setInviteProject(project);
     setInviteEmail('');
     setInviteStatus('');
+  }
+
+  function openKnowledgeModal(project) {
+    setProjectMenu(null);
+    setKnowledgeProject(project);
+    setProjectInstructions(project.instructions || '');
+    setKnowledgeStatus('');
+  }
+
+  async function handleSaveProjectInstructions() {
+    if (!knowledgeProject || !user) return;
+    setKnowledgeLoading(true);
+    setKnowledgeStatus('');
+    try {
+      await updateProjectInstructions(user.uid, knowledgeProject.id, projectInstructions);
+      setKnowledgeStatus('Project instructions saved for every chat.');
+    } catch (error) {
+      setKnowledgeStatus(error?.message || 'Could not save project instructions.');
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  }
+
+  async function handleProjectFileUpload(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!knowledgeProject || !user || !files.length) return;
+    setKnowledgeLoading(true);
+    setKnowledgeStatus('');
+    let uploaded = 0;
+    try {
+      for (const file of files.slice(0, 8)) {
+        if (!isExtractableFile(file)) throw new Error(`${file.name} is not a supported text, PDF, or DOCX file.`);
+        const text = await extractFileText(file);
+        await addProjectReferenceDocument(user.uid, knowledgeProject.id, {
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          text,
+        });
+        uploaded += 1;
+      }
+      setKnowledgeStatus(`${uploaded} reference document${uploaded === 1 ? '' : 's'} added to the project.`);
+    } catch (error) {
+      setKnowledgeStatus(error?.message || 'Could not add that project document.');
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  }
+
+  async function handleRemoveProjectDocument(documentId) {
+    if (!knowledgeProject || !user) return;
+    setKnowledgeLoading(true);
+    setKnowledgeStatus('');
+    try {
+      await removeProjectReferenceDocument(user.uid, knowledgeProject.id, documentId);
+      setKnowledgeStatus('Reference document removed.');
+    } catch (error) {
+      setKnowledgeStatus(error?.message || 'Could not remove that document.');
+    } finally {
+      setKnowledgeLoading(false);
+    }
   }
 
   async function handleInvite() {
@@ -477,8 +618,8 @@ export default function Sidebar() {
         <div className="mira-sidebar-panel flex flex-col h-full overflow-hidden glass-strong">
 
           {/* Header */}
-          <div className="p-4 flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
+          <div className="p-4 flex items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2.5">
               {activeProjectId ? (
                 <button
                   onClick={() => {
@@ -495,8 +636,8 @@ export default function Sidebar() {
               ) : (
                 <MiraLogo size={36} />
               )}
-              <div>
-                <span className="font-bold text-sm" style={{ color: 'var(--text-primary)' }}>
+              <div className="min-w-0 flex-1">
+                <span className="block truncate font-bold text-sm" style={{ color: 'var(--text-primary)' }}>
                   {activeProjectId ? (activeProject?.name || 'Project') : 'MIRA'}
                 </span>
                 <p className="text-[10px] leading-tight" style={{ color: 'var(--text-tertiary)' }}>
@@ -504,18 +645,7 @@ export default function Sidebar() {
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-0.5">
-              {activeProject?.isOwner && (
-                <button
-                  onClick={() => openInviteModal(activeProject)}
-                  className="p-2 rounded-xl transition-all duration-200 hover:scale-105"
-                  style={{ color: 'var(--text-secondary)' }}
-                  title="Invite collaborators"
-                  aria-label="Invite collaborators"
-                >
-                  <UserPlus size={15} />
-                </button>
-              )}
+            <div className="flex flex-shrink-0 items-center gap-0.5">
               <button
                 onClick={() => {
                   startNewChat();
@@ -596,26 +726,36 @@ export default function Sidebar() {
           {/* ── PROJECT WORKSPACE VIEW ── */}
           {activeProjectId ? (
             <div className="flex-1 overflow-y-auto px-2 space-y-3 pb-2">
-              <div className="mx-1 rounded-xl p-2.5" style={{ background: 'var(--glass-bg)', border: '1px solid var(--border)' }}>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
+              <div className="mx-1 rounded-xl p-3" style={{ background: 'var(--glass-bg)', border: '1px solid var(--border)' }}>
+                <div className="min-w-0">
+                  <div className="min-w-0 px-1">
                     <p className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
                       {activeProjectMemberCount} member{activeProjectMemberCount === 1 ? '' : 's'}
                     </p>
-                    <p className="text-[10px] truncate" style={{ color: 'var(--text-tertiary)' }}>
+                    <p className="mt-0.5 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
                       Shared project workspace
                     </p>
                   </div>
-                  {activeProject?.isOwner && (
+                  <div className="mt-3 grid grid-cols-1 gap-2">
+                    {activeProject?.isOwner && (
+                      <button
+                        type="button"
+                        onClick={() => openInviteModal(activeProject)}
+                        className="inline-flex w-full items-center justify-start gap-2 rounded-lg px-3 py-2.5 text-left text-xs font-medium transition-all hover:opacity-90"
+                        style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}
+                      >
+                        <UserPlus size={14} className="flex-shrink-0" /> Invite collaborators
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => openInviteModal(activeProject)}
-                      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-medium transition-all hover:opacity-90"
+                      onClick={() => openKnowledgeModal(activeProject)}
+                      className="inline-flex w-full items-center justify-start gap-2 rounded-lg px-3 py-2.5 text-left text-xs font-medium transition-all hover:opacity-90"
                       style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}
                     >
-                      <UserPlus size={13} /> Invite collaborators
+                      <BookOpen size={14} className="flex-shrink-0" /> Project knowledge
                     </button>
-                  )}
+                  </div>
                 </div>
               </div>
               {renderChatList(projectGrouped, true)}
@@ -666,6 +806,9 @@ export default function Sidebar() {
                           <div className="absolute right-0 top-full mt-1 z-50 glass rounded-xl shadow-2xl py-1 min-w-[160px] animate-fade-in" onClick={(e) => e.stopPropagation()}>
                             <button onClick={() => handleOpenProject(p)} className="flex items-center gap-2 w-full px-3 py-2 text-sm transition rounded-lg" style={{ color: 'var(--text-secondary)' }}>
                               <FolderOpen size={13} /> Open
+                            </button>
+                            <button onClick={() => openKnowledgeModal(p)} className="flex items-center gap-2 w-full px-3 py-2 text-sm transition rounded-lg" style={{ color: 'var(--text-secondary)' }}>
+                              <BookOpen size={13} /> Project knowledge
                             </button>
                             {p.isOwner && <button onClick={() => openInviteModal(p)} className="flex items-center gap-2 w-full px-3 py-2 text-sm transition rounded-lg" style={{ color: 'var(--text-secondary)' }}>
                               <UserPlus size={13} /> Invite people
@@ -985,6 +1128,79 @@ export default function Sidebar() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {knowledgeProject && (
+        <div className="fixed inset-0 z-[215] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(4px)' }} onClick={() => setKnowledgeProject(null)}>
+          <div className="glass-strong rounded-2xl p-6 w-full max-w-xl max-h-[85vh] overflow-y-auto shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 mb-5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'var(--accent-glow)' }}>
+                  <BookOpen size={18} style={{ color: 'var(--accent)' }} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Project knowledge</h3>
+                  <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>{knowledgeProject.name}</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => setKnowledgeProject(null)} className="p-1.5 rounded-lg" aria-label="Close project knowledge dialog" style={{ color: 'var(--text-tertiary)' }}><X size={16} /></button>
+            </div>
+
+            <label htmlFor="project-instructions" className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>Project instructions</label>
+            <p className="mt-1 text-[11px] leading-relaxed" style={{ color: 'var(--text-tertiary)' }}>Applied to every conversation in this folder alongside its shared chat and document context.</p>
+            <textarea
+              id="project-instructions"
+              value={projectInstructions}
+              onChange={(event) => setProjectInstructions(event.target.value)}
+              disabled={!knowledgeProject.isOwner}
+              placeholder="Describe the project, preferred terminology, audience, output style, and standing rules…"
+              rows={6}
+              maxLength={12000}
+              className="mt-3 w-full resize-y glass-input rounded-xl px-3 py-3 text-sm leading-relaxed outline-none focus:ring-1 focus:ring-[var(--border)] disabled:opacity-70"
+              style={{ color: 'var(--text-primary)' }}
+            />
+            {knowledgeProject.isOwner ? (
+              <div className="mt-2 flex justify-end">
+                <button type="button" onClick={handleSaveProjectInstructions} disabled={knowledgeLoading} className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-medium disabled:opacity-50" style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}>
+                  <Save size={13} /> Save instructions
+                </button>
+              </div>
+            ) : (
+              <p className="mt-2 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>Only the project owner can edit shared instructions.</p>
+            )}
+
+            <div className="my-5" style={{ borderTop: '1px solid var(--border)' }} />
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h4 className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>Reference documents</h4>
+                <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>PDF, DOCX, and text-based files become shared project context.</p>
+              </div>
+              <input ref={projectFileInputRef} type="file" multiple className="hidden" accept=".pdf,.docx,.txt,.md,.csv,.json,.xml,.yaml,.yml,.js,.jsx,.ts,.tsx,.py,.java,.html,.css,.sql" onChange={handleProjectFileUpload} />
+              <button type="button" onClick={() => projectFileInputRef.current?.click()} disabled={knowledgeLoading} className="inline-flex flex-shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium disabled:opacity-50" style={{ background: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }}>
+                <Upload size={13} /> Upload
+              </button>
+            </div>
+
+            <div className="mt-3 space-y-2">
+              {Object.values(knowledgeProject.referenceDocuments || {}).map((document) => (
+                <div key={document.id} className="flex items-center gap-3 rounded-xl px-3 py-2.5" style={{ background: 'var(--glass-bg)', border: '1px solid var(--border)' }}>
+                  <FileText size={16} className="flex-shrink-0" style={{ color: 'var(--accent)' }} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{document.name}</p>
+                    <p className="truncate text-[10px]" style={{ color: 'var(--text-tertiary)' }}>Added by {document.uploadedBy?.displayName || document.uploadedBy?.email || 'a collaborator'}</p>
+                  </div>
+                  {(knowledgeProject.isOwner || document.uploadedBy?.uid === user?.uid) && (
+                    <button type="button" onClick={() => handleRemoveProjectDocument(document.id)} disabled={knowledgeLoading} className="rounded-lg p-1.5 text-red-400 disabled:opacity-50" aria-label={`Remove ${document.name}`} title="Remove document"><Trash2 size={14} /></button>
+                  )}
+                </div>
+              ))}
+              {Object.keys(knowledgeProject.referenceDocuments || {}).length === 0 && (
+                <div className="rounded-xl px-4 py-6 text-center text-xs" style={{ background: 'var(--glass-bg)', border: '1px dashed var(--border)', color: 'var(--text-tertiary)' }}>No project reference documents yet.</div>
+              )}
+            </div>
+            {knowledgeStatus && <p className="mt-3 text-xs" role="status" style={{ color: 'var(--text-secondary)' }}>{knowledgeStatus}</p>}
           </div>
         </div>
       )}

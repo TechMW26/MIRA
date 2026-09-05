@@ -1,7 +1,0 @@
-[0] Dev API server running on http://localhost:3002
-[1] 
-[1]   VITE v6.4.2  ready in 84 ms
-[1] 
-[1]   ➜  Local:   http://127.0.0.1:3000/
-[0] node dev-api.js exited with code SIGTERM
-[1] vite --host 127.0.0.1 exited with code 143

@@ -1,0 +1,67 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  MISSING_CONVERSATION_GRACE_MS,
+  conversationHydrationTimeline,
+  hasConversationHydrated,
+  mergeRealtimeAssistantSnapshot,
+  shouldDeferMissingConversationReset,
+} from './chatHydration.js';
+
+test('preserves a just-sent optimistic message while its new conversation hydrates', () => {
+  const previous = [
+    { id: 'history', workspaceHistory: true, role: 'assistant' },
+    { id: 'local-user', localEcho: true, role: 'user', content: 'Hello' },
+    { id: 'old-server', role: 'assistant', content: 'Stale chat' },
+  ];
+  assert.deepEqual(
+    conversationHydrationTimeline(previous, { preserveOptimistic: true }).map((message) => message.id),
+    ['history', 'local-user'],
+  );
+  assert.deepEqual(conversationHydrationTimeline(previous), []);
+});
+
+test('recognizes authoritative hydration and provides enough subscription grace', () => {
+  assert.equal(hasConversationHydrated([{ id: 'local', localEcho: true }]), false);
+  assert.equal(hasConversationHydrated([{ id: 'server', role: 'user' }]), true);
+  assert.ok(MISSING_CONVERSATION_GRACE_MS >= 2_500);
+});
+
+test('never clears a locally-created conversation while subscriptions catch up', () => {
+  assert.equal(shouldDeferMissingConversationReset({
+    conversationId: 'new-chat',
+    pendingConversationId: 'new-chat',
+    conversationsReady: true,
+    existsInList: false,
+  }), true);
+  assert.equal(shouldDeferMissingConversationReset({
+    conversationId: 'missing-chat',
+    pendingConversationId: null,
+    conversationsReady: true,
+    existsInList: false,
+  }), false);
+});
+
+test('never lets a late realtime snapshot replace a persisted generated image', () => {
+  const persisted = {
+    id: 'assistant-image',
+    role: 'assistant',
+    content: '[IMAGE_GEN: a real algae tree]',
+    isStreaming: false,
+    generatedMedia: {
+      images: [{ url: 'https://blob.example/algae-tree.png' }],
+      generation: { mode: 'generate' },
+    },
+  };
+  const staleSnapshot = {
+    id: 'assistant-image',
+    role: 'assistant',
+    content: '[IMAGE_GEN: a real algae tree]',
+    isStreaming: false,
+  };
+
+  assert.deepEqual(
+    mergeRealtimeAssistantSnapshot(staleSnapshot, persisted).generatedMedia,
+    persisted.generatedMedia,
+  );
+});

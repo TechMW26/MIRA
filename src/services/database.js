@@ -13,8 +13,72 @@ import {
   runTransaction,
 } from 'firebase/database';
 import { buildProjectContextTurn } from './projectContext.js';
+import { fetchFirebaseSnapshot, writeFirebaseValue } from './firebaseRest.js';
 
 const PROJECT_RUN_LEASE_MS = 6 * 60 * 1000;
+const DATABASE_URL = import.meta.env.VITE_FIREBASE_DATABASE_URL
+  || 'https://mira-3ffa4-default-rtdb.asia-southeast1.firebasedatabase.app';
+
+const restSnapshot = (path) => fetchFirebaseSnapshot(DATABASE_URL, path);
+const restPut = (path, value) => writeFirebaseValue(DATABASE_URL, path, value, { method: 'PUT' });
+const restPatch = (path, value) => writeFirebaseValue(DATABASE_URL, path, value, { method: 'PATCH' });
+const restDelete = (path) => writeFirebaseValue(DATABASE_URL, path, null, { method: 'DELETE' });
+
+function readSubscriptionCache(key) {
+  try {
+    const value = JSON.parse(globalThis.localStorage?.getItem(key) || 'null');
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSubscriptionCache(key, value) {
+  try {
+    globalThis.localStorage?.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage is an optional resilience layer; live data remains authoritative.
+  }
+}
+
+function resilientOnValue(reference, onSnapshot, label, fallbackPath = '', fallbackDelayMs = 2_500) {
+  let active = true;
+  let received = false;
+  let recoveryPromise = null;
+  const recover = () => {
+    if (!active || received || recoveryPromise) return;
+    recoveryPromise = (fallbackPath
+      ? fetchFirebaseSnapshot(DATABASE_URL, fallbackPath)
+      : get(reference))
+      .then((snapshot) => {
+        if (active && !received) {
+          received = true;
+          clearTimeout(fallbackTimer);
+          onSnapshot(snapshot);
+        }
+      })
+      .catch((error) => console.warn(`${label} recovery failed:`, error?.message || error))
+      .finally(() => { recoveryPromise = null; });
+  };
+  const fallbackTimer = setTimeout(recover, fallbackDelayMs);
+  const unsubscribe = onValue(
+    reference,
+    (snapshot) => {
+      received = true;
+      clearTimeout(fallbackTimer);
+      if (active) onSnapshot(snapshot);
+    },
+    (error) => {
+      console.warn(`${label} subscription failed:`, error?.message || error);
+      recover();
+    },
+  );
+  return () => {
+    active = false;
+    clearTimeout(fallbackTimer);
+    unsubscribe();
+  };
+}
 
 function publicUserProfile(uid, profile = {}) {
   return {
@@ -27,7 +91,7 @@ function publicUserProfile(uid, profile = {}) {
 
 // ── Users ──────────────────────────────────────────────
 export async function createUserProfile(uid, data) {
-  await set(ref(db, `users/${uid}`), {
+  await restPut(`users/${uid}`, {
     displayName: data.displayName || '',
     email: data.email,
     photoURL: data.photoURL || '',
@@ -36,7 +100,7 @@ export async function createUserProfile(uid, data) {
 }
 
 export async function getUserProfile(uid) {
-  const snap = await get(ref(db, `users/${uid}`));
+  const snap = await restSnapshot(`users/${uid}`);
   return snap.exists() ? snap.val() : null;
 }
 
@@ -56,31 +120,45 @@ export async function createConversation(uid, title = 'New Chat') {
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
-  await set(convRef, conv);
-  return { id: convRef.key, ...conv };
+  await restPut(`conversations/${uid}/${convRef.key}`, conv);
+  const created = { id: convRef.key, ...conv };
+  const cacheKey = `mira-conversations-${uid}`;
+  const cached = readSubscriptionCache(cacheKey);
+  writeSubscriptionCache(cacheKey, [created, ...cached.filter((item) => item?.id !== created.id)]);
+  return created;
+}
+
+export async function getConversation(uid, convId) {
+  if (!uid || !convId) return null;
+  const snapshot = await restSnapshot(`conversations/${uid}/${convId}`);
+  return snapshot.exists() ? { id: convId, ...snapshot.val() } : null;
 }
 
 export function subscribeConversations(uid, callback) {
-  const convRef = query(ref(db, `conversations/${uid}`), orderByChild('updatedAt'));
-  onValue(convRef, (snap) => {
+  const cacheKey = `mira-conversations-${uid}`;
+  const cached = readSubscriptionCache(cacheKey);
+  if (cached.length) callback(cached);
+  const convRef = ref(db, `conversations/${uid}`);
+  return resilientOnValue(convRef, (snap) => {
     const convs = [];
     snap.forEach((child) => {
       convs.push({ id: child.key, ...child.val() });
     });
-    callback(convs.reverse());
-  });
-  return () => off(convRef);
+    convs.sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0));
+    writeSubscriptionCache(cacheKey, convs);
+    callback(convs);
+  }, 'Conversation', `conversations/${uid}`);
 }
 
 export async function updateConversation(uid, convId, data) {
-  await update(ref(db, `conversations/${uid}/${convId}`), {
+  await restPatch(`conversations/${uid}/${convId}`, {
     ...data,
     updatedAt: Date.now(),
   });
 }
 
 export async function updateConversationTitle(uid, convId, title) {
-  await update(ref(db, `conversations/${uid}/${convId}`), {
+  await restPatch(`conversations/${uid}/${convId}`, {
     title,
     titleUpdatedAt: Date.now(),
   });
@@ -88,27 +166,27 @@ export async function updateConversationTitle(uid, convId, title) {
 
 export async function deleteConversation(uid, convId) {
   try {
-    const messagesSnap = await get(ref(db, `messages/${convId}`));
-    const pathnames = [];
+    const messagesSnap = await restSnapshot(`messages/${convId}`);
+    const mediaItems = [];
     if (messagesSnap.exists()) {
       messagesSnap.forEach((child) => {
         const message = child.val() || {};
         const images = Array.isArray(message?.generatedMedia?.images) ? message.generatedMedia.images : [];
         for (const image of images) {
           const pathname = String(image?.pathname || '').trim();
-          if (pathname) pathnames.push(pathname);
+          if (pathname) mediaItems.push({ pathname, deleteToken: String(image?.deleteToken || '') });
         }
       });
     }
 
-    if (pathnames.length > 0) {
+    if (mediaItems.length > 0) {
       await fetch('/api/media', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'delete',
           userId: uid,
-          pathnames: [...new Set(pathnames)],
+          items: Array.from(new Map(mediaItems.map((item) => [item.pathname, item])).values()),
         }),
       });
     }
@@ -117,15 +195,16 @@ export async function deleteConversation(uid, convId) {
   }
 
   await Promise.all([
-    remove(ref(db, `conversations/${uid}/${convId}`)),
-    remove(ref(db, `messages/${convId}`)),
+    restDelete(`conversations/${uid}/${convId}`),
+    restDelete(`messages/${convId}`),
   ]);
+  try { globalThis.localStorage?.removeItem(`mira-messages-${convId}`); } catch {}
 }
 
 // ── Messages ───────────────────────────────────────────
 export async function addMessage(convId, message) {
   const msgRef = push(ref(db, `messages/${convId}`));
-  await set(msgRef, {
+  await restPut(`messages/${convId}/${msgRef.key}`, {
     ...message,
     timestamp: Number.isFinite(message?.timestamp) ? message.timestamp : Date.now(),
   });
@@ -133,37 +212,46 @@ export async function addMessage(convId, message) {
 }
 
 export async function updateMessage(convId, msgId, data) {
-  await update(ref(db, `messages/${convId}/${msgId}`), data);
+  await restPatch(`messages/${convId}/${msgId}`, data);
 }
 
 export async function deleteMessage(convId, msgId) {
-  await remove(ref(db, `messages/${convId}/${msgId}`));
+  await restDelete(`messages/${convId}/${msgId}`);
 }
 
 export function subscribeMessages(convId, callback) {
+  const cacheKey = `mira-messages-${convId}`;
+  const cached = readSubscriptionCache(cacheKey);
+  if (cached.length) callback(cached);
   const msgRef = query(ref(db, `messages/${convId}`), orderByChild('timestamp'));
-  onValue(msgRef, (snap) => {
+  return resilientOnValue(msgRef, (snap) => {
     const msgs = [];
     snap.forEach((child) => {
       msgs.push({ id: child.key, ...child.val() });
     });
+    const cacheable = msgs.slice(-60).map((message) => ({
+      ...message,
+      content: String(message?.content || '').slice(0, 30_000),
+      attachments: Array.isArray(message?.attachments)
+        ? message.attachments.map(({ base64: _base64, parsedText: _parsedText, ...attachment }) => attachment)
+        : message?.attachments,
+    }));
+    writeSubscriptionCache(cacheKey, cacheable);
     callback(msgs);
-  });
-  return () => off(msgRef);
+  }, 'Message', `messages/${convId}`, 700);
 }
 
 // ── Shared project context ─────────────────────────────
 export async function getProjectContext(projectId) {
   if (!projectId) return null;
-  const contextRef = ref(db, `projectContexts/${projectId}`);
-  const snap = await get(contextRef);
+  const snap = await restSnapshot(`projectContexts/${projectId}`);
   const existingContext = snap.exists() ? snap.val() : null;
   if (existingContext?.bootstrappedAt) return existingContext;
 
   // Projects created before shared memory existed are bootstrapped once from
   // their most recent chats. This keeps historical documents useful without
   // copying raw image bytes into the context store.
-  const chatsSnap = await get(ref(db, `projectChats/${projectId}`));
+  const chatsSnap = await restSnapshot(`projectChats/${projectId}`);
   const chats = [];
   chatsSnap.forEach((child) => chats.push({ id: child.key, ...child.val() }));
   const recentChats = chats
@@ -173,7 +261,7 @@ export async function getProjectContext(projectId) {
 
   const conversations = {};
   await Promise.all(recentChats.map(async (chat) => {
-    const messagesSnap = await get(ref(db, `messages/${chat.id}`));
+    const messagesSnap = await restSnapshot(`messages/${chat.id}`);
     const messages = [];
     messagesSnap.forEach((child) => messages.push({ id: child.key, ...child.val() }));
     const sortedMessages = messages
@@ -245,44 +333,43 @@ export async function getProjectContext(projectId) {
   }));
   if (!Object.keys(conversations).length) return existingContext;
 
-  const result = await runTransaction(contextRef, (current) => {
-    const mergedConversations = { ...conversations };
-    Object.entries(current?.conversations || {}).forEach(([conversationId, conversation]) => {
-      mergedConversations[conversationId] = {
-        ...(mergedConversations[conversationId] || {}),
-        ...conversation,
-        turns: {
-          ...(mergedConversations[conversationId]?.turns || {}),
-          ...(conversation?.turns || {}),
-        },
-      };
-    });
-    return {
-      ...(current || {}),
-      conversations: mergedConversations,
-      bootstrappedAt: Date.now(),
+  const mergedConversations = { ...conversations };
+  Object.entries(existingContext?.conversations || {}).forEach(([conversationId, conversation]) => {
+    mergedConversations[conversationId] = {
+      ...(mergedConversations[conversationId] || {}),
+      ...conversation,
+      turns: {
+        ...(mergedConversations[conversationId]?.turns || {}),
+        ...(conversation?.turns || {}),
+      },
     };
-  }, { applyLocally: false });
-  return result.snapshot.exists() ? result.snapshot.val() : null;
+  });
+  const result = {
+    ...(existingContext || {}),
+    conversations: mergedConversations,
+    bootstrappedAt: Date.now(),
+  };
+  await restPut(`projectContexts/${projectId}`, result);
+  return result;
 }
 
 export async function saveProjectContextTurn(projectId, convId, turnId, turn) {
   if (!projectId || !convId || !turnId || !turn) return;
-  const conversationRef = ref(db, `projectContexts/${projectId}/conversations/${convId}`);
-  await runTransaction(conversationRef, (current) => {
-    const turns = {
-      ...(current?.turns || {}),
-      [turnId]: turn,
-    };
-    const retainedTurns = Object.entries(turns)
-      .sort(([, left], [, right]) => Number(right?.timestamp || 0) - Number(left?.timestamp || 0))
-      .slice(0, 16)
-      .reduce((result, [id, value]) => ({ ...result, [id]: value }), {});
-    return {
-      turns: retainedTurns,
-      updatedAt: Number(turn.timestamp || Date.now()),
-    };
-  }, { applyLocally: false });
+  const path = `projectContexts/${projectId}/conversations/${convId}`;
+  const currentSnapshot = await restSnapshot(path);
+  const current = currentSnapshot.exists() ? currentSnapshot.val() : null;
+  const turns = {
+    ...(current?.turns || {}),
+    [turnId]: turn,
+  };
+  const retainedTurns = Object.entries(turns)
+    .sort(([, left], [, right]) => Number(right?.timestamp || 0) - Number(left?.timestamp || 0))
+    .slice(0, 16)
+    .reduce((result, [id, value]) => ({ ...result, [id]: value }), {});
+  await restPut(path, {
+    turns: retainedTurns,
+    updatedAt: Number(turn.timestamp || Date.now()),
+  });
 }
 
 // ── Projects ───────────────────────────────────────────
@@ -310,6 +397,9 @@ export async function createProject(uid, name, description = '') {
 }
 
 export function subscribeProjects(uid, callback) {
+  const cacheKey = `mira-projects-${uid}`;
+  const cached = readSubscriptionCache(cacheKey);
+  if (cached.length) callback(cached);
   const projRef = ref(db, `projects/${uid}`);
   const accessRef = ref(db, `userProjectAccess/${uid}`);
   let owned = [];
@@ -333,19 +423,21 @@ export function subscribeProjects(uid, callback) {
         isOwner: project.ownerUid === uid,
       });
     });
-    callback([...projects.values()].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)));
+    const next = [...projects.values()].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+    writeSubscriptionCache(cacheKey, next);
+    callback(next);
   };
 
-  onValue(projRef, (snap) => {
+  const unsubscribeOwned = resilientOnValue(projRef, (snap) => {
     const projects = [];
     snap.forEach((child) => {
       projects.push({ id: child.key, ...child.val() });
     });
     owned = projects;
     emit();
-  });
+  }, 'Project', `projects/${uid}`);
 
-  onValue(accessRef, (snap) => {
+  const unsubscribeAccess = resilientOnValue(accessRef, (snap) => {
     const nextIds = new Set();
     snap.forEach((child) => nextIds.add(child.key));
     sharedUnsubs.forEach((unsubscribe, projectId) => {
@@ -358,29 +450,28 @@ export function subscribeProjects(uid, callback) {
     nextIds.forEach((projectId) => {
       if (sharedUnsubs.has(projectId)) return;
       const sharedRef = ref(db, `sharedProjects/${projectId}`);
-      const unsubscribe = onValue(sharedRef, (projectSnap) => {
+      const unsubscribe = resilientOnValue(sharedRef, (projectSnap) => {
         if (projectSnap.exists()) shared.set(projectId, projectSnap.val());
         else shared.delete(projectId);
         emit();
-      });
+      }, 'Shared project', `sharedProjects/${projectId}`);
       sharedUnsubs.set(projectId, unsubscribe);
     });
     emit();
-  });
+  }, 'Project access', `userProjectAccess/${uid}`);
 
   return () => {
-    off(projRef);
-    off(accessRef);
+    unsubscribeOwned();
+    unsubscribeAccess();
     sharedUnsubs.forEach((unsubscribe) => unsubscribe());
   };
 }
 
 async function ensureSharedProject(ownerUid, projectId) {
-  const sharedRef = ref(db, `sharedProjects/${projectId}`);
-  const existing = await get(sharedRef);
+  const existing = await restSnapshot(`sharedProjects/${projectId}`);
   if (existing.exists()) return existing.val();
 
-  const legacy = await get(ref(db, `projects/${ownerUid}/${projectId}`));
+  const legacy = await restSnapshot(`projects/${ownerUid}/${projectId}`);
   if (!legacy.exists()) throw new Error('Project not found.');
   const owner = publicUserProfile(ownerUid, await getUserProfile(ownerUid) || {});
   const value = {
@@ -392,7 +483,7 @@ async function ensureSharedProject(ownerUid, projectId) {
     },
     updatedAt: Date.now(),
   };
-  await update(ref(db), {
+  await restPatch('', {
     [`sharedProjects/${projectId}`]: value,
     [`userProjectAccess/${ownerUid}/${projectId}`]: { ownerUid, role: 'owner', addedAt: Date.now() },
   });
@@ -414,7 +505,7 @@ export async function inviteProjectMember(ownerUid, projectId, email) {
   if (!invited) throw new Error('No existing MIRA account uses that email.');
 
   const project = await ensureSharedProject(ownerUid, projectId);
-  if (project.ownerUid !== ownerUid) throw new Error('Only the project owner can invite collaborators.');
+  if (project.ownerUid !== ownerUid) throw new Error('Only the project owner can Invite.');
   if (invited.uid === ownerUid) throw new Error('You already own this project.');
   if (project.members?.[invited.uid]) throw new Error('That account already has access.');
 
@@ -566,12 +657,17 @@ export function subscribeProjectConversations(projectId, callback) {
     return () => {};
   }
   const chatsRef = query(ref(db, `projectChats/${projectId}`), orderByChild('updatedAt'));
-  onValue(chatsRef, (snap) => {
+  return resilientOnValue(chatsRef, (snap) => {
     const conversations = [];
     snap.forEach((child) => conversations.push({ id: child.key, ...child.val(), projectId }));
     callback(conversations.reverse());
-  });
-  return () => off(chatsRef);
+  }, 'Project conversation', `projectChats/${projectId}`);
+}
+
+export async function getProjectConversation(projectId, convId) {
+  if (!projectId || !convId) return null;
+  const snapshot = await restSnapshot(`projectChats/${projectId}/${convId}`);
+  return snapshot.exists() ? { id: convId, ...snapshot.val(), projectId } : null;
 }
 
 export async function deleteProject(uid, projectId) {
@@ -614,19 +710,19 @@ export async function deleteProject(uid, projectId) {
 }
 
 export async function addConversationToProject(uid, projectId, convId) {
-  const access = await get(ref(db, `userProjectAccess/${uid}/${projectId}`));
+  const access = await restSnapshot(`userProjectAccess/${uid}/${projectId}`);
   const ownerUid = access.val()?.ownerUid || uid;
   const project = await ensureSharedProject(ownerUid, projectId);
   if (!project.members?.[uid] && project.ownerUid !== uid) throw new Error('You do not have access to this project.');
-  const convSnap = await get(ref(db, `conversations/${uid}/${convId}`));
+  const convSnap = await restSnapshot(`conversations/${uid}/${convId}`);
   const conversation = convSnap.exists() ? convSnap.val() : { title: 'New Chat', createdAt: Date.now(), updatedAt: Date.now() };
   await Promise.all([
     project.ownerUid === uid
-      ? set(ref(db, `projects/${uid}/${projectId}/conversations/${convId}`), true)
+      ? restPut(`projects/${uid}/${projectId}/conversations/${convId}`, true)
       : Promise.resolve(),
-    set(ref(db, `sharedProjects/${projectId}/conversations/${convId}`), true),
-    set(ref(db, `projectChats/${projectId}/${convId}`), { ...conversation, projectId, ownerUid: uid }),
-    update(ref(db, `conversations/${uid}/${convId}`), { projectId, updatedAt: Date.now() }),
+    restPut(`sharedProjects/${projectId}/conversations/${convId}`, true),
+    restPut(`projectChats/${projectId}/${convId}`, { ...conversation, projectId, ownerUid: uid }),
+    restPatch(`conversations/${uid}/${convId}`, { projectId, updatedAt: Date.now() }),
   ]);
 }
 
@@ -653,21 +749,89 @@ export async function updateProject(uid, projectId, data) {
   ]);
 }
 
+async function requireProjectAccess(uid, projectId) {
+  const access = await get(ref(db, `userProjectAccess/${uid}/${projectId}`));
+  const ownerUid = access.val()?.ownerUid || uid;
+  const project = await ensureSharedProject(ownerUid, projectId);
+  if (project.ownerUid !== uid && !project.members?.[uid]) {
+    throw new Error('You do not have access to this project.');
+  }
+  return project;
+}
+
+export async function updateProjectInstructions(uid, projectId, instructions) {
+  const project = await requireProjectAccess(uid, projectId);
+  if (project.ownerUid !== uid) throw new Error('Only the project owner can change project instructions.');
+  const value = String(instructions || '').replace(/\u0000/g, '').trim().slice(0, 12000);
+  const now = Date.now();
+  await update(ref(db), {
+    [`projects/${project.ownerUid}/${projectId}/instructions`]: value || null,
+    [`projects/${project.ownerUid}/${projectId}/updatedAt`]: now,
+    [`sharedProjects/${projectId}/instructions`]: value || null,
+    [`sharedProjects/${projectId}/updatedAt`]: now,
+    [`projectContexts/${projectId}/projectProfile/instructions`]: value || null,
+    [`projectContexts/${projectId}/projectProfile/updatedAt`]: now,
+  });
+}
+
+export async function addProjectReferenceDocument(uid, projectId, document) {
+  const project = await requireProjectAccess(uid, projectId);
+  const documentId = push(ref(db, `projectContexts/${projectId}/projectProfile/documents`)).key;
+  const name = String(document?.name || 'Untitled document').trim().slice(0, 240);
+  const type = String(document?.type || '').trim().slice(0, 160);
+  const summary = String(document?.text || '')
+    .replace(/\u0000/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 16000);
+  if (!summary) throw new Error(`No readable text was found in ${name}.`);
+  const now = Date.now();
+  const uploadedBy = publicUserProfile(uid, await getUserProfile(uid) || {});
+  const metadata = { id: documentId, name, type, size: Number(document?.size || 0), uploadedAt: now, uploadedBy };
+  await update(ref(db), {
+    [`projects/${project.ownerUid}/${projectId}/referenceDocuments/${documentId}`]: metadata,
+    [`projects/${project.ownerUid}/${projectId}/updatedAt`]: now,
+    [`sharedProjects/${projectId}/referenceDocuments/${documentId}`]: metadata,
+    [`sharedProjects/${projectId}/updatedAt`]: now,
+    [`projectContexts/${projectId}/projectProfile/documents/${documentId}`]: { ...metadata, summary },
+    [`projectContexts/${projectId}/projectProfile/updatedAt`]: now,
+  });
+  return metadata;
+}
+
+export async function removeProjectReferenceDocument(uid, projectId, documentId) {
+  const project = await requireProjectAccess(uid, projectId);
+  const documentSnap = await get(ref(db, `sharedProjects/${projectId}/referenceDocuments/${documentId}`));
+  if (!documentSnap.exists()) return;
+  const uploaderUid = documentSnap.val()?.uploadedBy?.uid;
+  if (project.ownerUid !== uid && uploaderUid !== uid) {
+    throw new Error('Only the project owner or uploader can remove this document.');
+  }
+  const now = Date.now();
+  await update(ref(db), {
+    [`projects/${project.ownerUid}/${projectId}/referenceDocuments/${documentId}`]: null,
+    [`projects/${project.ownerUid}/${projectId}/updatedAt`]: now,
+    [`sharedProjects/${projectId}/referenceDocuments/${documentId}`]: null,
+    [`sharedProjects/${projectId}/updatedAt`]: now,
+    [`projectContexts/${projectId}/projectProfile/documents/${documentId}`]: null,
+    [`projectContexts/${projectId}/projectProfile/updatedAt`]: now,
+  });
+}
+
 export async function updateProjectConversation(projectId, convId, data) {
   if (!projectId || !convId) return;
-  const chatRef = ref(db, `projectChats/${projectId}/${convId}`);
-  const chat = await get(chatRef);
+  const chat = await restSnapshot(`projectChats/${projectId}/${convId}`);
   if (!chat.exists()) return;
   const next = { ...data, updatedAt: Date.now() };
   await Promise.all([
-    update(chatRef, next),
-    update(ref(db, `conversations/${chat.val().ownerUid}/${convId}`), next),
+    restPatch(`projectChats/${projectId}/${convId}`, next),
+    restPatch(`conversations/${chat.val().ownerUid}/${convId}`, next),
   ]);
 }
 
 export async function enqueueConversationPrompt(convId, prompt, author) {
   const queueRef = push(ref(db, `conversationQueues/${convId}`));
-  await set(queueRef, {
+  await restPut(`conversationQueues/${convId}/${queueRef.key}`, {
     ...prompt,
     id: queueRef.key,
     author: publicUserProfile(author?.uid, author || {}),
@@ -682,12 +846,11 @@ export function subscribeConversationQueue(convId, callback) {
     return () => {};
   }
   const queueRef = query(ref(db, `conversationQueues/${convId}`), orderByChild('queuedAt'));
-  onValue(queueRef, (snap) => {
+  return resilientOnValue(queueRef, (snap) => {
     const prompts = [];
     snap.forEach((child) => prompts.push({ ...child.val(), id: child.key }));
     callback(prompts);
-  });
-  return () => off(queueRef);
+  }, 'Conversation queue', `conversationQueues/${convId}`);
 }
 
 export async function updateConversationPrompt(convId, promptId, authorUid, data) {
@@ -712,7 +875,7 @@ export function subscribeConversationRun(convId, callback) {
   }
   const runRef = ref(db, `conversationRuns/${convId}`);
   let expiryTimer = null;
-  onValue(runRef, (snap) => {
+  const unsubscribe = resilientOnValue(runRef, (snap) => {
     if (expiryTimer) clearTimeout(expiryTimer);
     const run = snap.exists() ? snap.val() : null;
     const remaining = Number(run?.leaseUntil || 0) - Date.now();
@@ -720,32 +883,33 @@ export function subscribeConversationRun(convId, callback) {
     if (run && remaining > 0) {
       expiryTimer = setTimeout(() => callback(null), remaining + 50);
     }
-  });
+  }, 'Conversation run', `conversationRuns/${convId}`);
   return () => {
     if (expiryTimer) clearTimeout(expiryTimer);
-    off(runRef);
+    unsubscribe();
   };
 }
 
 export async function acquireConversationRun(convId, runId, author) {
   const now = Date.now();
-  const result = await runTransaction(ref(db, `conversationRuns/${convId}`), (current) => {
-    if (current && current.leaseUntil > now && current.author?.uid !== author?.uid) return;
-    return {
-      runId,
-      author: publicUserProfile(author?.uid, author || {}),
-      startedAt: now,
-      leaseUntil: now + PROJECT_RUN_LEASE_MS,
-    };
-  }, { applyLocally: false });
-  return result.committed;
+  const path = `conversationRuns/${convId}`;
+  const currentSnapshot = await restSnapshot(path);
+  const current = currentSnapshot.exists() ? currentSnapshot.val() : null;
+  if (current && current.leaseUntil > now && current.author?.uid !== author?.uid) return false;
+  await restPut(path, {
+    runId,
+    author: publicUserProfile(author?.uid, author || {}),
+    startedAt: now,
+    leaseUntil: now + PROJECT_RUN_LEASE_MS,
+  });
+  return true;
 }
 
 export async function releaseConversationRun(convId, runId) {
   if (!convId || !runId) return;
-  await runTransaction(ref(db, `conversationRuns/${convId}`), (current) => (
-    current?.runId === runId ? null : current
-  ), { applyLocally: false });
+  const path = `conversationRuns/${convId}`;
+  const current = await restSnapshot(path);
+  if (current.val()?.runId === runId) await restDelete(path);
 }
 
 // ── User Profile ───────────────────────────────────────

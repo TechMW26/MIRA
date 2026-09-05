@@ -2,6 +2,14 @@ const GREETING_WORDS_PATTERN = /^(?:(?:hi+|hii+|hello+|hey+|heya+|yo+|sup+|ssup+
 const GREETING_CHECK_IN_PATTERN = /^(?:(?:hi+|hii+|hello+|hey+|heya+|yo+|sup+|ssup+|wassup|wazzup|howdy|hola|namaste)\s+)?(?:what'?s\s+up|whats\s+up|how\s+are\s+(?:you|u)|how'?s\s+it\s+going|good\s+(?:morning|afternoon|evening))$/i;
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
 
+function normalizeConversationalPrompt(text = '') {
+  return String(text || '')
+    .replace(/[’]/g, "'")
+    .replace(/[^\p{L}\p{N}']+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function isSimpleGreeting(text = '') {
   const value = String(text || '')
     .replace(/[’]/g, "'")
@@ -19,6 +27,20 @@ export function buildGreetingResponse(text = '') {
   if (/good\s+afternoon/.test(value)) return 'Good afternoon! What can I help you with?';
   if (/good\s+evening/.test(value)) return 'Good evening! What can I help you with?';
   return 'Hey! What can I help you with?';
+}
+
+export function isAssistantIdentityQuestion(text = '') {
+  const value = normalizeConversationalPrompt(text);
+  if (!value || value.split(/\s+/).length > 12) return false;
+  return /^(?:please\s+)?(?:who\s+are\s+you|what\s+are\s+you|what(?:'s|\s+is)\s+your\s+name|your\s+name|introduce\s+yourself|describe\s+yourself|tell\s+me\s+(?:(?:something|more|a\s+bit|a\s+little)\s+)?about\s+yourself|what\s+can\s+you\s+do|what\s+are\s+your\s+capabilities|how\s+can\s+you\s+help(?:\s+me)?)(?:\s+please)?$/i.test(value);
+}
+
+export function buildAssistantIdentityResponse() {
+  return [
+    "I'm MIRA, an AI assistant built by MW FutureTech.",
+    'I can help you think through questions, research current information when it is actually needed, create content, and keep follow-up questions connected to the conversation. In the desktop app, I can also work with the files and tools you explicitly give me access to.',
+    "I’ll be clear about what I know, what I verified, and what I actually completed.",
+  ].join('\n\n');
 }
 
 export function getMostRecentAssistantMessage(history = []) {

@@ -1,94 +1,292 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildUpstreamPayload,
-  getContextTokens,
-  getUpstreamStartTimeoutMs,
+  deepSeekChatResponse,
+  managedFallbackResponse,
+  miraChatResponse,
+  isMiraFallbackEligible,
   POST,
   sanitizeTools,
-  selectRegistryModel,
 } from './chat.js';
 
-test('prefers a thinking-capable non-vision model for chat', () => {
-  const selected = selectRegistryModel([
-    { name: 'embedding-only', capabilities: ['embedding'] },
-    { name: 'vision-model', capabilities: ['completion', 'vision'] },
-    { name: 'runtime-model', capabilities: ['completion', 'tools', 'thinking'] },
-  ]);
-  assert.deepEqual(selected, {
-    name: 'runtime-model',
-    capabilities: ['completion', 'tools', 'thinking'],
-  });
+test('allows fallback only for retryable MIRA outages', () => {
+  assert.equal(isMiraFallbackEligible(Object.assign(new Error('busy'), { status: 503 })), true);
+  assert.equal(isMiraFallbackEligible(Object.assign(new Error('rate limited'), { status: 429 })), true);
+  assert.equal(isMiraFallbackEligible(Object.assign(new Error('bad token'), { status: 401 })), false);
+  assert.equal(isMiraFallbackEligible(Object.assign(new Error('bad request'), { status: 400 })), false);
 });
 
-test('returns no selection when the registry has no completion model', () => {
-  assert.equal(selectRegistryModel([{ name: 'embedding-only', capabilities: ['embedding'] }]), null);
-  assert.equal(selectRegistryModel([]), null);
+test('returns a stream-compatible DeepSeek response for desktop coding fallback', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = 'deepseek-server-secret';
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    model: 'deepseek-v4-flash',
+    choices: [{ message: { content: 'Fast answer.' } }],
+  }), { status: 200 });
+  try {
+    const response = await deepSeekChatResponse({
+      messages: [{ role: 'user', content: 'Hello' }],
+      think: false,
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-mira-provider'), 'deepseek');
+    assert.deepEqual(JSON.parse((await response.text()).trim()), {
+      model: 'deepseek-v4-flash',
+      message: { content: 'Fast answer.' },
+      done: true,
+      done_reason: 'stop',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalKey;
+  }
 });
 
-test('allows a hidden environment preference for testing any completion model', () => {
-  const selected = selectRegistryModel([
-    { name: 'primary', capabilities: ['completion', 'thinking'] },
-    { name: 'experimental', capabilities: ['completion'] },
-  ], 'experimental');
-  assert.equal(selected.name, 'experimental');
-  assert.equal(selectRegistryModel([
-    { name: 'primary', capabilities: ['completion'] },
-    { name: 'vision-only', capabilities: ['vision'] },
-  ], 'vision-only').name, 'primary');
+test('returns a stream-compatible managed response when the model server is unavailable', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.POLLINATIONS_API_KEY;
+  process.env.POLLINATIONS_API_KEY = 'server-secret';
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/text/models')) return new Response(JSON.stringify([]), { status: 200 });
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'Recovered answer.' } }] }), { status: 200 });
+  };
+  try {
+    const response = await managedFallbackResponse({
+      messages: [{ role: 'user', content: 'Hello' }],
+      tools: [{ type: 'function', function: { name: 'not.allowed', parameters: { type: 'object' } } }],
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-mira-recovery'), 'managed');
+    assert.deepEqual(JSON.parse((await response.text()).trim()), {
+      message: { content: 'Recovered answer.' },
+      done: true,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.POLLINATIONS_API_KEY;
+    else process.env.POLLINATIONS_API_KEY = originalKey;
+  }
 });
 
-test('bounds the upstream model-start timeout below the browser timeout', () => {
-  assert.equal(getUpstreamStartTimeoutMs(), 50000);
-  assert.equal(getUpstreamStartTimeoutMs(1000), 15000);
-  assert.equal(getUpstreamStartTimeoutMs(90000), 55000);
+test('proxies the streaming MIRA response from the primary provider', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const originalKey = process.env.MIRA_API_TOKEN;
+  const originalModel = process.env.MIRA_CHAT_MODEL;
+  process.env.MIRA_OPENAI_BASE_URL = 'https://mira.example.test/v1';
+  process.env.MIRA_API_TOKEN = 'mira-server-secret';
+  process.env.MIRA_CHAT_MODEL = 'MIRA:latest';
+  const sseBody = 'data: {"choices":[{"delta":{"content":"Hello from MIRA."}}]}\n\ndata: [DONE]\n\n';
+  let captured;
+  globalThis.fetch = async (url, options = {}) => {
+    captured = {
+      url: String(url),
+      authorization: options.headers?.Authorization,
+      body: JSON.parse(options.body || '{}'),
+    };
+    return new Response(sseBody, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  };
+  try {
+    const freshModule = await import(`./chat.js?mira-primary=${Date.now()}`);
+    const response = await freshModule.miraChatResponse({
+      messages: [{ role: 'user', content: 'Hello MIRA' }],
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-mira-provider'), 'mira');
+    assert.equal(response.headers.get('content-type'), 'text/event-stream');
+    assert.equal(await response.text(), sseBody);
+    assert.equal(captured.url, 'https://mira.example.test/v1/chat/completions');
+    assert.equal(captured.authorization, 'Bearer mira-server-secret');
+    assert.equal(captured.body.model, 'MIRA:latest');
+    assert.equal(captured.body.stream, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
+    else process.env.MIRA_OPENAI_BASE_URL = originalBaseUrl;
+    if (originalKey === undefined) delete process.env.MIRA_API_TOKEN;
+    else process.env.MIRA_API_TOKEN = originalKey;
+    if (originalModel === undefined) delete process.env.MIRA_CHAT_MODEL;
+    else process.env.MIRA_CHAT_MODEL = originalModel;
+  }
 });
 
-test('uses a concurrency-friendly default while allowing any configured context', () => {
-  assert.equal(getContextTokens(), 16384);
-  assert.equal(getContextTokens(0), 16384);
-  assert.equal(getContextTokens(1000), 1000);
-  assert.equal(getContextTokens(100000), 100000);
+test('routes web chat through the MIRA primary provider when configured', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const originalKey = process.env.MIRA_API_TOKEN;
+  const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  process.env.MIRA_OPENAI_BASE_URL = 'https://mira-primary.test/v1';
+  process.env.MIRA_API_TOKEN = 'mira-server-secret';
+  process.env.DEEPSEEK_API_KEY = 'web-fallback-key';
+  const requestedUrls = [];
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    requestedUrls.push(target);
+    if (target === 'https://mira-primary.test/v1/chat/completions') {
+      return new Response('data: {"choices":[{"delta":{"content":"Primary MIRA answer."}}]}\n\ndata: [DONE]\n\n', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }
+    throw new Error(`Unexpected provider request: ${target}`);
+  };
+  try {
+    const freshModule = await import(`./chat.js?mira-primary-route=${Date.now()}`);
+    const response = await freshModule.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello MIRA' }] }),
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-mira-provider'), 'mira');
+    assert.match(await response.text(), /Primary MIRA answer/);
+    assert.equal(requestedUrls.some((url) => /deepseek/i.test(url)), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
+    else process.env.MIRA_OPENAI_BASE_URL = originalBaseUrl;
+    if (originalKey === undefined) delete process.env.MIRA_API_TOKEN;
+    else process.env.MIRA_API_TOKEN = originalKey;
+    if (originalDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
+  }
 });
 
-test('builds one streaming Ollama payload from the registry selection', () => {
-  const payload = buildUpstreamPayload({
-    registryModel: { name: 'runtime-model', capabilities: ['completion', 'thinking'] },
-    messages: [{ role: 'user', content: 'Hello' }],
-    think: true,
-    maxTokens: 500,
-  });
-  assert.equal(payload.model, 'runtime-model');
-  assert.equal(payload.stream, true);
-  assert.equal(payload.think, true);
-  assert.equal(payload.keep_alive, -1);
-  assert.equal(payload.options.num_predict, 500);
-  assert.equal(payload.options.num_ctx, 16384);
-  assert.equal(payload.options.repeat_penalty, 1.05);
-  assert.deepEqual(payload.messages, [{ role: 'user', content: 'Hello' }]);
-  assert.ok(payload.messages.some((message) => message.role === 'user' && message.content === 'Hello'));
+test('falls back to DeepSeek Flash when the MIRA primary provider fails', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const originalKey = process.env.MIRA_API_TOKEN;
+  const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  process.env.MIRA_OPENAI_BASE_URL = 'https://mira-down.test/v1';
+  process.env.MIRA_API_TOKEN = 'mira-server-secret';
+  process.env.DEEPSEEK_API_KEY = 'web-fallback-key';
+  let miraAttempts = 0;
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target === 'https://mira-down.test/v1/chat/completions') {
+      miraAttempts += 1;
+      return new Response(JSON.stringify({ error: 'model loading' }), { status: 503 });
+    }
+    if (target === 'https://api.deepseek.com/chat/completions') {
+      return new Response(JSON.stringify({
+        model: 'deepseek-v4-flash',
+        choices: [{ message: { content: 'DeepSeek recovered.' } }],
+      }), { status: 200 });
+    }
+    throw new Error(`Unexpected provider request: ${target}`);
+  };
+  try {
+    const freshModule = await import(`./chat.js?mira-deepseek-fallback=${Date.now()}`);
+    const response = await freshModule.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(miraAttempts, 2);
+    assert.equal(response.headers.get('x-mira-provider'), 'deepseek');
+    assert.equal(response.headers.get('x-mira-recovery'), 'mira-retryable-outage');
+    assert.match(await response.text(), /DeepSeek recovered/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
+    else process.env.MIRA_OPENAI_BASE_URL = originalBaseUrl;
+    if (originalKey === undefined) delete process.env.MIRA_API_TOKEN;
+    else process.env.MIRA_API_TOKEN = originalKey;
+    if (originalDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
+  }
 });
 
-test('uses a prompt-level thinking switch when tags omit native thinking support', () => {
-  const payload = buildUpstreamPayload({
-    registryModel: { name: 'runtime-model', capabilities: [] },
-    messages: [{ role: 'user', content: 'Hello' }],
-    systemPrompt: 'You are Mira.',
-    think: false,
-  });
-  assert.equal(payload.think, undefined);
-  assert.equal(payload.messages.at(-1).content, '/no_think\nHello');
-  assert.equal(payload.messages.some((message) => message.content.startsWith('Quick check before we start')), false);
+test('never hides MIRA authentication failures behind DeepSeek', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const originalKey = process.env.MIRA_API_TOKEN;
+  const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  process.env.MIRA_OPENAI_BASE_URL = 'https://mira-auth.test/v1';
+  process.env.MIRA_API_TOKEN = 'invalid-mira-secret';
+  process.env.DEEPSEEK_API_KEY = 'web-fallback-key';
+  const requestedUrls = [];
+  globalThis.fetch = async (url) => {
+    requestedUrls.push(String(url));
+    return new Response(JSON.stringify({ error: 'invalid bearer token' }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    const freshModule = await import(`./chat.js?mira-auth-failure=${Date.now()}`);
+    const response = await freshModule.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
+    }));
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), {
+      error: 'The MIRA API credential is missing or invalid.',
+      code: 'mira_primary_authentication_failed',
+      retryable: false,
+    });
+    assert.deepEqual(requestedUrls, ['https://mira-auth.test/v1/chat/completions']);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
+    else process.env.MIRA_OPENAI_BASE_URL = originalBaseUrl;
+    if (originalKey === undefined) delete process.env.MIRA_API_TOKEN;
+    else process.env.MIRA_API_TOKEN = originalKey;
+    if (originalDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
+  }
 });
 
-test('keeps raw images out of the general chat payload', () => {
-  const payload = buildUpstreamPayload({
-    registryModel: { name: 'runtime-model', capabilities: ['completion', 'vision'] },
-    messages: [{ role: 'user', content: 'Describe this' }],
-    images: [{ base64: 'data:image/png;base64,abc123' }],
-  });
-  assert.equal(payload.model, 'runtime-model');
-  assert.equal(payload.messages.some((message) => message.images?.length), false);
+test('fails over to DeepSeek when the MIRA gateway returns a 200 error page', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const originalKey = process.env.MIRA_API_TOKEN;
+  const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  process.env.MIRA_OPENAI_BASE_URL = 'https://mira-buffered-error.test/v1';
+  process.env.MIRA_API_TOKEN = 'mira-server-secret';
+  process.env.DEEPSEEK_API_KEY = 'web-fallback-key';
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target === 'https://mira-buffered-error.test/v1/chat/completions') {
+      return new Response('<!DOCTYPE html><html><body>The tunnel is temporarily unavailable.</body></html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      });
+    }
+    if (target === 'https://api.deepseek.com/chat/completions') {
+      return new Response(JSON.stringify({
+        model: 'deepseek-v4-flash',
+        choices: [{ message: { content: 'DeepSeek recovered.' } }],
+      }), { status: 200 });
+    }
+    throw new Error(`Unexpected provider request: ${target}`);
+  };
+  try {
+    const freshModule = await import(`./chat.js?mira-buffered-error=${Date.now()}`);
+    const response = await freshModule.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-mira-provider'), 'deepseek');
+    assert.match(await response.text(), /DeepSeek recovered/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
+    else process.env.MIRA_OPENAI_BASE_URL = originalBaseUrl;
+    if (originalKey === undefined) delete process.env.MIRA_API_TOKEN;
+    else process.env.MIRA_API_TOKEN = originalKey;
+    if (originalDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
+  }
 });
 
 test('rejects raw images on the general chat endpoint', async () => {
@@ -104,25 +302,52 @@ test('rejects raw images on the general chat endpoint', async () => {
   assert.match((await response.json()).error, /only by \/api\/analyze/i);
 });
 
-test('forwards only supported native tools to capable registry models', () => {
-  const tools = [
-    { type: 'function', function: { name: 'web.search', description: 'Search', parameters: { type: 'object', properties: { query: { type: 'string' } } } } },
-    { type: 'function', function: { name: 'container.exec', parameters: { type: 'object' } } },
-  ];
-  assert.equal(sanitizeTools(tools).length, 1);
-  const payload = buildUpstreamPayload({
-    registryModel: { name: 'runtime-model', capabilities: ['completion', 'tools'] },
-    messages: [{ role: 'user', content: 'Latest price?' }],
-    tools,
-  });
-  assert.deepEqual(payload.tools.map((tool) => tool.function.name), ['web.search']);
+test('accepts the desktop screen-context schema for the native companion relay', () => {
+  const tools = sanitizeTools([{
+    type: 'function',
+    function: {
+      name: 'desktop.screen_context',
+      description: 'Inspect the current desktop screen.',
+      parameters: {
+        type: 'object',
+        properties: { focus: { type: 'string' } },
+        required: ['focus'],
+      },
+    },
+  }]);
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].function.name, 'desktop.screen_context');
 });
 
-test('forwards allowlisted tools when Ollama tags omit tool capability metadata', () => {
-  const payload = buildUpstreamPayload({
-    registryModel: { name: 'coder-model', capabilities: ['completion'] },
-    messages: [{ role: 'user', content: 'Check the weather.' }],
-    tools: [{ type: 'function', function: { name: 'weather.lookup', parameters: { type: 'object', properties: { city: { type: 'string' } } } } }],
-  });
-  assert.deepEqual(payload.tools.map((tool) => tool.function.name), ['weather.lookup']);
+test('requires MIRA primary configuration even when DeepSeek exists', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.MIRA_OPENAI_BASE_URL;
+  const originalMiraKey = process.env.MIRA_API_TOKEN;
+  const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  delete process.env.MIRA_OPENAI_BASE_URL;
+  delete process.env.MIRA_API_TOKEN;
+  process.env.DEEPSEEK_API_KEY = 'fallback-only-key';
+  globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
+  try {
+    const freshModule = await import(`./chat.js?all-unavailable=${Date.now()}`);
+    const response = await freshModule.POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
+    }));
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), {
+      error: 'The MIRA API is not fully configured.',
+      code: 'mira_primary_not_configured',
+      retryable: false,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.MIRA_OPENAI_BASE_URL;
+    else process.env.MIRA_OPENAI_BASE_URL = originalBaseUrl;
+    if (originalMiraKey === undefined) delete process.env.MIRA_API_TOKEN;
+    else process.env.MIRA_API_TOKEN = originalMiraKey;
+    if (originalDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
+  }
 });

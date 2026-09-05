@@ -51,6 +51,12 @@ test('website inspection and greetings bypass generic retrieval', () => {
     allowSearchTool: false,
     searchPriority: false,
   });
+  assert.deepEqual(decideRetrievalPolicy({ directConversation: true, engineNeedsSearch: true }), {
+    search: false,
+    includeMedia: false,
+    allowSearchTool: false,
+    searchPriority: false,
+  });
 });
 
 test('manual web mode always fetches evidence before answering', () => {
