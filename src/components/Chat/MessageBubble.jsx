@@ -693,6 +693,19 @@ function GeneratedImageCard({ prompt, image, generation }) {
   );
 }
 
+function GeneratedImagePendingCard() {
+  return (
+    <div className="generated-image-card not-prose" role="status" aria-live="polite">
+      <div className="generated-image-frame status-loading">
+        <div className="generated-image-loader">
+          <div className="generated-image-spinner" />
+          <span>Generating and saving image…</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GeneratedVideoCard({ prompt }) {
   const [retryNonce, setRetryNonce] = useState(0);
   const [status, setStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
@@ -1125,11 +1138,15 @@ function MessageBubble({ message, isLast, onRetry, onEdit, webSearch = false, is
                 <img src={message.image} alt="Generated" className="rounded-xl mb-3 max-w-full shadow-lg" />
               )}
               {imagePrompt ? (
-                <GeneratedImageCard
-                  prompt={imagePrompt}
-                  image={message.generatedMedia?.images?.[0]}
-                  generation={message.generatedMedia?.generation}
-                />
+                message.isStreaming ? (
+                  <GeneratedImagePendingCard />
+                ) : (
+                  <GeneratedImageCard
+                    prompt={imagePrompt}
+                    image={message.generatedMedia?.images?.[0]}
+                    generation={message.generatedMedia?.generation}
+                  />
+                )
               ) : videoPrompt ? (
                 <GeneratedVideoCard prompt={videoPrompt} />
               ) : message.isStreaming && message.content ? (

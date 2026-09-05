@@ -31,6 +31,7 @@ test('keeps deterministic query formation only as an outage fallback', async () 
   }
   assert.equal(fallbackSearchQuery('Please tell me about MIRA AI'), 'MIRA AI');
   assert.equal(fallbackSearchQuery('Can you help me with better understanding of canact'), 'canact');
+  assert.equal(fallbackSearchQuery('Okay can you let me know what an algae tree is?'), 'algae tree');
 });
 
 test('never turns assistant self-description into a web query', async () => {

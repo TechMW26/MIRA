@@ -82,6 +82,7 @@ import { sendDesktopNotification } from '../services/desktopBridge.js';
 import {
   conversationHydrationTimeline,
   hasConversationHydrated,
+  mergeRealtimeAssistantSnapshot,
 } from '../services/chatHydration.js';
 import { buildSearchToolGuidance, decideRetrievalPolicy } from '../services/retrievalPolicy.js';
 import {
@@ -1254,21 +1255,7 @@ export default function useChat() {
             lastStableAssistantByIdRef.current.set(incoming.id, incomingContent);
           }
 
-          // Realtime snapshots can briefly emit empty assistant content during
-          // write propagation; keep the last stable finalized content.
-          if (
-            isAssistant
-            && !incomingContent.trim()
-            && !incoming.isStreaming
-            && (stable || String(prev?.content || '').trim())
-          ) {
-            return {
-              ...incoming,
-              content: stable || prev.content,
-            };
-          }
-
-          return incoming;
+          return mergeRealtimeAssistantSnapshot(incoming, prev, stable);
         });
 
         // Preserve local echoes that were rendered instantly on send, until
@@ -3269,8 +3256,9 @@ export default function useChat() {
           }
 
           // ── Model-driven fallback web search ──
-          // Execute retrieval only after MIRA explicitly requests web.search.
-          // Host-side confidence heuristics must never initiate a search.
+          // The factual retrieval gate prefetches mandatory evidence above.
+          // This path handles additional web.search calls explicitly requested
+          // by MIRA when no prefetched result satisfied the turn.
           const explicitSearchRequest = extractWebSearchRequest(fullText);
           if (explicitSearchRequest?.query) {
             if (requestedWebSearchQuery !== explicitSearchRequest.query) {

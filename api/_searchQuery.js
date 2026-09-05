@@ -24,6 +24,7 @@ export function fallbackSearchQuery(latestMessage = '', context = '') {
   const exact = cleanQuery(latestMessage)
     .replace(/^(?:okay|ok|alright|right)[,!\.\s]+/i, '')
     .replace(/^(?:please\s+)?(?:can|could|would)\s+you\s+/i, '')
+    .replace(/^(?:please\s+)?(?:tell\s+me|let\s+me\s+know|explain)\s+(?:about\s+)?/i, '')
     .replace(/^(?:please\s+)?(?:perform|prepare|give|provide)\s+(?:me\s+)?/i, '')
     .trim();
   const subject = extractSearchSubject(exact
@@ -34,8 +35,10 @@ export function fallbackSearchQuery(latestMessage = '', context = '') {
   const withoutReferences = subject
     .replace(/\b(it|its|this|that|these|those|they|them|their|theirs|his|her|hers|same|former|latter)\b/gi, ' ')
     .replace(/\b(?:on|about|for)\s+(?=market\b)/gi, ' ')
+    .replace(/^what\s+(.+?)\s+(?:is|are|was|were)\s*\??$/i, '$1')
     .replace(/^(?:what|who|where|when|why|how)\s+/i, '')
     .replace(/^(?:does|do|did|is|are|was|were|can)\s+/i, '')
+    .replace(/^(?:the|a|an)\s+/i, '')
     .replace(/\bdo\s*$/i, '')
     .replace(/\b(?:some|extensive)\b/gi, ' ')
     .replace(/\s+/g, ' ')

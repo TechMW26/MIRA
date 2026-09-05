@@ -111,6 +111,7 @@ const RESEARCH_INTENT_SIGNALS = [
 // phrasings like "tell me something about X").
 const INFO_INTENT_SIGNALS = [
   /\b(tell\s+me\s+(?:something|more|anything|everything|a\s+bit|a\s+little)?\s*about|tell\s+me\s+about)\b/i,
+  /\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:tell\s+me|let\s+me\s+know|explain)\s+(?:what|who|when|where|which|how)\b/i,
   /\b(what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+are)|where\s+(?:is|are)|how\s+(?:big|small|tall|old|long|much|many)\s+(?:is|are))\b/i,
   /\b(do\s+you\s+know|have\s+you\s+heard\s+of|ever\s+heard\s+of|familiar\s+with|any\s+idea\s+(?:what|who|where))\b/i,
   /\b(give\s+me\s+(?:some\s+)?(?:info|information|details|background|context)|share\s+(?:info|information|details))\b/i,
@@ -118,9 +119,38 @@ const INFO_INTENT_SIGNALS = [
   /\b(more\s+about|info\s+(?:on|about)|details?\s+(?:on|about)|background\s+on|context\s+on)\b/i,
 ];
 
-// Words that name very broad / well-known topics. An LLM almost certainly
-// knows these from training, so informational prompts about them stay on
-// the model and don't waste a web search call.
+// Questions whose answer asserts externally checkable facts. The host makes
+// retrieval mandatory for these prompts, while MIRA remains responsible for
+// turning the current turn and its conversation context into the actual query.
+// This avoids both ungrounded answers and literal searches for follow-ups such
+// as "what does it do?".
+const FACTUAL_INTENT_SIGNALS = [
+  /\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:tell\s+me|let\s+me\s+know|explain|find\s+out)\s+(?:what|who|when|where|which|how|whether)\b/i,
+  /^\s*(?:okay|ok|alright|right)?[,!.\s]*(?:what|who|when|where|which)\s+(?:is|are|was|were|does|do|did|has|have|caused|created|founded|owns?|makes?|means?)\b/i,
+  /\bwhat\s+[^?!.]{1,120}\s+(?:is|are|was|were|means?)\s*\??\s*$/i,
+  /^\s*(?:okay|ok|alright|right)?[,!.\s]*(?:how\s+(?:does|do|did|is|are|was|were|many|much|long|old|big|small|far)|why\s+(?:does|do|did|is|are|was|were))\b/i,
+  /^\s*(?:tell\s+me\s+(?:something|more|anything|everything|a\s+bit|a\s+little)?\s*about|explain|define|describe|give\s+me\s+(?:an?\s+)?(?:overview|background|history)\s+of)\b/i,
+  /^\s*(?:is|are|was|were|did|does|do|has|have)\s+[^?!.]{2,180}\?\s*$/i,
+  /\b(?:fact[-\s]?check|verify|validate|confirm|is\s+it\s+true)\b/i,
+];
+
+const NON_FACTUAL_TASK_SIGNALS = [
+  /^\s*(?:write|draft|compose|rewrite|rephrase|proofread|summarize|summarise|translate)\b/i,
+  /^\s*(?:generate|create|draw|paint|design|make)\b.*\b(?:image|picture|photo|illustration|logo|poem|story|song|script)\b/i,
+  /^\s*(?:calculate|compute|solve|simplify|differentiate|integrate)\b/i,
+  /\b(?:implement|debug|fix|refactor|write|build|create)\b.*\b(?:code|function|class|component|api|website|app|test|bug)\b/i,
+];
+
+export function isFactBasedQuestion(text = '') {
+  const value = String(text || '').trim();
+  if (!value || isAssistantIdentityQuestion(value)) return false;
+  if (NON_FACTUAL_TASK_SIGNALS.some((rx) => rx.test(value))) return false;
+  return FACTUAL_INTENT_SIGNALS.some((rx) => rx.test(value));
+}
+
+// Words that name broad / well-known topics. These remain useful for scoring
+// bare topic fragments; explicit fact-based questions are validated regardless
+// of whether their subject is common.
 const COMMON_TOPIC_TOKENS = new Set([
   'love','life','death','time','money','happiness','sadness','luck','fate',
   'food','water','air','fire','earth','sky','sun','moon','star','stars',
@@ -210,6 +240,11 @@ function detectSearchNeed(text, hasImages = false) {
   // 2) Image-grounded research about an attached photo.
   if (hasImages && IMAGE_GROUNDED_SEARCH_SIGNALS.some((rx) => rx.test(value))) return true;
 
+  // 3) Fact-based questions require external validation. Retrieval is
+  // deterministic so the model cannot accidentally skip it; MIRA plans the
+  // contextual search query in /api/search-query before evidence is fetched.
+  if (isFactBasedQuestion(value)) return true;
+
   const researchIntent = RESEARCH_INTENT_SIGNALS.some((rx) => rx.test(value));
   const infoIntent = INFO_INTENT_SIGNALS.some((rx) => rx.test(value));
   const specificity = scoreTopicSpecificity(value);
@@ -219,7 +254,7 @@ function detectSearchNeed(text, hasImages = false) {
     .map((token) => token.replace(/[^a-z0-9-]/g, ''))
     .filter((token) => token && !STRUCTURAL_STOPWORDS.has(token));
 
-  // 3) Bare topic shorthand — a short prompt that is just a topic, optionally
+  // 4) Bare topic shorthand — a short prompt that is just a topic, optionally
   //    ending in "?". e.g. "Algaetree?", "TensorFlow", or "OpenAI?".
   //    Treat as implicit "tell me about X" and search when the topic is
   //    specific enough that an LLM may not know it.
@@ -229,7 +264,7 @@ function detectSearchNeed(text, hasImages = false) {
 
   if (!researchIntent && !infoIntent) return false;
 
-  // 4) Investigative intent ("do some digging on X") almost always triggers
+  // 5) Investigative intent ("do some digging on X") almost always triggers
   //    search; we only block trivially short prompts with zero topic surface.
   if (researchIntent) {
     if (specificity.score >= 1) return true;
@@ -249,10 +284,8 @@ function detectSearchNeed(text, hasImages = false) {
     return true;
   }
 
-  // 5) Informational intent → search only when the topic looks specific
-  //    enough that a general LLM is unlikely to know it reliably. This keeps
-  //    "what is gravity" cheap while routing "tell me about algaetree" to
-  //    live sources.
+  // 6) Non-question informational intent → search when the topic looks
+  //    specific enough that a general model may not know it reliably.
   const evergreen = EVERGREEN_PROMPT_SIGNALS.some((rx) => rx.test(value));
   if (evergreen && specificity.score < 3) return false;
   return specificity.score >= 2;

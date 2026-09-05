@@ -1,10 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { needsFreshInformation, processQuery, shouldUseModelThinking } from './engine.js';
+import {
+  isFactBasedQuestion,
+  needsFreshInformation,
+  processQuery,
+  shouldUseModelThinking,
+} from './engine.js';
 
-test('keeps evergreen explanations offline', () => {
-  assert.equal(processQuery('Explain how gravity works').needsSearch, false);
-  assert.equal(processQuery('What does recursion mean?').needsSearch, false);
+test('requires web validation for fact-based questions, including conversational wrappers', () => {
+  assert.equal(processQuery('Explain how gravity works').needsSearch, true);
+  assert.equal(processQuery('What does recursion mean?').needsSearch, true);
+  assert.equal(processQuery('Okay can you let me know what an algae tree is?').needsSearch, true);
+  assert.equal(processQuery('Is giant kelp an algae?').needsSearch, true);
+  assert.equal(isFactBasedQuestion('Could you please tell me who founded Anthropic?'), true);
 });
 
 test('keeps assistant identity and capability questions out of web retrieval', () => {
@@ -46,6 +54,13 @@ test('keeps greetings and ordinary conversation out of media generation', () => 
   assert.equal(processQuery('Hello there').interpretation.imageIntent, false);
   assert.equal(processQuery('How are you?').interpretation.videoIntent, false);
   assert.equal(processQuery('Please generate an image of an elephant').interpretation.imageIntent, true);
+});
+
+test('does not turn creative, transformation, calculation, or implementation work into web searches', () => {
+  assert.equal(processQuery('Write a poem about gravity').needsSearch, false);
+  assert.equal(processQuery('Translate this sentence into Hindi').needsSearch, false);
+  assert.equal(processQuery('Calculate 37 * 42').needsSearch, false);
+  assert.equal(processQuery('Build a React component for a profile card').needsSearch, false);
 });
 
 test('uses reasoning only when request complexity justifies its latency', () => {

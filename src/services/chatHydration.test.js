@@ -4,6 +4,7 @@ import {
   MISSING_CONVERSATION_GRACE_MS,
   conversationHydrationTimeline,
   hasConversationHydrated,
+  mergeRealtimeAssistantSnapshot,
   shouldDeferMissingConversationReset,
 } from './chatHydration.js';
 
@@ -39,4 +40,28 @@ test('never clears a locally-created conversation while subscriptions catch up',
     conversationsReady: true,
     existsInList: false,
   }), false);
+});
+
+test('never lets a late realtime snapshot replace a persisted generated image', () => {
+  const persisted = {
+    id: 'assistant-image',
+    role: 'assistant',
+    content: '[IMAGE_GEN: a real algae tree]',
+    isStreaming: false,
+    generatedMedia: {
+      images: [{ url: 'https://blob.example/algae-tree.png' }],
+      generation: { mode: 'generate' },
+    },
+  };
+  const staleSnapshot = {
+    id: 'assistant-image',
+    role: 'assistant',
+    content: '[IMAGE_GEN: a real algae tree]',
+    isStreaming: false,
+  };
+
+  assert.deepEqual(
+    mergeRealtimeAssistantSnapshot(staleSnapshot, persisted).generatedMedia,
+    persisted.generatedMedia,
+  );
 });
