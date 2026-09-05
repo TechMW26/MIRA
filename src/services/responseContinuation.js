@@ -14,7 +14,7 @@ export async function completeChatResponse(options, requestSegment) {
   let answer = '';
   let thinking = '';
   let result;
-  for (let segment = 0; segment < 3; segment += 1) {
+  for (let segment = 0; ; segment += 1) {
     const prefix = answer;
     try {
       result = await requestSegment({
@@ -40,7 +40,8 @@ export async function completeChatResponse(options, requestSegment) {
     answer = appendContinuation(prefix, result.answer || '');
     thinking += result.thinking || '';
     if (!result.incomplete || result.finishReason === 'tool_calls') return { ...result, answer, thinking };
-    if (!(result.answer || '').trim()) break;
+    // Stop a stalled/repeating provider, not an answer that is still progressing.
+    if (!(result.answer || '').trim() || answer === prefix) break;
   }
   // Keep the partial content visible; never label it a complete response.
   answer += '\n\n_Response interrupted before completion. Ask me to continue from here._';

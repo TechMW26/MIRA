@@ -5,8 +5,8 @@ function normalizedOrigin(value, fallback) {
   return String(value || fallback).trim().replace(/\/+$/, '');
 }
 
-function cleanText(value, maxLength = 60_000) {
-  return String(value || '').replace(/\u0000/g, '').slice(0, maxLength);
+function cleanText(value) {
+  return String(value || '').replace(/\u0000/g, '');
 }
 
 function parseArguments(value) {
@@ -21,7 +21,6 @@ function parseArguments(value) {
 
 function sanitizeMessages(messages = []) {
   return (Array.isArray(messages) ? messages : [])
-    .slice(-36)
     .map((message) => ({
       role: ['system', 'assistant', 'user'].includes(message?.role) ? message.role : 'user',
       content: cleanText(message?.content, 80_000),

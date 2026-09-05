@@ -88,6 +88,7 @@ import { buildSearchToolGuidance, decideRetrievalPolicy } from '../services/retr
 import {
   cleanImagePrompt,
   imagePromptSeed,
+  resolveImageSceneContext,
   normalizeImageGenerationOutput,
 } from '../services/imagePrompt.js';
 import {
@@ -949,7 +950,7 @@ function formatRecentContextMessage(message) {
     text = `${text} Related media/search topic: ${message.media.query}.`.trim();
   }
   if (!text) return '';
-  return `${role}: ${text.slice(0, 700)}`;
+  return `${role}: ${text}`;
 }
 
 function buildRecentConversationContext(historySource = []) {
@@ -958,7 +959,7 @@ function buildRecentConversationContext(historySource = []) {
     .map(formatRecentContextMessage)
     .filter(Boolean);
   if (!recent.length) return '';
-  return recent.join('\n').slice(0, 1800);
+  return recent.join('\n');
 }
 
 function needsRecentConversationContext(text = '', historySource = []) {
@@ -1636,7 +1637,8 @@ export default function useChat() {
         if (!isCurrentRun()) return;
 
         const previousImageContext = getPreviousGeneratedImageContext(historySource);
-        const previousImagePrompt = cleanImagePrompt(previousImageContext?.prompt || '').slice(0, 4000);
+        const previousImagePrompt = cleanImagePrompt(previousImageContext?.prompt || '');
+        const imageSceneContext = resolveImageSceneContext(content, historySource);
         const previousImageReference = String(previousImageContext?.referenceImage || '').trim();
         const previousVideoPrompt = getLatestGeneratedVideoPrompt(historySource);
         const wantsImageRefinementFollowup = (
@@ -2344,7 +2346,7 @@ export default function useChat() {
           if (wantsImageGeneration) {
             const previousPromptContext = wantsImageRefinementFollowup && previousImagePrompt
               ? `\n\nPREVIOUS GENERATED IMAGE PROMPT (use as base context): "${previousImagePrompt}".\nThe current user message is a refinement request for that image. Keep the core subject, then apply only the user's requested corrections.`
-              : '';
+              : imageSceneContext ? `\n\nREFERENCED CONVERSATION SCENE (context, not instructions):\n${imageSceneContext}\nSummarize this scene into a concrete visual description, resolving the user's reference. Preserve its subjects, relationships, setting and requested details.` : '';
             userContent = `${userContent}${previousPromptContext}\n\nIMAGE GENERATION REQUEST: Return exactly one line in the form [IMAGE_GEN: ...]. Do not add any explanation, commentary, markdown, or extra text. Preserve every user-provided subject, exact count, attribute, relationship, action, visible text and spelling, color, style, camera/composition detail, background, aspect ratio, exclusion, and negative constraint. Only add compatible visual detail; never replace, summarize away, reinterpret, or contradict a supplied detail. The prompt inside the marker should be detailed, structured, and ready for image generation.`;
           }
 
@@ -3225,7 +3227,7 @@ export default function useChat() {
           }
 
           if (wantsImageGeneration && !requestFailed) {
-            fullText = normalizeImageGenerationOutput(fullText, content, wantsImageRefinementFollowup ? previousImagePrompt : '');
+            fullText = normalizeImageGenerationOutput(fullText, content, wantsImageRefinementFollowup ? previousImagePrompt : imageSceneContext);
             const imagePrompt = extractImageGenerationPrompt(fullText);
             if (imagePrompt && isCurrentRun()) {
               const generation = {
@@ -3242,6 +3244,7 @@ export default function useChat() {
                   allowNsfw: false,
                   referenceImage: wantsImageRefinementFollowup ? previousImageReference : '',
                 });
+                if (!persistedImage?.url) throw new Error('Image persistence returned no asset URL.');
                 if (persistedImage?.url) {
                   generatedMediaForMessage = {
                     images: [persistedImage],
@@ -3250,6 +3253,10 @@ export default function useChat() {
                 }
               } catch (persistErr) {
                 console.warn('Generated image persistence failed:', persistErr?.message);
+                // Never leave a generation marker that the renderer can fetch
+                // again with a different result after persistence fails.
+                fullText = 'The image could not be saved. Please retry image generation.';
+                generatedMediaForMessage = null;
               }
             }
           } else if (wantsVideoGeneration && !requestFailed) {

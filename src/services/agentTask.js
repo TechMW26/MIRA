@@ -2,8 +2,6 @@ import { fallbackSearchQuery } from './searchQuery.js';
 
 const MAX_TASK_STEPS = 5;
 const MAX_RESEARCH_STEPS = 4;
-const MAX_CONTEXT_CHARS = 14000;
-const MAX_STEP_RESULT_CHARS = 5000;
 const MAX_STEP_ATTEMPTS = 3;
 const FALLBACK_START = '=== USER-SAFE TASK FALLBACK ===';
 const FALLBACK_END = '=== END USER-SAFE TASK FALLBACK ===';
@@ -16,9 +14,8 @@ const PLANNING_WORKFLOW_PATTERN = /\b(plan|roadmap|strategy|step[-\s]?by[-\s]?st
 const EXTERNAL_EVIDENCE_PATTERN = /\b(web|internet|online|sources?|citations?|evidence|data\s+sources?|current|latest|recent|today|market|news|pricing|availability|verify|fact[-\s]?check)\b/i;
 const MULTILINGUAL_RESEARCH_PATTERN = /(?:रिसर्च|शोध|गहराई\s+से|पता\s+लगाओ|जाँच\s+पड़ताल|जांच\s+पड़ताल|इंटरनेट\s+पर|वेब\s+पर|ताज़ा|ताजा|वर्तमान|नवीनतम|深入研究|调查|研究一下|詳しく調べ|調査|深掘り|심층\s*조사|조사해|연구해|بحث\s+متعمق|ابحث\s+بعمق|تحقق|исследуй|расследуй|проведи\s+исследование|গভীর\s+গবেষণা|তদন্ত)|\b(?:investiga|investigar|recherche|pesquisa|ricerca|recherchieren|untersuchen|onderzoek|araştır|araştırma|recherche approfondie)\b/iu;
 
-function compact(value = '', limit = MAX_CONTEXT_CHARS) {
-  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
-  return normalized.length <= limit ? normalized : `${normalized.slice(0, limit).trim()}…`;
+function compact(value = '') {
+  return String(value || '').trim();
 }
 
 export function shouldRunAgentTask({
@@ -151,7 +148,7 @@ function formatSearchEvidence(payload = {}, query = '') {
 
 function buildStepPrompt({ goal, context, plan, step, index, results }) {
   const priorResults = results.map((result, resultIndex) => (
-    `Completed step ${resultIndex + 1} (${plan[resultIndex].title}):\n${compact(result?.text || result, MAX_STEP_RESULT_CHARS)}`
+    `Completed step ${resultIndex + 1} (${plan[resultIndex].title}):\n${compact(result?.text || result)}`
   )).join('\n\n');
   return [
     `Execute step ${index + 1} of ${plan.length} for this goal: ${compact(goal)}`,
@@ -278,7 +275,7 @@ export function buildTaskConclusionPrompt({ goal, context, plan, results }) {
     ...results.map((result, index) => JSON.stringify({
       title: plan[index]?.title,
       status: result.status,
-      result: String(result.text || '').slice(0, MAX_STEP_RESULT_CHARS),
+      result: String(result.text || ''),
     })),
   ].join('\n\n');
 }

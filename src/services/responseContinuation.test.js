@@ -3,6 +3,20 @@ import assert from 'node:assert/strict';
 import { appendContinuation, completeChatResponse } from './responseContinuation.js';
 import { readChatResponse } from './api.js';
 
+test('continues progressing responses beyond three segments without cutting content', async () => {
+  let calls = 0;
+  const result = await completeChatResponse({messages:[]}, async () => ({answer:`Section ${++calls}.\n`,incomplete:calls < 6}));
+  assert.equal(calls, 6);
+  assert.equal(result.answer, Array.from({length:6}, (_,i)=>`Section ${i+1}.\n`).join(''));
+});
+
+test('stops a repeated incomplete segment without looping forever', async () => {
+  let calls = 0;
+  const result = await completeChatResponse({messages:[]}, async () => {calls++; return {answer:'Repeated response with no further progress.',incomplete:true};});
+  assert.equal(calls, 2);
+  assert.equal(result.incomplete, true);
+});
+
 test('removes exact repeated paragraph overlap when resuming', () => {
   const repeated='Prepare the workshop materials and confirm attendance.';
   assert.equal(appendContinuation('First: '+repeated,repeated+' Then begin.'),'First: '+repeated+' Then begin.');

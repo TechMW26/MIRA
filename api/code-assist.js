@@ -122,12 +122,11 @@ async function embeddingModel(key, signal) {
   return cachedEmbeddingModel;
 }
 
-function cleanSuggestion(value, maxLength) {
+function cleanSuggestion(value) {
   return String(value || '')
     .replace(/^```[^\n]*\n?/i, '')
     .replace(/\n?```$/i, '')
     .replace(/^(?:suggestion|completion|answer):\s*/i, '')
-    .slice(0, maxLength)
     .trimEnd();
 }
 
@@ -168,10 +167,9 @@ function workspacePrompt({ request, evidence }) {
 
 function sanitizeMessages(messages = []) {
   return (Array.isArray(messages) ? messages : [])
-    .slice(-24)
     .map((message) => ({
       role: ['system', 'assistant', 'user', 'tool'].includes(message?.role) ? message.role : 'user',
-      content: String(message?.content || '').slice(0, 30_000),
+      content: String(message?.content || ''),
     }))
     .filter((message) => message.content);
 }

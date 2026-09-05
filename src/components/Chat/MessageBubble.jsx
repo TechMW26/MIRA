@@ -472,7 +472,7 @@ function GeneratedImageCard({ prompt, image, generation }) {
   }, [hasPersistedImage, persistedImageUrl, persistedLoadMode, persistedRetryNonce]);
 
   const imageUrl = useMemo(
-    () => (hasPersistedImage ? persistedImageSource : generatedImageUrl),
+    () => (hasPersistedImage ? persistedImageSource : ''),
     [hasPersistedImage, persistedImageSource, generatedImageUrl]
   );
 
@@ -483,7 +483,7 @@ function GeneratedImageCard({ prompt, image, generation }) {
 
   // Reset to loading whenever we point at a new URL
   useEffect(() => {
-    setStatus('loading');
+    setStatus(imageUrl ? 'loading' : 'error');
   }, [imageUrl]);
 
   useEffect(() => {
@@ -609,10 +609,10 @@ function GeneratedImageCard({ prompt, image, generation }) {
 
         {status === 'error' && (
           <div className="generated-image-loader generated-image-errored">
-            <span>Image failed to generate.</span>
-            <button type="button" onClick={handleRetry} className="generated-image-retry">
+            <span>{hasPersistedImage ? 'The saved image could not be loaded.' : 'No saved image is available. Ask MIRA to generate it again.'}</span>
+            {hasPersistedImage && <button type="button" onClick={handleRetry} className="generated-image-retry">
               Retry
-            </button>
+            </button>}
           </div>
         )}
       </div>

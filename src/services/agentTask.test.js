@@ -9,7 +9,15 @@ import {
   parseAgentPlan,
   runAgentTask,
   shouldRunAgentTask,
+  buildTaskConclusionPrompt,
 } from './agentTask.js';
+
+test('conclusion receives full formatted evidence and conversation context', () => {
+  const long = 'Detailed planning evidence.\n'.repeat(2000) + 'FINAL_CRITICAL_DETAIL';
+  const prompt = buildTaskConclusionPrompt({goal:long,context:long,plan:[{title:'Analyze'}],results:[{status:'done',text:long}]});
+  assert.equal(prompt.split('FINAL_CRITICAL_DETAIL').length - 1, 3);
+  assert.ok(prompt.includes('Detailed planning evidence.\n'));
+});
 
 test('broadens repeated task searches instead of retrying the same branded sentence', () => {
   const queries = buildTaskSearchQueries({
