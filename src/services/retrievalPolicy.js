@@ -3,13 +3,14 @@ export function decideRetrievalPolicy({
   engineNeedsSearch = false,
   websiteInspection = false,
   simpleGreeting = false,
+  directConversation = false,
   mediaRequested = false,
   visualSearch = false,
   contextualSearch = false,
   contextualMedia = false,
   hasAuthoritativeContext = false,
 } = {}) {
-  if (websiteInspection || simpleGreeting) {
+  if (websiteInspection || simpleGreeting || directConversation) {
     return {
       search: false,
       includeMedia: false,

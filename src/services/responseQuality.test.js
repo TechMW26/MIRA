@@ -54,6 +54,14 @@ test('rejects irrelevant identity and capability disclaimers', () => {
   assert.ok(result.reasons.includes('false-capability-denial'));
 });
 
+test('accepts a MIRA self-description when the user asks for it', () => {
+  const result = assessResponseQuality({
+    answer: "I'm MIRA, an AI assistant built by MW FutureTech.",
+    userQuery: 'Tell me something about yourself!',
+  });
+  assert.equal(result.ok, true);
+});
+
 test('accepts a direct cited grounded answer', () => {
   const result = assessResponseQuality({
     answer: "India's most expensive yacht is reported to be Lakshmi Mittal's Amevi, valued around Rs 1,000 crore [1].",

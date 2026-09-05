@@ -92,6 +92,7 @@ export default function ChatInput({
   onSteer,
   onStop,
   isGenerating,
+  isStartingChat = false,
   isConversationBusy = false,
   busyUser = null,
   isSearching,
@@ -188,6 +189,10 @@ export default function ChatInput({
   function handleSubmit(e, mode = queueMode ? 'queue' : 'send') {
     e?.preventDefault();
     if (!input.trim() && attachments.length === 0) return;
+    if (isStartingChat) {
+      setAttachmentNotice('Preparing this chat. Your next message is still here.');
+      return;
+    }
     if (mode === 'queue' && queueLimitReached) {
       setAttachmentNotice('The prompt queue is full. Remove one before adding another.');
       return;
@@ -589,7 +594,17 @@ export default function ChatInput({
                 {voiceActive ? <MicOff size={18} /> : <Mic size={18} />}
               </button>
 
-              {isGenerating ? (
+              {isStartingChat ? (
+                <button
+                  type="button"
+                  disabled
+                  className="composer-send-btn"
+                  title="Preparing chat"
+                  aria-label="Preparing chat"
+                >
+                  <Loader size={18} className="animate-spin" />
+                </button>
+              ) : isGenerating ? (
                 <>
                   <button
                     type="button"

@@ -1,6 +1,7 @@
 import { isSearchResultRelevant } from './webSearch.js';
+import { isAssistantIdentityQuestion } from './contextPolicy.js';
 
-const IDENTITY_QUESTION_RE = /\b(who are you|what are you|your name|who (?:made|built|created|powers) you|what model)\b/i;
+const IDENTITY_QUESTION_RE = /\b(who (?:made|built|created|powers) you|what model)\b/i;
 const UNJUSTIFIED_REFUSAL_RE = /\b(?:i (?:cannot|can['’]?t|couldn['’]?t|am unable to|do not have|don['’]?t have)|unable to answer|cannot answer|can['’]?t answer|couldn['’]?t answer)\b/i;
 const SEARCH_META_RE = /\b(?:(?:the |these )?(?:provided )?search results?\s+(?:do not|don['’]?t|did not|didn['’]?t|only|contain|focus|discuss|provided)|(?:i\s+)?couldn['’]?t find (?:any )?(?:relevant )?(?:information|details|evidence)[^.!?]{0,80}(?:provided )?search results?)\b/i;
 const ACCESS_DENIAL_RE = /\b(?:no access to|cannot access|can't access|cannot browse|can't browse|knowledge cut[- ]?off|training data)\b/i;
@@ -73,9 +74,10 @@ export function assessResponseQuality({
   const reasons = [];
   const grounded = Array.isArray(searchData?.results) && searchData.results.length > 0;
   const evidenceRelevant = grounded && isSearchResultRelevant(searchData, searchQuery || userQuery);
+  const identityRequested = isAssistantIdentityQuestion(userQuery) || IDENTITY_QUESTION_RE.test(userQuery);
 
   if (text.length < 12) reasons.push('answer-too-short');
-  if (!IDENTITY_QUESTION_RE.test(userQuery) && /^\s*i am mira\b/i.test(text)) {
+  if (!identityRequested && /^\s*i(?:'m| am) mira\b/i.test(text)) {
     reasons.push('irrelevant-identity-introduction');
   }
   if (ACCESS_DENIAL_RE.test(text)) reasons.push('false-capability-denial');
@@ -86,7 +88,7 @@ export function assessResponseQuality({
     reasons.push('search-process-meta-answer');
   }
   const queryTokens = meaningfulTokens(userQuery);
-  if (text.length >= 40 && queryTokens.length) {
+  if (!identityRequested && text.length >= 40 && queryTokens.length) {
     const lower = text.toLowerCase();
     const overlap = queryTokens.filter((token) => lower.includes(token)).length;
     if (overlap === 0) reasons.push('answer-off-topic');

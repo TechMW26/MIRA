@@ -33,6 +33,7 @@ import MiraLogo from '../common/MiraLogo';
 import useUserProfile from '../../hooks/useUserProfile';
 import {
   subscribeConversations,
+  getConversation,
   deleteConversation,
   subscribeProjects,
   createProject,
@@ -43,6 +44,7 @@ import {
   inviteProjectMember,
   removeProjectMember,
   subscribeProjectConversations,
+  getProjectConversation,
   subscribeProjectInvitations,
   subscribeOutgoingProjectInvitations,
   acceptProjectInvitation,
@@ -55,7 +57,10 @@ import {
 import { groupConversationsByDate } from '../../utils/helpers';
 import { stopChatGeneration } from '../../services/api';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
-import { MISSING_CONVERSATION_GRACE_MS } from '../../services/chatHydration.js';
+import {
+  MISSING_CONVERSATION_GRACE_MS,
+  shouldDeferMissingConversationReset,
+} from '../../services/chatHydration.js';
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
@@ -65,6 +70,7 @@ export default function Sidebar() {
     startNewChat, sidebarOpen, setSidebarOpen, setShowSettings,
     activeProjectId, setActiveProjectId,
     unlockProject, isProjectUnlocked,
+    pendingConversationId, confirmConversationRoute,
   } = useChatContext();
 
   // Auto-hide only after the pointer has remained outside for three seconds.
@@ -91,6 +97,7 @@ export default function Sidebar() {
   }, [sidebarOpen, cancelHide]);
 
   const [conversations, setConversations] = useState([]);
+  const [conversationsReady, setConversationsReady] = useState(false);
   const [projects, setProjects] = useState([]);
   const [sharedProjectConversations, setSharedProjectConversations] = useState([]);
   const [sharedProjectConversationsReady, setSharedProjectConversationsReady] = useState(false);
@@ -127,7 +134,11 @@ export default function Sidebar() {
 
   useEffect(() => {
     if (!user) return;
-    const unsub1 = subscribeConversations(user.uid, setConversations);
+    setConversationsReady(false);
+    const unsub1 = subscribeConversations(user.uid, (next) => {
+      setConversations(next);
+      setConversationsReady(true);
+    });
     const unsub2 = subscribeProjects(user.uid, setProjects);
     const unsub3 = subscribeProjectInvitations(user.uid, setProjectInvitations);
     return () => { unsub1(); unsub2(); unsub3(); };
@@ -161,30 +172,64 @@ export default function Sidebar() {
   }, [activeProjectId]);
 
   useEffect(() => {
+    let cancelled = false;
     if (missingConversationTimer.current) {
       clearTimeout(missingConversationTimer.current);
       missingConversationTimer.current = null;
     }
     if (currentConversationId) {
-      if (activeProjectId && !sharedProjectConversationsReady) return;
-      if (!activeProjectId && conversations.length === 0) return;
       const exists = conversations.some((conversation) => conversation.id === currentConversationId)
         || sharedProjectConversations.some((conversation) => conversation.id === currentConversationId);
-      if (!exists) {
-        missingConversationTimer.current = setTimeout(() => {
-          stopChatGeneration();
-          setCurrentConversationId(null);
-          missingConversationTimer.current = null;
+      if (exists) {
+        confirmConversationRoute(currentConversationId);
+      } else if (!shouldDeferMissingConversationReset({
+        conversationId: currentConversationId,
+        pendingConversationId,
+        conversationsReady: activeProjectId ? sharedProjectConversationsReady : conversationsReady,
+        existsInList: exists,
+      })) {
+        // Subscription lists can be stale after a REST write. Clear a route
+        // only after the database authoritatively confirms that it is absent.
+        missingConversationTimer.current = setTimeout(async () => {
+          try {
+            const conversation = activeProjectId
+              ? await getProjectConversation(activeProjectId, currentConversationId)
+              : await getConversation(user?.uid, currentConversationId);
+            if (cancelled) return;
+            if (conversation) {
+              confirmConversationRoute(currentConversationId);
+              return;
+            }
+            stopChatGeneration();
+            setCurrentConversationId(null);
+          } catch (error) {
+            // Network uncertainty must not destroy a valid in-progress route.
+            console.warn('Conversation existence check failed:', error?.message || error);
+          } finally {
+            missingConversationTimer.current = null;
+          }
         }, MISSING_CONVERSATION_GRACE_MS);
       }
     }
     return () => {
+      cancelled = true;
       if (missingConversationTimer.current) {
         clearTimeout(missingConversationTimer.current);
         missingConversationTimer.current = null;
       }
     };
-  }, [activeProjectId, currentConversationId, conversations, setCurrentConversationId, sharedProjectConversations, sharedProjectConversationsReady]);
+  }, [
+    activeProjectId,
+    confirmConversationRoute,
+    conversations,
+    conversationsReady,
+    currentConversationId,
+    pendingConversationId,
+    setCurrentConversationId,
+    sharedProjectConversations,
+    sharedProjectConversationsReady,
+    user?.uid,
+  ]);
 
   useEffect(() => {
     if (activeProjectId && projects.length > 0) {

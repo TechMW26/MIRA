@@ -159,7 +159,14 @@ function RightPanel({ id, defaultWidth, minWidth = 280, maxWidth = 900, workspac
 }
 
 export default function ChatWindow({ onMiraExpressionChange, compact = false }) {
-  const { currentConversationId, isGenerating, isSearching, activeProjectId, showWorkspace } = useChatContext();
+  const {
+    currentConversationId,
+    isGenerating,
+    isStartingChat,
+    isSearching,
+    activeProjectId,
+    showWorkspace,
+  } = useChatContext();
   const {
     messages,
     streamingContent,
@@ -541,6 +548,7 @@ export default function ChatWindow({ onMiraExpressionChange, compact = false }) 
           onSteer={(text, attachments) => steerPrompt(text, attachments, webSearch)}
           onStop={stopGenerating}
           isGenerating={isGenerating}
+          isStartingChat={isStartingChat}
           isConversationBusy={Boolean(remoteRun)}
           busyUser={remoteRun?.author}
           isSearching={isSearching}

@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildAssistantIdentityResponse,
   buildGreetingResponse,
   getPreviousGeneratedImageContext,
   getMostRecentAssistantMessage,
   isPreviousImageEditRequest,
+  isAssistantIdentityQuestion,
   isSimpleGreeting,
 } from './contextPolicy.js';
 import { selectModelTools } from './modelTools.js';
@@ -19,6 +21,17 @@ test('simple greetings form a hard text-only context boundary', () => {
   assert.equal(isSimpleGreeting('Hello, search the latest news'), false);
   assert.doesNotMatch(buildGreetingResponse('Hey'), /IMAGE_GEN|MIRA_TOOL/i);
   assert.deepEqual(selectModelTools({ disableTools: true }), []);
+});
+
+test('assistant identity questions stay conversational and produce a grounded MIRA answer', () => {
+  assert.equal(isAssistantIdentityQuestion('Tell me something about yourself!'), true);
+  assert.equal(isAssistantIdentityQuestion('Who are you?'), true);
+  assert.equal(isAssistantIdentityQuestion('What can you do?'), true);
+  assert.equal(isAssistantIdentityQuestion('Tell me something about the Algae tree'), false);
+  assert.equal(isAssistantIdentityQuestion('Search the latest MIRA release'), false);
+  assert.match(buildAssistantIdentityResponse(), /MIRA/);
+  assert.match(buildAssistantIdentityResponse(), /MW FutureTech/);
+  assert.doesNotMatch(buildAssistantIdentityResponse(), /definition|pronoun|dictionary/i);
 });
 
 test('routes only explicit previous-image edits through image context', () => {

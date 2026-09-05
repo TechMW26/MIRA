@@ -1,3 +1,5 @@
+import { isAssistantIdentityQuestion } from './contextPolicy.js';
+
 /**
  * MIRA Engine — Intelligent orchestration layer.
  *
@@ -197,6 +199,10 @@ const IMAGE_GROUNDED_SEARCH_SIGNALS = [
 function detectSearchNeed(text, hasImages = false) {
   const value = String(text || '').trim();
   if (!value) return false;
+
+  // Questions about MIRA herself are conversation, not factual lookups. This
+  // must run before broad cues such as "tell me something about" or "current".
+  if (!hasImages && isAssistantIdentityQuestion(value)) return false;
 
   // 1) Time-sensitive or explicit "look this up" cues — always search.
   if (SEARCH_SIGNALS.some((rx) => rx.test(value))) return true;

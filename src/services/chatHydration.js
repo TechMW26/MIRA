@@ -10,3 +10,15 @@ export function conversationHydrationTimeline(previous = [], { preserveOptimisti
 export function hasConversationHydrated(messages = []) {
   return Array.isArray(messages) && messages.some((message) => !message?.localEcho);
 }
+
+export function shouldDeferMissingConversationReset({
+  conversationId,
+  pendingConversationId,
+  conversationsReady = true,
+  existsInList = false,
+} = {}) {
+  if (!conversationId) return true;
+  if (!conversationsReady) return true;
+  if (existsInList) return true;
+  return String(conversationId) === String(pendingConversationId || '');
+}

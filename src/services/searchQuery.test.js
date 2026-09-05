@@ -33,6 +33,11 @@ test('keeps deterministic query formation only as an outage fallback', async () 
   assert.equal(fallbackSearchQuery('Can you help me with better understanding of canact'), 'canact');
 });
 
+test('never turns assistant self-description into a web query', async () => {
+  assert.equal(fallbackSearchQuery('Tell me something about yourself!'), '');
+  assert.equal(await formSearchQuery({ latestMessage: 'What can you do?' }), '');
+});
+
 test('uses conversation context for referential follow-ups', async () => {
   assert.equal(fallbackSearchQuery('What does it do?', 'Image-derived searchable entity: AlgaeTree'), 'AlgaeTree purpose function');
   assert.equal(fallbackSearchQuery(

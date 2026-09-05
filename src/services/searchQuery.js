@@ -1,4 +1,5 @@
 import { extractSearchSubject } from './searchRelevance.js';
+import { isAssistantIdentityQuestion } from './contextPolicy.js';
 
 export function cleanSearchQuery(value = '') {
   return String(value || '')
@@ -26,6 +27,7 @@ function contextAnchor(context = '') {
 }
 
 export function fallbackSearchQuery(latestMessage = '', context = '') {
+  if (isAssistantIdentityQuestion(latestMessage)) return '';
   const exact = cleanSearchQuery(latestMessage)
     .replace(/^(?:okay|ok|alright|right)[,!.\s]+/i, '')
     .replace(/^(?:please\s+)?(?:can|could|would)\s+you\s+/i, '')
@@ -54,6 +56,7 @@ export function fallbackSearchQuery(latestMessage = '', context = '') {
 export async function formSearchQuery({ latestMessage = '', context = '' } = {}) {
   const latest = String(latestMessage || '').trim();
   if (!latest) return '';
+  if (isAssistantIdentityQuestion(latest)) return '';
   const fallback = fallbackSearchQuery(latest, context);
   try {
     const response = await fetch('/api/search-query', {

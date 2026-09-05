@@ -4,6 +4,7 @@ import {
   MISSING_CONVERSATION_GRACE_MS,
   conversationHydrationTimeline,
   hasConversationHydrated,
+  shouldDeferMissingConversationReset,
 } from './chatHydration.js';
 
 test('preserves a just-sent optimistic message while its new conversation hydrates', () => {
@@ -23,4 +24,19 @@ test('recognizes authoritative hydration and provides enough subscription grace'
   assert.equal(hasConversationHydrated([{ id: 'local', localEcho: true }]), false);
   assert.equal(hasConversationHydrated([{ id: 'server', role: 'user' }]), true);
   assert.ok(MISSING_CONVERSATION_GRACE_MS >= 2_500);
+});
+
+test('never clears a locally-created conversation while subscriptions catch up', () => {
+  assert.equal(shouldDeferMissingConversationReset({
+    conversationId: 'new-chat',
+    pendingConversationId: 'new-chat',
+    conversationsReady: true,
+    existsInList: false,
+  }), true);
+  assert.equal(shouldDeferMissingConversationReset({
+    conversationId: 'missing-chat',
+    pendingConversationId: null,
+    conversationsReady: true,
+    existsInList: false,
+  }), false);
 });

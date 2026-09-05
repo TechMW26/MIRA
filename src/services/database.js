@@ -128,6 +128,12 @@ export async function createConversation(uid, title = 'New Chat') {
   return created;
 }
 
+export async function getConversation(uid, convId) {
+  if (!uid || !convId) return null;
+  const snapshot = await restSnapshot(`conversations/${uid}/${convId}`);
+  return snapshot.exists() ? { id: convId, ...snapshot.val() } : null;
+}
+
 export function subscribeConversations(uid, callback) {
   const cacheKey = `mira-conversations-${uid}`;
   const cached = readSubscriptionCache(cacheKey);

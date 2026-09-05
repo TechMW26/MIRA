@@ -7,6 +7,12 @@ test('keeps evergreen explanations offline', () => {
   assert.equal(processQuery('What does recursion mean?').needsSearch, false);
 });
 
+test('keeps assistant identity and capability questions out of web retrieval', () => {
+  assert.equal(processQuery('Tell me something about yourself!').needsSearch, false);
+  assert.equal(processQuery('Introduce yourself').needsSearch, false);
+  assert.equal(processQuery('What can you do?').needsSearch, false);
+});
+
 test('routes current, explicit, and high-stakes facts to search', () => {
   assert.equal(processQuery('What is the latest Bitcoin price?').needsSearch, true);
   assert.equal(processQuery('Search the web for MIRA release notes').needsSearch, true);

@@ -13,12 +13,14 @@ import { needsFreshInformation, processQuery, shouldUseModelThinking } from '../
 import { assessAndRefinePrompt, shouldRunEnhancer } from '../services/promptEnhancer';
 import {
   createConversation,
+  deleteConversation,
   addMessage,
   updateMessage,
   deleteMessage,
   updateConversation,
   updateConversationTitle,
   addConversationToProject,
+  removeConversationFromProject,
   updateProjectConversation,
   enqueueConversationPrompt,
   acquireConversationRun,
@@ -88,10 +90,12 @@ import {
   normalizeImageGenerationOutput,
 } from '../services/imagePrompt.js';
 import {
+  buildAssistantIdentityResponse,
   buildGreetingResponse,
   getPreviousGeneratedImageContext,
   getMostRecentAssistantMessage,
   isPreviousImageEditRequest,
+  isAssistantIdentityQuestion,
   isSimpleGreeting,
 } from '../services/contextPolicy.js';
 import { selectModelTools } from '../services/modelTools.js';
@@ -118,6 +122,7 @@ import {
 } from '../services/conversationContext.js';
 import { resolveProjectConversationTarget } from '../services/projectChatRecovery.js';
 import { createThrottledRealtimeWriter } from '../services/realtimeSync.js';
+import { createChatSendGate } from '../services/chatStartup.js';
 import {
   appendDesktopWorkspaceTurn,
   getDesktopWorkspaceMemory,
@@ -1000,11 +1005,12 @@ export default function useChat() {
   const {
     chatConversations,
     currentConversationId,
-    setCurrentConversationId,
     isGenerating,
     setIsGenerating,
+    setIsStartingChat,
     setIsSearching,
     activeProjectId,
+    reserveConversationRoute,
   } = useChatContext();
   const [messages, setMessages] = useState([]);
   const [streamingContent, setStreamingContent] = useState('');
@@ -1021,9 +1027,11 @@ export default function useChat() {
   const thinkingRafRef = useRef(null);
   const titleSessionRef = useRef({ conversationId: null, messages: [] });
   const generationRunRef = useRef(0);
+  const sendSequenceRef = useRef(0);
   const activeResponseRef = useRef(null);
   const workspaceHistoryRef = useRef([]);
   const optimisticConversationIdRef = useRef(null);
+  const sendGateRef = useRef(createChatSendGate());
 
   const refreshWorkspaceHistory = useCallback(async () => {
     try {
@@ -1344,11 +1352,24 @@ export default function useChat() {
 
   useEffect(() => {
     const removeExitCancellation = installGenerationExitCancellation();
+    const cancelRouteRun = () => {
+      generationRunRef.current += 1;
+      abortRef.current = true;
+      sendGateRef.current.reset();
+      cancelPendingStreamFlushes();
+      setStreamingContent('');
+      setThinkingContent('');
+      finalizeActiveResponse().catch((error) => {
+        console.warn('Failed to finalize response during chat navigation:', error?.message || error);
+      });
+    };
+    window.addEventListener('mira:chat-route-changing', cancelRouteRun);
     return () => {
       stopChatGeneration();
+      window.removeEventListener('mira:chat-route-changing', cancelRouteRun);
       removeExitCancellation();
     };
-  }, []);
+  }, [cancelPendingStreamFlushes, finalizeActiveResponse]);
 
   const pruneMessagesAfter = useCallback(async (convId, messageId, sourceMessages = messages) => {
     const index = sourceMessages.findIndex((message) => message.id === messageId);
@@ -1364,13 +1385,32 @@ export default function useChat() {
       if ((!content.trim() && attachments.length === 0) || !user) return;
       const interruptExisting = Boolean(options.interruptExisting || options.replaceMessageId);
       if (isGenerating && !interruptExisting) return;
-      const runId = generationRunRef.current + 1;
+      const runId = Math.max(generationRunRef.current, sendSequenceRef.current) + 1;
+      sendSequenceRef.current = runId;
+      if (!sendGateRef.current.acquire(runId, { interrupt: interruptExisting })) {
+        return { busy: true };
+      }
+      setIsStartingChat(true);
+      generationRunRef.current = runId;
+      abortRef.current = false;
       const projectRunToken = `${user.uid}-${Date.now()}-${runId}`;
       const messageAuthor = options.author?.uid ? options.author : profile;
       const isActingForAnotherUser = messageAuthor.uid !== user.uid;
       const requestProfile = isActingForAnotherUser ? messageAuthor : profile;
       let lockedConversationId = null;
       let convId = currentConversationId;
+      let isNewChat = false;
+      let createdConversationId = null;
+      let projectConversationAttached = false;
+      const isStartupCurrent = () => generationRunRef.current === runId && !abortRef.current;
+      const discardCreatedConversation = async () => {
+        if (!createdConversationId) return;
+        if (projectConversationAttached && activeProjectId) {
+          await removeConversationFromProject(user.uid, activeProjectId, createdConversationId).catch(() => {});
+        }
+        await deleteConversation(user.uid, createdConversationId).catch(() => {});
+        createdConversationId = null;
+      };
 
       try {
         if (activeProjectId && convId) {
@@ -1384,9 +1424,7 @@ export default function useChat() {
             conversation: projectConversation,
           });
           convId = target.conversationId;
-          if (target.recoveredMissingConversation) {
-            setCurrentConversationId(null);
-          } else {
+          if (!target.recoveredMissingConversation) {
             const acquired = await acquireConversationRun(convId, projectRunToken, messageAuthor);
             if (!acquired) {
               if (options.queueOnBusy !== false) {
@@ -1397,12 +1435,68 @@ export default function useChat() {
                   conversationId: convId,
                 }, messageAuthor);
               }
+              sendGateRef.current.release(runId);
+              setIsStartingChat(false);
               return { queued: true };
             }
             lockedConversationId = convId;
           }
         }
+
+        if (!convId) {
+          isNewChat = true;
+          const conversation = await createConversation(user.uid, 'New Chat');
+          convId = conversation.id;
+          createdConversationId = convId;
+          if (!isStartupCurrent()) {
+            await discardCreatedConversation();
+            sendGateRef.current.release(runId);
+            setIsStartingChat(false);
+            return { cancelled: true };
+          }
+          if (activeProjectId) {
+            await addConversationToProject(user.uid, activeProjectId, convId);
+            projectConversationAttached = true;
+            const acquired = await acquireConversationRun(convId, projectRunToken, messageAuthor);
+            if (!acquired) throw new Error('This project chat became busy. Please send again.');
+            lockedConversationId = convId;
+          }
+
+          if (!isStartupCurrent()) {
+            if (lockedConversationId) {
+              releaseConversationRun(lockedConversationId, projectRunToken).catch(() => {});
+              lockedConversationId = null;
+            }
+            await discardCreatedConversation();
+            sendGateRef.current.release(runId);
+            setIsStartingChat(false);
+            return { cancelled: true };
+          }
+
+          // The persisted conversation and its unique route are prerequisites
+          // for rendering a user turn or dispatching any model work.
+          optimisticConversationIdRef.current = convId;
+          await reserveConversationRoute(convId);
+        }
+
+        if (generationRunRef.current !== runId || abortRef.current) {
+          if (lockedConversationId) {
+            releaseConversationRun(lockedConversationId, projectRunToken).catch(() => {});
+            lockedConversationId = null;
+          }
+          await discardCreatedConversation();
+          sendGateRef.current.release(runId);
+          setIsStartingChat(false);
+          return { cancelled: true };
+        }
       } catch (preflightError) {
+        if (lockedConversationId) {
+          releaseConversationRun(lockedConversationId, projectRunToken).catch(() => {});
+          lockedConversationId = null;
+        }
+        await discardCreatedConversation();
+        sendGateRef.current.release(runId);
+        setIsStartingChat(false);
         const failureText = `Sorry, I couldn't start that chat. ${preflightError?.message || 'Please try again.'}`;
         setMessages((previous) => [...previous, {
           id: `local-assistant-error-${Date.now()}`,
@@ -1415,7 +1509,6 @@ export default function useChat() {
         sendDesktopNotification({ title: 'MIRA needs your attention', body: failureText }).catch(() => {});
         return { error: preflightError, answer: failureText };
       }
-      generationRunRef.current = runId;
       const interruptedResponse = options.steering && activeResponseRef.current?.content
         ? { ...activeResponseRef.current }
         : null;
@@ -1430,8 +1523,8 @@ export default function useChat() {
       }
 
       const isCurrentRun = () => generationRunRef.current === runId && !abortRef.current;
-      abortRef.current = false;
       cancelPendingStreamFlushes();
+      setIsStartingChat(false);
       setIsGenerating(true);
       setStreamingContent('');
       setThinkingContent('');
@@ -1513,6 +1606,10 @@ export default function useChat() {
       let wantsImageGeneration = promptInterpretation.imageIntent === true;
       let wantsVideoGeneration = promptInterpretation.videoIntent === true;
       const simpleGreeting = !hasImages && attachments.length === 0 && isSimpleGreeting(content);
+      const assistantIdentityQuestion = !hasImages
+        && attachments.length === 0
+        && isAssistantIdentityQuestion(content);
+      const directConversation = simpleGreeting || assistantIdentityQuestion;
       const requestedDocumentFormat = (wantsImageGeneration || wantsVideoGeneration)
         ? null
         : detectDocumentRequest(content, textAttachments.length > 0);
@@ -1524,20 +1621,6 @@ export default function useChat() {
       let documentVisualImages = [];
 
       try {
-        let isNewChat = false;
-        if (!convId) {
-          isNewChat = true;
-          const conv = await createConversation(user.uid, 'New Chat');
-          convId = conv.id;
-          optimisticConversationIdRef.current = convId;
-          setCurrentConversationId(convId);
-          if (activeProjectId) {
-            await addConversationToProject(user.uid, activeProjectId, convId);
-            const acquired = await acquireConversationRun(convId, projectRunToken, messageAuthor);
-            if (!acquired) throw new Error('This project chat became busy. Please send again.');
-            lockedConversationId = convId;
-          }
-        }
         if (!isCurrentRun()) return;
 
         let historySource = isNewChat
@@ -1607,6 +1690,7 @@ export default function useChat() {
           engineNeedsSearch: hasAuthoritativeContext ? false : engineResult.needsSearch,
           websiteInspection: Boolean(websiteInspectionRequest),
           simpleGreeting,
+          directConversation,
           mediaRequested: wantsMediaGallery,
           visualSearch: shouldUseVisualAnchor,
           contextualSearch: shouldUseContextualSearch,
@@ -1616,7 +1700,7 @@ export default function useChat() {
         const agentRuntime = getAgentRuntimeCapabilities();
         const desktopWorkspaceRequest = classifyDesktopWorkspaceRequest(content, agentRuntime);
         let workspaceMemoryBlock = '';
-        if (agentRuntime.runtime === 'desktop' && !simpleGreeting) {
+        if (agentRuntime.runtime === 'desktop' && !directConversation) {
           try {
             workspaceMemoryBlock = buildWorkspaceMemoryPrompt(await getDesktopWorkspaceMemory());
           } catch (memoryError) {
@@ -1626,14 +1710,14 @@ export default function useChat() {
           }
         }
         const allowedModelTools = selectModelTools({
-          disableTools: simpleGreeting,
+          disableTools: directConversation,
           allowWebSearch: retrievalPolicy.allowSearchTool,
           allowImageGeneration: wantsImageGeneration,
           allowVideoGeneration: wantsVideoGeneration,
           runtime: agentRuntime,
         });
 
-        const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: simpleGreeting });
+        const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: directConversation });
 
         // ── Adaptive user context (token-efficient) ──
         // Cache profile locally so heuristic + future sessions can use it.
@@ -1643,7 +1727,7 @@ export default function useChat() {
           : null;
         let projectImageAnalyses = [];
         let sharedProjectContext = null;
-        if (activeProjectId && !simpleGreeting) {
+        if (activeProjectId && !directConversation) {
           try {
             sharedProjectContext = await getProjectContext(activeProjectId);
           } catch (contextError) {
@@ -1814,6 +1898,18 @@ export default function useChat() {
           return;
         }
 
+        if (assistantIdentityQuestion) {
+          const identityResponse = buildAssistantIdentityResponse();
+          await updateMessage(convId, assistantMsgId, { content: identityResponse, isStreaming: false });
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, content: identityResponse, isStreaming: false, localEcho: false }
+              : message
+          )));
+          await persistWorkspaceTurn(identityResponse);
+          return;
+        }
+
         // ── Prompt enhancer / clarification gate ──
         // Before dispatching the main request, ask the same model to
         // either (a) rewrite the user's basic prompt into a richer end-to-end
@@ -1828,7 +1924,7 @@ export default function useChat() {
           hasImages,
           hasAttachments: textAttachments.length > 0,
           isReplay: Boolean(replaceMessageId),
-          isGreeting: simpleGreeting,
+          isGreeting: directConversation,
           isDocument: Boolean(requestedDocumentFormat),
         });
         if (enhancerEligible) {
@@ -2312,7 +2408,7 @@ export default function useChat() {
             text: content,
             complexity: engineResult.classification?.complexity || 'low',
             requiresResearch: taskRequiresResearch,
-            simpleGreeting,
+            simpleGreeting: directConversation,
             mediaIntent: Boolean(wantsImageGeneration || wantsVideoGeneration || wantsOnlyMediaGallery),
             websiteInspection: Boolean(websiteInspectionRequest),
           }) ? {
@@ -3631,6 +3727,8 @@ export default function useChat() {
           sendDesktopNotification({ title: 'MIRA needs your attention', body: failureText }).catch(() => {});
         }
       } finally {
+        sendGateRef.current.release(runId);
+        setIsStartingChat(false);
         if (lockedConversationId) {
           releaseConversationRun(lockedConversationId, projectRunToken).catch((error) => {
             console.warn('Failed to release project chat run:', error?.message);
@@ -3659,8 +3757,8 @@ export default function useChat() {
       isGenerating,
       messages,
       user,
-      setCurrentConversationId,
       setIsGenerating,
+      setIsStartingChat,
       setIsSearching,
       activeProjectId,
       normalizeImageForUpload,
@@ -3669,6 +3767,7 @@ export default function useChat() {
       persistConversationUpdate,
       finalizeActiveResponse,
       profile,
+      reserveConversationRoute,
     ]
   );
 
