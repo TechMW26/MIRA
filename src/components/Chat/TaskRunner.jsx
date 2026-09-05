@@ -37,6 +37,7 @@ function extractJsonArray(text) {
 }
 
 const PHASE_LABELS = {
+  'awaiting-input': 'Waiting for your reply',
   planning: 'Planning',
   executing: 'Executing',
   synthesizing: 'Synthesizing',
@@ -280,7 +281,9 @@ export default function TaskRunner({
         </div>
 
         <div className="p-3 flex-shrink-0" style={{ borderTop: '1px solid var(--border)' }}>
-          {isRunning ? (
+          {workflow.status === 'awaiting-input' ? (
+            <p role="status" className="text-xs" style={{ color: 'var(--text-primary)' }}>Reply to MIRA’s questions in the chat to continue.</p>
+          ) : isRunning ? (
             <button
               onClick={onStop}
               className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition-all hover:opacity-90"

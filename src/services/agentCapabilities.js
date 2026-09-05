@@ -93,6 +93,7 @@ export function classifyDesktopWorkspaceRequest(text = '', runtime = getAgentRun
 }
 
 const WEB_CAPABILITIES = Object.freeze([
+  'user.ask',
   AGENT_CAPABILITIES.WEB_SEARCH,
   AGENT_CAPABILITIES.BROWSER_INSPECT,
   AGENT_CAPABILITIES.CALCULATOR,

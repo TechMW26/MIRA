@@ -11,6 +11,7 @@ const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const CHAT_TEMPERATURE = 0.2;
 const ALLOWED_ROLES = new Set(['system', 'assistant', 'user']);
 const ALLOWED_TOOL_NAMES = new Set([
+  'user.ask',
   'web.search',
   'browser.inspect',
   'calculator.evaluate',

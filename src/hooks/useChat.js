@@ -70,6 +70,7 @@ import {
   toLegacyBrowserRequest,
 } from '../services/toolControl';
 import { executeHostTool } from '../services/toolExecutor';
+import { parseClarification, formatClarification, pendingClarification, clarificationReplyContext } from '../services/clarification.js';
 import {
   assessResponseQuality,
   buildQualityCorrectionPrompt,
@@ -113,6 +114,7 @@ import {
   extractAgentTaskAnswer,
   extractAgentTaskFallback,
   runAgentTask,
+  extractTaskClarification,
   buildTaskConversationContext,
   shouldRunAgentTask,
 } from '../services/agentTask.js';
@@ -276,6 +278,7 @@ function isToolNarration(text = '') {
 function applyTaskWorkflowPhase(workflow, update = {}) {
   if (!workflow) return workflow;
   const next = { ...workflow, updatedAt: Date.now() };
+  if (update.phase === 'awaiting-input') return { ...next, phase: 'awaiting-input', status: 'awaiting-input', clarification: update.clarification };
   if (update.phase === 'planning') return { ...next, phase: 'planning', status: 'running' };
   if (update.phase === 'planned') {
     return {
@@ -1637,6 +1640,7 @@ export default function useChat() {
         }
         if (!isCurrentRun()) return;
 
+        const pendingQuestion = pendingClarification(historySource);
         const previousImageContext = getPreviousGeneratedImageContext(historySource);
         const previousImagePrompt = cleanImagePrompt(previousImageContext?.prompt || '');
         const imageSceneContext = resolveImageSceneContext(content, historySource);
@@ -2384,6 +2388,7 @@ export default function useChat() {
             return;
           }
 
+          if (pendingQuestion) userContent += `\n\n${clarificationReplyContext(pendingQuestion, content)}`;
           history.push({ role: 'user', content: userContent });
 
           const taskRequiresResearch = agentTaskRequiresResearch(content, Boolean(
@@ -2412,6 +2417,7 @@ export default function useChat() {
           if (!isCurrentRun()) return;
 
           let fullText = '';
+          let clarificationForMessage = null;
           let finalThinkingText = '';
           let requestFailed = false;
           let requestAborted = false;
@@ -2702,6 +2708,9 @@ export default function useChat() {
             }
           }
           const finalToolCall = disallowedMediaTool ? null : proposedToolCall;
+          if (finalToolCall?.name === TOOL_NAMES.ASK_USER) {
+            clarificationForMessage = parseClarification(finalToolCall.arguments, pendingQuestion?.goal || content);
+          }
           const browserInspection = requestedBrowserInspection
             || toLegacyBrowserRequest(finalToolCall)
             || extractBrowserRequest(fullText);
@@ -2907,6 +2916,14 @@ export default function useChat() {
                   }
                   if (continuationError) throw continuationError;
 
+                  if (nextToolCall?.name === TOOL_NAMES.ASK_USER) {
+                    clarificationForMessage = parseClarification(nextToolCall.arguments, pendingQuestion?.goal || content);
+                    if (clarificationForMessage) {
+                      desktopAnswer = formatClarification(clarificationForMessage);
+                      currentCall = null;
+                      break;
+                    }
+                  }
                   if (nextToolCall && DESKTOP_TOOL_NAMES.has(nextToolCall.name)) {
                     currentCall = nextToolCall;
                     desktopAnswer = '';
@@ -2951,11 +2968,11 @@ export default function useChat() {
               fullText = desktopAnswer;
               setTaskWorkflow((current) => current?.runId === runId ? {
                 ...current,
-                phase: 'completed',
-                status: 'completed',
+                phase: clarificationForMessage ? 'awaiting-input' : 'completed',
+                status: clarificationForMessage ? 'awaiting-input' : 'completed',
                 updatedAt: Date.now(),
                 steps: (current.steps || []).map((step) => (
-                  step.status === 'running' || step.status === 'pending'
+                  !clarificationForMessage && (step.status === 'running' || step.status === 'pending')
                     ? { ...step, status: 'done' }
                     : step
                 )),
@@ -3122,6 +3139,7 @@ export default function useChat() {
                 },
               });
               const isTaskResult = finalToolCall.name === TOOL_NAMES.TASK;
+              if (isTaskResult) clarificationForMessage = extractTaskClarification(toolResult);
               if (isTaskResult && isCurrentRun()) {
                 setTaskWorkflow((current) => (
                   current?.runId === runId
@@ -3190,6 +3208,7 @@ export default function useChat() {
                     ? (() => {
                       const failedSteps = (current.steps || []).filter((step) => step.status === 'error').length;
                       const summaryMissing = !extractAgentTaskAnswer(toolResult);
+                      if (clarificationForMessage) return { ...current, phase: 'awaiting-input', status: 'awaiting-input', clarification: clarificationForMessage, error: '' };
                       return {
                         ...current,
                         phase: failedSteps || summaryMissing ? 'partial' : 'completed',
@@ -3229,6 +3248,13 @@ export default function useChat() {
             fullText = `[VIDEO_GEN: ${String(finalToolCall.arguments.prompt).trim()}]`;
           }
 
+          if (clarificationForMessage) {
+            fullText = formatClarification(clarificationForMessage);
+            wantsImageGeneration = false;
+            wantsVideoGeneration = false;
+            requestedWebSearchQuery = '';
+            setTaskWorkflow(current => current?.runId === runId ? { ...current, phase: 'awaiting-input', status: 'awaiting-input', clarification: clarificationForMessage } : current);
+          }
           if (wantsImageGeneration && !requestFailed) {
             fullText = normalizeImageGenerationOutput(fullText, content, wantsImageRefinementFollowup ? previousImagePrompt : imageSceneContext);
             const imagePrompt = extractImageGenerationPrompt(fullText);
@@ -3509,6 +3535,8 @@ export default function useChat() {
           // relevant evidence. Reject that draft and regenerate once with a
           // stronger model and a precise correction contract.
           const qualityEligible =
+            !clarificationForMessage
+            &&
             !requestFailed
             && isCurrentRun()
             && !wantsImageGeneration
@@ -3609,7 +3637,7 @@ export default function useChat() {
               options.onResponseChunk?.(fullText, { final: true });
             }
 
-            const requestedFormat = requestedDocumentFormat;
+            const requestedFormat = clarificationForMessage ? null : requestedDocumentFormat;
             let titleSource = fullText;
             if (requestedFormat) {
               const sanitizedContent = ensureVerifiedDocumentImages(sanitizeDocumentContent(fullText), documentVisualImages);
@@ -3646,6 +3674,7 @@ export default function useChat() {
             } else {
               const assistantUpdate = {
                 content: fullText,
+                ...(clarificationForMessage ? { clarification: clarificationForMessage } : {}),
                 isStreaming: false,
                 ...(finalThinkingText ? { thinkingContent: finalThinkingText } : {}),
                 ...(workspaceChangesForMessage.length ? { workspaceChanges: workspaceChangesForMessage } : {}),

@@ -16,6 +16,10 @@ function functionTool(name, description, properties, required = []) {
 }
 
 export const MODEL_TOOLS = [
+  functionTool('user.ask', 'Ask the user for essential missing context or a material decision. Pauses work until their reply. Check existing conversation first; do not ask for secrets.', {
+    questions: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'string' }, description: 'One to three focused questions, avoiding details already supplied.' },
+    reason: { type: 'string', description: 'Briefly explain why these answers are needed.' },
+  }, ['questions']),
   functionTool('web.search', 'Search the live web for current or verifiable information.', {
     query: { type: 'string', description: 'A concise search-engine-ready query.' },
   }, ['query']),

@@ -1,4 +1,5 @@
 import { fallbackSearchQuery } from './searchQuery.js';
+import { parseClarification, formatClarification } from './clarification.js';
 
 const MAX_TASK_STEPS = 5;
 const MAX_RESEARCH_STEPS = 4;
@@ -25,11 +26,19 @@ export function buildTaskConversationContext(history = [], projectContext = '') 
     ...history.filter((message) => ['user', 'assistant'].includes(message?.role)).map((message) => JSON.stringify({
       role: message.role,
       content: message.promptContent || message.content || '',
+      ...(message.clarification?.progress ? { priorTaskProgress: message.clarification.progress } : {}),
     })),
   ].filter(Boolean).join('\n\n');
 }
 
 function completedPhaseText(result) {
+  const clarification = parseClarification(result?.answer ?? result);
+  if (clarification) {
+    const error = new Error('User clarification is required.');
+    error.name = 'ClarificationRequiredError';
+    error.clarification = clarification;
+    throw error;
+  }
   if (result && typeof result === 'object') {
     if (result.incomplete || result.finishReason === 'length') {
       const error = new Error('The task response was interrupted before completion. Partial work is preserved below.');
@@ -143,11 +152,12 @@ export function parseAgentPlan(text = '', { goal = '', requiresResearch = false 
 export function buildAgentPlanPrompt({ goal = '', context = '', requiresResearch = false } = {}) {
   return [
     'Create a compact execution plan for the goal below.',
+    'First check the supplied context. If an essential decision or fact only the user can supply is missing, return only {"questions":["one to three focused questions"],"reason":"why the answers matter"} instead of a plan. Do not ask for information already supplied, optional preferences, or secrets. If the user delegates choices, use reasonable assumptions and proceed.',
     `Use 2-${MAX_TASK_STEPS} sequential steps with explicit dependencies.`,
     requiresResearch
       ? 'Use tool "web.search" only for steps that need new external evidence; use tool "reason" for analysis and synthesis.'
       : 'Use tool "reason" for every step. Do not request external tools.',
-    'Return only JSON: [{"title":"...","instruction":"...","tool":"reason|web.search","query":"required only for web.search"}]',
+    'If clarification is needed, return only the questions object described above and no execution steps. Otherwise return only this JSON plan: [{"title":"...","instruction":"...","tool":"reason|web.search","query":"required only for web.search"}]',
     `Goal: ${compact(goal)}`,
     context ? `Available context/evidence: ${compact(context)}` : '',
   ].filter(Boolean).join('\n\n');
@@ -177,6 +187,7 @@ function buildStepPrompt({ goal, context, plan, step, index, results }) {
   return [
     `Execute step ${index + 1} of ${plan.length} for this goal: ${compact(goal)}`,
     `Current step: ${step.title}\nInstruction: ${step.instruction}`,
+    'If this step cannot proceed without an essential user decision missing from the context, return only {"questions":["focused question"],"reason":"why it matters"}. Do not invent the decision.',
     context ? `Available context and verified evidence:\n${compact(context)}` : '',
     priorResults ? `Prior step results (failed or incomplete work is not verified evidence):\n${priorResults}` : '',
     index === plan.length - 1
@@ -225,7 +236,7 @@ export function buildTaskSearchQueries({ query = '', goal = '', context = '', in
 }
 
 function retryableTaskError(error) {
-  if (error?.name === 'AbortError' || error?.name === 'IncompleteTaskResponseError') return false;
+  if (['AbortError', 'IncompleteTaskResponseError', 'ClarificationRequiredError'].includes(error?.name)) return false;
   const message = String(error?.message || error || '').toLowerCase();
   return !/(analysis unavailable|not approved|permission denied|unauthori[sz]ed|invalid credential|authentication failed|bad request)/i.test(message);
 }
@@ -320,6 +331,12 @@ export function extractAgentTaskAnswer(handoff = '') {
   return value.slice(start + ANSWER_START.length, end).trim();
 }
 
+export function extractTaskClarification(handoff = '') {
+  const payload = String(handoff).match(/^TASK_CLARIFICATION_JSON:(.+)$/m)?.[1];
+  if (!payload) return null;
+  try { const value = JSON.parse(payload); return parseClarification(value, value.goal); } catch { return null; }
+}
+
 export function agentTaskUsedRecovery(handoff = '') {
   return String(handoff || '').includes(RECOVERY_MARKER);
 }
@@ -336,6 +353,12 @@ export async function runAgentTask({
   if (!String(goal || '').trim()) throw new Error('A task goal is required.');
   if (typeof generate !== 'function') throw new Error('The task planning model is unavailable.');
   const useResearch = agentTaskRequiresResearch(goal, requiresResearch);
+  const results = [];
+  const waitForUser = (clarification) => {
+    const request = { ...clarification, goal, ...(results.length ? { progress: JSON.stringify(results) } : {}) };
+    onPhase?.({ phase: 'awaiting-input', clarification: request });
+    return `TASK_CLARIFICATION_JSON:${JSON.stringify(request)}\n${ANSWER_START}\n${formatClarification(request)}\n${ANSWER_END}`;
+  };
   let generationUnavailable = false;
   let usedGenerationRecovery = false;
 
@@ -349,6 +372,7 @@ export async function runAgentTask({
     plan = parseAgentPlan(planText, { goal, requiresResearch: useResearch });
   } catch (error) {
     if (error?.name === 'AbortError') throw error;
+    if (error.clarification) return waitForUser(error.clarification);
     generationUnavailable = retryableTaskError(error);
     usedGenerationRecovery = generationUnavailable;
     plan = fallbackAgentPlan(goal, useResearch);
@@ -363,7 +387,6 @@ export async function runAgentTask({
     })),
   });
 
-  const results = [];
   for (let index = 0; index < plan.length; index += 1) {
     const step = plan[index];
     onPhase?.({ phase: 'executing', step: index + 1, total: plan.length, title: step.title });
@@ -416,6 +439,7 @@ export async function runAgentTask({
       });
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
+      if (error.clarification) return waitForUser(error.clarification);
       const result = `Step could not be completed: ${error?.message || 'Unknown error'}${error?.partialAnswer ? `\n\nIncomplete partial work (not a completed result):\n${error.partialAnswer}` : ''}`;
       results.push({ status: 'error', text: result });
       onPhase?.({
@@ -440,6 +464,7 @@ export async function runAgentTask({
       if (!preferredAnswer) throw new Error('The final summary was empty.');
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
+      if (error.clarification) return waitForUser(error.clarification);
       incompleteConclusion = error.partialAnswer || '';
       usedGenerationRecovery = true;
     }

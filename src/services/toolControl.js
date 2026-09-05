@@ -1,4 +1,5 @@
 export const TOOL_NAMES = Object.freeze({
+  ASK_USER: 'user.ask',
   WEB_SEARCH: 'web.search',
   BROWSER_INSPECT: 'browser.inspect',
   CALCULATOR: 'calculator.evaluate',
