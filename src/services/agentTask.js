@@ -350,13 +350,18 @@ export async function runAgentTask({
   generate,
   search,
   onPhase,
+  checkpoint,
 } = {}) {
   if (!String(goal || '').trim()) throw new Error('A task goal is required.');
   if (typeof generate !== 'function') throw new Error('The task planning model is unavailable.');
   const useResearch = agentTaskRequiresResearch(goal, requiresResearch);
-  const results = [];
+  const validCheckpoint = Array.isArray(checkpoint?.plan) && checkpoint.plan.length > 0
+    && checkpoint.plan.every(step => typeof step?.title === 'string' && typeof step?.instruction === 'string' && ['reason', 'web.search'].includes(step.tool))
+    && Array.isArray(checkpoint.results) && checkpoint.results.length <= checkpoint.plan.length
+    && checkpoint.results.every(result => ['done', 'error'].includes(result?.status) && typeof result.text === 'string');
+  const results = validCheckpoint ? checkpoint.results.map(result => ({...result})) : [];
   const waitForUser = (clarification) => {
-    const request = { ...clarification, goal, ...(results.length ? { progress: JSON.stringify(results) } : {}) };
+    const request = { ...clarification, goal, task: true, ...(plan?.length ? {checkpoint: {plan, results: results.map(result => ({...result}))}} : {}), ...(results.length ? { progress: JSON.stringify(results) } : {}) };
     onPhase?.({ phase: 'awaiting-input', clarification: request });
     return `TASK_CLARIFICATION_JSON:${JSON.stringify(request)}\n${ANSWER_START}\n${formatClarification(request)}\n${ANSWER_END}`;
   };
@@ -364,8 +369,8 @@ export async function runAgentTask({
   let usedGenerationRecovery = false;
 
   onPhase?.({ phase: 'planning' });
-  let plan;
-  try {
+  let plan = validCheckpoint ? checkpoint.plan.map(step => ({...step})) : null;
+  if (!plan) try {
     const planText = completedPhaseText(await generate(buildAgentPlanPrompt({ goal, context, requiresResearch: useResearch }), {
       phase: 'planning',
       think: false,
@@ -388,7 +393,9 @@ export async function runAgentTask({
     })),
   });
 
-  for (let index = 0; index < plan.length; index += 1) {
+  results.forEach((result, index) => onPhase?.({phase: result.status === 'done' ? 'step-completed' : 'step-error', step: index + 1, total: plan.length, title: plan[index].title, result: result.text}));
+
+  for (let index = results.length; index < plan.length; index += 1) {
     const step = plan[index];
     onPhase?.({ phase: 'executing', step: index + 1, total: plan.length, title: step.title });
     try {

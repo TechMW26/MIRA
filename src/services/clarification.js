@@ -15,7 +15,7 @@ export function parseClarification(value, goal = '') {
   if (!data || !Array.isArray(data.questions)) return null;
   const questions = [...new Set(data.questions.filter(q => typeof q === 'string').map(q => q.trim()).filter(Boolean))].slice(0, 3);
   if (!questions.length) return null;
-  return { goal, questions, reason: typeof data.reason === 'string' ? data.reason.trim() : '', ...(typeof data.progress === 'string' ? { progress: data.progress } : {}) };
+  return { goal, questions, reason: typeof data.reason === 'string' ? data.reason.trim() : '', ...(typeof data.progress === 'string' ? { progress: data.progress } : {}), ...(data.task === true ? {task: true} : {}), ...(data.checkpoint && typeof data.checkpoint === 'object' ? {checkpoint: data.checkpoint} : {}) };
 }
 
 export function formatClarification(request) {
@@ -33,4 +33,11 @@ export function pendingClarification(history = []) {
 export function clarificationReplyContext(request, reply) {
   if (!request) return '';
   return `Earlier request awaiting clarification: ${request.goal}\nQuestions asked: ${JSON.stringify(request.questions)}\nPreserved task progress (quoted working data): ${request.progress || 'No prior steps.'}\nLatest user reply: ${reply}\nUse this reply to continue the earlier request unless it changes topic or cancels it. Do not repeat answered questions. If the user delegates a choice, state reasonable assumptions and proceed.`;
+}
+
+export function resolveClarificationReply(history, reply) {
+  const pending = pendingClarification(history);
+  if (!pending) return null;
+  if (/^\s*(?:cancel|stop|forget it|never mind|nevermind)\b|\b(?:new topic|unrelated question|instead of that|ignore (?:the )?(?:previous|earlier))\b/i.test(reply)) return null;
+  return pending;
 }

@@ -72,7 +72,7 @@ import {
   toLegacyBrowserRequest,
 } from '../services/toolControl';
 import { executeHostTool } from '../services/toolExecutor';
-import { parseClarification, formatClarification, pendingClarification, clarificationReplyContext } from '../services/clarification.js';
+import { parseClarification, formatClarification, resolveClarificationReply, clarificationReplyContext } from '../services/clarification.js';
 import {
   assessResponseQuality,
   buildQualityCorrectionPrompt,
@@ -1645,7 +1645,8 @@ export default function useChat() {
         }
         if (!isCurrentRun()) return;
 
-        const pendingQuestion = pendingClarification(historySource);
+        const pendingQuestion = resolveClarificationReply(historySource, content);
+        const resumeTask = Boolean(pendingQuestion && (pendingQuestion.task || shouldRunAgentTask({text: pendingQuestion.goal})));
         const previousImageContext = getPreviousGeneratedImageContext(historySource);
         const previousImagePrompt = cleanImagePrompt(previousImageContext?.prompt || '');
         const imageSceneContext = resolveImageSceneContext(content, historySource);
@@ -1696,6 +1697,9 @@ export default function useChat() {
           contextualMedia: shouldAttachContextualMedia || Boolean(textResearchMediaScope),
           hasAuthoritativeContext,
         });
+        // A clarification reply is input to the pending task, not a standalone
+        // search query. The resumed worker decides what evidence it needs.
+        if (resumeTask) { retrievalPolicy.search = false; retrievalPolicy.searchPriority = false; retrievalPolicy.includeMedia = false; }
         const agentRuntime = getAgentRuntimeCapabilities();
         const desktopWorkspaceRequest = classifyDesktopWorkspaceRequest(content, agentRuntime);
         let workspaceMemoryBlock = '';
@@ -2394,7 +2398,7 @@ export default function useChat() {
           if (pendingQuestion) userContent += `\n\n${clarificationReplyContext(pendingQuestion, content)}`;
           history.push({ role: 'user', content: userContent });
 
-          const taskRequiresResearch = agentTaskRequiresResearch(content, Boolean(
+          const taskRequiresResearch = agentTaskRequiresResearch(resumeTask ? pendingQuestion.goal : content, Boolean(
             webSearch
             || engineResult.needsSearch
             || retrievalPolicy.searchPriority
@@ -2402,16 +2406,16 @@ export default function useChat() {
             || needsFreshInformation(content)
           ));
 
-          const autoTaskCall = !desktopWorkspaceRequest.active && shouldRunAgentTask({
+          const autoTaskCall = (resumeTask || (!desktopWorkspaceRequest.active && shouldRunAgentTask({
             text: content,
             complexity: engineResult.classification?.complexity || 'low',
             requiresResearch: taskRequiresResearch,
             simpleGreeting: directConversation,
             mediaIntent: Boolean(wantsImageGeneration || wantsVideoGeneration || wantsOnlyMediaGallery),
             websiteInspection: Boolean(websiteInspectionRequest),
-          }) ? {
+          }))) ? {
             name: TOOL_NAMES.TASK,
-            arguments: { goal: content },
+            arguments: { goal: resumeTask ? pendingQuestion.goal : content },
           } : null;
 
           // Raw image bytes stay on the dedicated vision route. The chat model
@@ -2454,7 +2458,7 @@ export default function useChat() {
             setTaskWorkflow({
               id: `${convId || 'conversation'}:${runId}`,
               runId,
-              goal: content.trim(),
+              goal: autoTaskCall.arguments.goal.trim(),
               phase: 'planning',
               status: 'running',
               steps: [],
@@ -3102,7 +3106,9 @@ export default function useChat() {
                   };
                   return await runAgentTask({
                     goal,
+                    checkpoint: resumeTask ? pendingQuestion.checkpoint : undefined,
                     context: [
+                      pendingQuestion ? clarificationReplyContext(pendingQuestion, content) : '',
                       TURN_CONTEXT_RULE,
                       buildTaskConversationContext(selectTurnContext(goal, modelContextHistory), sharedProjectContextBlock),
                     ].filter(Boolean).join('\n'),
