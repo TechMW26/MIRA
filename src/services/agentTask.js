@@ -183,7 +183,7 @@ function formatSearchEvidence(payload = {}, query = '') {
 
 function buildStepPrompt({ goal, context, plan, step, index, results }) {
   const priorResults = results.map((result, resultIndex) => (
-    `Step ${resultIndex + 1} (${plan[resultIndex].title}), status: ${result.status || 'unknown'}:\n${compact(result?.text || result)}`
+    `Step ${resultIndex + 1} (${plan[resultIndex].title}), status: ${result.status || 'unknown'}:\n${result.status === 'error' ? (result.failureReason || 'Failed. No usable evidence from this step.') : compact(result?.text || result)}`
   )).join('\n\n');
   return [
     `Execute step ${index + 1} of ${plan.length} for this goal: ${compact(goal)}`,
@@ -311,7 +311,7 @@ export function buildTaskConclusionPrompt({ goal, context, plan, results }) {
     ...results.map((result, index) => JSON.stringify({
       title: plan[index]?.title,
       status: result.status,
-      result: String(result.text || ''),
+      result: result.status === 'error' ? (result.failureReason || 'Failed. No usable evidence from this step.') : String(result.text || ''),
     })),
   ].join('\n\n');
 }

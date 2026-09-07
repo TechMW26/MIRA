@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { orderMessages } from '../services/messageOrder.js';
+import { selectTurnContext, TURN_CONTEXT_RULE } from '../services/turnContext.js';
 import {
   installGenerationExitCancellation,
   sendChatMessage,
@@ -1715,7 +1716,8 @@ export default function useChat() {
           runtime: agentRuntime,
         });
 
-        const history = buildModelHistory(historySource, promptInterpretation, { isGreeting: directConversation });
+        const modelContextHistory = selectTurnContext(content, historySource);
+        const history = buildModelHistory(modelContextHistory, promptInterpretation, { isGreeting: directConversation });
 
         // ── Adaptive user context (token-efficient) ──
         // Cache profile locally so heuristic + future sessions can use it.
@@ -1785,7 +1787,7 @@ export default function useChat() {
         const adaptiveContext = buildAdaptiveContext({
           profile: requestProfile,
           conversation: currentConversation,
-          messages: historySource,
+          messages: modelContextHistory,
           mode: contextMode,
           learnedFacts: learnedFactsBlock,
         });
@@ -1797,6 +1799,7 @@ export default function useChat() {
         // Mira's stable identity and behavior contract live in the system
         // prompt. Only small request-specific context crosses the network.
         const runtimeContextBlock = [
+          TURN_CONTEXT_RULE,
           modalityBoundary,
           desktopWorkspaceRequest.active
             ? `DESKTOP WORKSPACE REQUEST: Work against the open workspace now. Begin by inspecting the actual files, continue calling the provided filesystem, command, test, change-review, and Git tools until the request is complete, then report only confirmed results. ${desktopWorkspaceRequest.mutation ? 'This is an implementation request: do not stop at recommendations; apply the requested changes, inspect the resulting diff, run regression validation, and fix failures before answering.' : 'This is an inspection request: read representative source and configuration files before summarizing.'} ${desktopWorkspaceRequest.execution ? 'The user requested execution: run the relevant command in the in-app terminal and use its actual result.' : ''} ${desktopWorkspaceRequest.serverStart ? 'This is a server-start request: launch the detected development server as a persistent terminal process; do not substitute a project summary.' : ''}`
@@ -1973,7 +1976,7 @@ export default function useChat() {
           const recentContextAnchor = getRecentContextAnchor(historySource);
           const latestConversationSubject = getLatestConversationSubject(historySource);
           const recentConversationContext = needsRecentConversationContext(content, historySource)
-            ? buildRecentConversationContext(historySource)
+            ? buildRecentConversationContext(modelContextHistory)
             : '';
           const recentConversationContextBlock = recentConversationContext
             ? `\n\n=== RECENT CONVERSATION CONTEXT FOR THIS FOLLOW-UP ===\n${latestConversationSubject ? `Immediate subject: ${latestConversationSubject}\n` : ''}${recentConversationContext}\n=== END RECENT CONVERSATION CONTEXT ===\n\nThe immediately preceding exchange is the highest-priority context. Resolve pronouns and possessives such as “it”, “their”, “that game”, or “the company” against that exchange. Do not substitute an older project or search topic unless the user explicitly refers back to it. If the previous turn generated an image, treat questions like "are you sure?" as referring to that generated image/prompt unless the user clearly changes topic.`
@@ -3100,10 +3103,8 @@ export default function useChat() {
                   return await runAgentTask({
                     goal,
                     context: [
-                      latestConversationSubject
-                        ? `Recent subject anchor: ${latestConversationSubject}`
-                        : '',
-                      buildTaskConversationContext(historySource, sharedProjectContextBlock),
+                      TURN_CONTEXT_RULE,
+                      buildTaskConversationContext(selectTurnContext(goal, modelContextHistory), sharedProjectContextBlock),
                     ].filter(Boolean).join('\n'),
                     requiresResearch: agentTaskRequiresResearch(goal, taskRequiresResearch),
                     freshness: needsFreshInformation(content),
