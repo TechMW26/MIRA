@@ -1,5 +1,6 @@
 import { fallbackSearchQuery } from './searchQuery.js';
 import { parseClarification, formatClarification } from './clarification.js';
+import { validateTaskResult, taskFailureNotice } from './taskResultQuality.js';
 
 const MAX_TASK_STEPS = 5;
 const MAX_RESEARCH_STEPS = 4;
@@ -236,7 +237,7 @@ export function buildTaskSearchQueries({ query = '', goal = '', context = '', in
 }
 
 function retryableTaskError(error) {
-  if (['AbortError', 'IncompleteTaskResponseError', 'ClarificationRequiredError'].includes(error?.name)) return false;
+  if (['AbortError', 'IncompleteTaskResponseError', 'ClarificationRequiredError', 'InvalidTaskResultError'].includes(error?.name)) return false;
   const message = String(error?.message || error || '').toLowerCase();
   return !/(analysis unavailable|not approved|permission denied|unauthori[sz]ed|invalid credential|authentication failed|bad request)/i.test(message);
 }
@@ -417,10 +418,10 @@ export async function runAgentTask({
             throw new Error('Analysis unavailable: the model service has not recovered.');
           }
           try {
-            return completedPhaseText(await generate(buildStepPrompt({ goal, context, plan, step, index, results }), {
+            return validateTaskResult(completedPhaseText(await generate(buildStepPrompt({ goal, context, plan, step, index, results }), {
               phase: 'executing',
               think: false,
-            }));
+            })), `${goal}\n${step.title}\n${step.instruction}`);
           } catch (error) {
             if (!retryableTaskError(error)) throw error;
             generationUnavailable = true;
@@ -441,7 +442,11 @@ export async function runAgentTask({
       if (error?.name === 'AbortError') throw error;
       if (error.clarification) return waitForUser(error.clarification);
       const result = `Step could not be completed: ${error?.message || 'Unknown error'}${error?.partialAnswer ? `\n\nIncomplete partial work (not a completed result):\n${error.partialAnswer}` : ''}`;
-      results.push({ status: 'error', text: result });
+      const failureReason = error?.name === 'InvalidTaskResultError' ? error.message
+        : error?.name === 'IncompleteTaskResponseError' ? 'The model response was interrupted.'
+          : step.tool === 'web.search' ? 'Search did not produce usable evidence.'
+            : 'The model could not complete this part.';
+      results.push({ status: 'error', text: result, failureReason });
       onPhase?.({
         phase: 'step-error',
         step: index + 1,
@@ -453,14 +458,14 @@ export async function runAgentTask({
   }
 
   onPhase?.({ phase: 'synthesizing', total: plan.length });
-  const fallback = buildTaskFallback(goal, plan, results);
+  const fallback = [taskFailureNotice(plan, results), buildTaskFallback(goal, plan, results)].filter(Boolean).join('\n\n');
   let preferredAnswer = '';
   let incompleteConclusion = '';
   if (results.some((result) => result.status === 'done')) {
     try {
-      preferredAnswer = completedPhaseText(await generate(buildTaskConclusionPrompt({ goal, context, plan, results }), {
+      preferredAnswer = validateTaskResult(completedPhaseText(await generate(buildTaskConclusionPrompt({ goal, context, plan, results }), {
         phase: 'synthesizing', think: false,
-      })).trim();
+      })), goal);
       if (!preferredAnswer) throw new Error('The final summary was empty.');
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
@@ -470,9 +475,11 @@ export async function runAgentTask({
     }
   }
   if (!preferredAnswer) onPhase?.({ phase: 'summary-error', total: plan.length });
+  const failureNotice = taskFailureNotice(plan, results);
+  if (preferredAnswer && failureNotice) preferredAnswer = `${failureNotice}\n\n${preferredAnswer}`;
   return [
     `Original goal: ${compact(goal)}`,
-    'Completed internal work:',
+    'Internal work results (including failures; not all work is complete):',
     ...plan.map((step, index) => `\n${index + 1}. ${step.title}\n${results[index]?.text || 'No result.'}`),
     usedGenerationRecovery ? `\n${RECOVERY_MARKER}` : '',
     preferredAnswer ? `\n${ANSWER_START}\n${preferredAnswer}\n${ANSWER_END}` : '',

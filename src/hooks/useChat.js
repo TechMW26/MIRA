@@ -3536,6 +3536,7 @@ export default function useChat() {
           // stronger model and a precise correction contract.
           const qualityEligible =
             !clarificationForMessage
+            && finalToolCall?.name !== TOOL_NAMES.TASK
             &&
             !requestFailed
             && isCurrentRun()
