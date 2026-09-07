@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { orderMessages } from '../services/messageOrder.js';
 import {
   installGenerationExitCancellation,
   sendChatMessage,
@@ -1270,12 +1271,13 @@ export default function useChat() {
         if (!pendingLocalEchoes.length) return merged;
 
         const incomingFingerprints = new Set(merged.map((msg) => messageFingerprint(msg)));
+        const incomingIds = new Set(merged.map((msg) => msg.id));
         const unresolvedEchoes = pendingLocalEchoes.filter(
-          (msg) => !incomingFingerprints.has(messageFingerprint(msg)),
+          (msg) => !incomingIds.has(msg.id) && !incomingFingerprints.has(messageFingerprint(msg)),
         );
 
         if (!unresolvedEchoes.length) return merged;
-        return [...merged, ...unresolvedEchoes];
+        return orderMessages([...merged, ...unresolvedEchoes]);
 
       });
     });
@@ -1547,6 +1549,7 @@ export default function useChat() {
         }
       }
 
+      const userTimestamp = Date.now();
       if (replaceMessageId) {
         // Update edited message instantly in the local timeline while writes
         // propagate to Firebase, and prune locally-visible trailing branch.
@@ -1569,6 +1572,7 @@ export default function useChat() {
         // Show the newly-sent user message immediately without waiting for DB IO.
         const localEcho = {
           id: `local-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: userTimestamp,
           role: 'user',
           content: displayContent,
           type: 'text',
@@ -1806,8 +1810,8 @@ export default function useChat() {
           .filter(Boolean)
           .join('\n\n');
 
-        const assistantTimestamp = Date.now() + 1;
-        const assistantWrite = addMessage(convId, {
+        const assistantTimestamp = Math.max(Date.now(), userTimestamp) + 1;
+        const writeAssistant = () => addMessage(convId, {
           role: 'assistant',
           content: '',
           type: 'text',
@@ -1817,31 +1821,27 @@ export default function useChat() {
           streamStartedAt: assistantTimestamp,
         });
         if (replaceMessageId) {
-          [, assistantMsgId] = await Promise.all([
-            updateMessage(convId, replaceMessageId, {
+          await updateMessage(convId, replaceMessageId, {
               content: displayContent,
               type: 'text',
               ...(options.promptContent ? { promptContent: options.promptContent } : { promptContent: null }),
               ...(options.webPage ? { webPage: options.webPage } : { webPage: null }),
               ...(attachmentData.length > 0 ? { attachments: attachmentData } : { attachments: null }),
-            }),
-            assistantWrite,
-          ]);
+            });
         } else {
-          [, assistantMsgId] = await Promise.all([
-            addMessage(convId, {
+          await addMessage(convId, {
               role: 'user',
               content: displayContent,
               type: 'text',
-              timestamp: assistantTimestamp - 1,
+              timestamp: userTimestamp,
               ...(options.promptContent ? { promptContent: options.promptContent } : {}),
               ...(options.webPage ? { webPage: options.webPage } : {}),
               ...(attachmentData.length > 0 ? { attachments: attachmentData } : {}),
               author: messageAuthor,
-            }),
-            assistantWrite,
-          ]);
+            });
         }
+        if (!isCurrentRun()) return;
+        assistantMsgId = await writeAssistant();
         if (!isCurrentRun()) {
           await deleteMessage(convId, assistantMsgId).catch(() => {});
           return;

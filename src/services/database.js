@@ -13,6 +13,7 @@ import {
   runTransaction,
 } from 'firebase/database';
 import { buildProjectContextTurn } from './projectContext.js';
+import { orderMessages } from './messageOrder.js';
 import { fetchFirebaseSnapshot, writeFirebaseValue } from './firebaseRest.js';
 
 const PROJECT_RUN_LEASE_MS = 6 * 60 * 1000;
@@ -222,14 +223,15 @@ export async function deleteMessage(convId, msgId) {
 export function subscribeMessages(convId, callback) {
   const cacheKey = `mira-messages-${convId}`;
   const cached = readSubscriptionCache(cacheKey);
-  if (cached.length) callback(cached);
+  if (cached.length) callback(orderMessages(cached));
   const msgRef = query(ref(db, `messages/${convId}`), orderByChild('timestamp'));
   return resilientOnValue(msgRef, (snap) => {
     const msgs = [];
     snap.forEach((child) => {
       msgs.push({ id: child.key, ...child.val() });
     });
-    const cacheable = msgs.slice(-60).map((message) => ({
+    const ordered = orderMessages(msgs);
+    const cacheable = ordered.slice(-60).map((message) => ({
       ...message,
       content: String(message?.content || '').slice(0, 30_000),
       attachments: Array.isArray(message?.attachments)
@@ -237,7 +239,7 @@ export function subscribeMessages(convId, callback) {
         : message?.attachments,
     }));
     writeSubscriptionCache(cacheKey, cacheable);
-    callback(msgs);
+    callback(ordered);
   }, 'Message', `messages/${convId}`, 700);
 }
 
