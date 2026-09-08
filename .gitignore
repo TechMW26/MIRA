@@ -1,6 +1,9 @@
 node_modules
 dist
 dist-ssr
+dev-dist
+__pycache__/
+*.py[cod]
 *.local
 .env
 .DS_Store
@@ -8,3 +11,14 @@ dist-ssr
 .vercel
 .env*.local
 release
+MIRA-macOS-arm64.dmg
+MIRA-macOS-arm64.zip
+MIRA-macOS-arm64-*.dmg
+MIRA-macOS-arm64-*.zip
+MIRA-Windows-x64-Setup.exe
+MIRA-Windows-x64-Portable.exe
+MIRA-Windows-x64-Setup-*.exe
+MIRA-Windows-x64-Portable-*.exe
+/MIRA-*-macOS-*.dmg
+/MIRA-*-macOS-*.zip
+/MIRA-*-Windows.exe

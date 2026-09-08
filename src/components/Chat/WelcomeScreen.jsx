@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Code2, Lightbulb, MessageCircle, Eye, Bug, PenLine, Calculator, Database, FlaskConical, FileText,
   BarChart3, Globe, Palette, Shield, Send, X, Paperclip, Camera, RefreshCw,
@@ -100,7 +101,7 @@ function CameraCaptureModal({ onClose, onCapture }) {
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(6px)' }} onClick={onClose}>
+    <div className="fixed inset-0 z-[1010] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(6px)' }} onClick={onClose}>
       <div className="glass-strong rounded-3xl p-5 w-full max-w-lg shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -349,7 +350,7 @@ function TemplateForm({ template, onSubmit, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(4px)' }} onClick={onClose}>
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(4px)' }} onClick={onClose}>
       <div className="glass-strong rounded-3xl p-6 w-full max-w-md shadow-2xl" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between mb-5">
@@ -498,12 +499,13 @@ export default function WelcomeScreen({ onSend, onIconHover }) {
   return (
     <>
       {/* Template form modal */}
-      {selectedTemplate && (
+      {selectedTemplate && createPortal(
         <TemplateForm
           template={selectedTemplate}
           onSubmit={handleTemplateSubmit}
           onClose={() => setSelectedTemplate(null)}
-        />
+        />,
+        document.body,
       )}
 
       <ToolOrbit
@@ -516,27 +518,34 @@ export default function WelcomeScreen({ onSend, onIconHover }) {
 }
 
 /**
- * ToolOrbit — tool icons placed on a ring around the viewport-centered globe.
- * Rendered as a fixed full-viewport layer so the icons line up with the
- * full-screen particle canvas and always have room (never get clipped).
+ * ToolOrbit — tool icons placed around the particle globe within the current
+ * chat pane, including the narrower desktop workspace split.
  */
 function ToolOrbit({ tools, onSelect, onHoverChange }) {
+  const layerRef = useRef(null);
   const [vp, setVp] = useState(() => ({
     w: typeof window !== 'undefined' ? window.innerWidth : 1280,
     h: typeof window !== 'undefined' ? window.innerHeight : 800,
   }));
 
   useEffect(() => {
-    const onResize = () => setVp({ w: window.innerWidth, h: window.innerHeight });
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    const layer = layerRef.current;
+    if (!layer) return undefined;
+    const updateSize = () => setVp({
+      w: Math.max(1, layer.clientWidth),
+      h: Math.max(1, layer.clientHeight),
+    });
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(layer);
+    return () => observer.disconnect();
   }, []);
 
   const layout = useMemo(() => getGlobeLayout(vp.w, vp.h), [vp.w, vp.h]);
   const { centerX, centerY, orbitRadius, iconSize, ringDiameter: ringD } = layout;
 
   return (
-    <div className="welcome-orbit-layer">
+    <div ref={layerRef} className="welcome-orbit-layer">
       <div
         className="tool-orbit-ring outer"
         style={{ left: centerX, top: centerY, width: ringD * 1.08, height: ringD * 1.08 }}

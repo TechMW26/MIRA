@@ -30,3 +30,20 @@ test('detects direct website inspection before generic web search', () => {
   assert.equal(call.name, TOOL_NAMES.BROWSER_INSPECT);
   assert.equal(call.arguments.url, 'https://zenovalifestyle.com/');
 });
+
+test('detects Hindi website inspection requests', () => {
+  const request = detectWebsiteInspectionRequest('इस वेबसाइट को खोलो और जाँचो https://example.com');
+  assert.equal(request?.name, 'browser.inspect');
+  assert.equal(request?.arguments?.url, 'https://example.com');
+});
+
+test('detects website inspection in non-Latin languages', () => {
+  assert.equal(
+    detectWebsiteInspectionRequest('分析这个网站 https://example.com')?.name,
+    TOOL_NAMES.BROWSER_INSPECT,
+  );
+  assert.equal(
+    detectWebsiteInspectionRequest('افحص هذا الموقع https://example.com')?.name,
+    TOOL_NAMES.BROWSER_INSPECT,
+  );
+});

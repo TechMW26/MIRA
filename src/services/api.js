@@ -6,8 +6,12 @@ import {
   getChatTimeoutMessage,
   getResponseHeadersTimeout,
   shouldRetryChatRequest,
+  shouldRetryChatRequestAfterHealth,
 } from './chatRequestPolicy.js';
 import { diagnosticError, diagnosticLog, diagnosticWarn } from './diagnostics.js';
+import { notifyDesktopProviderRequired, requestDesktopAgentChat } from './desktopBridge.js';
+import { composeMiraSystemPrompt } from '../config/systemPrompt.js';
+import { completeChatResponse } from './responseContinuation.js';
 
 let activeChatAbortController = null;
 let activeChatRequestId = null;
@@ -98,11 +102,13 @@ async function diagnoseChatFailure(originalError, attemptNumber) {
       loadedModelCount: Number(health?.loadedModelCount || 0),
       latencyMs: Number(health?.latencyMs || 0),
     });
+    return health;
   } catch (error) {
     diagnosticWarn('health', 'automatic troubleshooting could not reach health endpoint', {
       attempt: attemptNumber,
       error: error?.name === 'AbortError' ? 'Health check timed out.' : (error?.message || 'Health check failed.'),
     });
+    return null;
   } finally {
     clearTimeout(timeout);
   }
@@ -222,12 +228,14 @@ export function extractThinkingText(payload) {
 }
 
 function parseStreamData(data) {
-  if (!data || data === '[DONE]') return { answer: '', thinking: '' };
+  if (!data || data === '[DONE]') return { answer: '', thinking: '', completed: data === '[DONE]' };
   try {
     const payload = JSON.parse(data);
     return {
       answer: extractChatText(payload),
       thinking: extractThinkingText(payload),
+      completed: payload.done === true || Boolean(payload.choices?.[0]?.finish_reason),
+      finishReason: payload.choices?.[0]?.finish_reason || payload.done_reason || '',
     };
   } catch {
     return {
@@ -291,7 +299,7 @@ function extractCompleteJsonChunks(buffer) {
   return { chunks, remainder: text.slice(index) };
 }
 
-async function readChatResponse(response, onChunk, signal) {
+export async function readChatResponse(response, onChunk, signal) {
   const reader = response.body?.getReader();
   if (!reader) {
     const text = await response.text();
@@ -318,8 +326,12 @@ async function readChatResponse(response, onChunk, signal) {
   let buffer = '';
   let fullAnswer = '';
   let fullThinking = '';
+  let completed = false;
+  let finishReason = '';
 
-  const append = ({ answer, thinking }) => {
+  const append = ({ answer, thinking, completed: ended, finishReason: reason }) => {
+    completed ||= Boolean(ended);
+    if (reason) finishReason = reason;
     const answerDelta = answer || '';
     const thinkingDelta = thinking || '';
     if (!answerDelta && !thinkingDelta) return;
@@ -389,11 +401,15 @@ async function readChatResponse(response, onChunk, signal) {
     }
 
     flushBuffer({ includeRemainder: true });
+  } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError' || !fullAnswer) throw error;
+    completed = false;
   } finally {
     signal?.removeEventListener?.('abort', onAbort);
   }
 
-  return { answer: fullAnswer, thinking: fullThinking };
+  if (signal?.aborted) throw new DOMException('Generation stopped by user.', 'AbortError');
+  return { answer: fullAnswer, thinking: fullThinking, incomplete: !completed || finishReason === 'length', finishReason };
 }
 
 async function extractApiError(response) {
@@ -422,7 +438,7 @@ export function stopChatGeneration() {
 
   // 1) Abort the in-flight client fetch synchronously. Closing this TCP
   //    connection makes our server fire its `req.signal`/`req.close`
-  //    listener, which in turn aborts the upstream Ollama fetch.
+  //    listener, which in turn aborts the upstream provider fetch.
   if (controller && !controller.signal.aborted) {
     diagnosticWarn('stream', 'user cancellation requested', { requestId });
     try { controller.abort(); } catch { /* ignore */ }
@@ -472,12 +488,29 @@ export function installGenerationExitCancellation() {
   };
 }
 
-async function requestChat({ messages, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think, onChunk }) {
+async function requestChat(options) {
+  return completeChatResponse(options, requestChatSegment);
+}
+
+async function requestChatSegment({
+  messages,
+  images = [],
+  systemPrompt,
+  maxTokens,
+  tools = MODEL_TOOLS,
+  think,
+  onChunk,
+  endpoint = '/api/chat',
+  desktopCoding = false,
+  requestClass = 'chat',
+}) {
   const controller = new AbortController();
   activeChatAbortController = controller;
 
   try {
-    const maxAttempts = 2;
+    // Task steps already have workflow-level retries. Retrying here as well
+    // multiplied one transient outage into six near-simultaneous requests.
+    const maxAttempts = requestClass === 'task' ? 1 : 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const requestId = createRequestId();
       activeChatRequestId = requestId;
@@ -494,9 +527,12 @@ async function requestChat({ messages, images = [], systemPrompt, maxTokens, too
           imageCount: images.length,
         });
         const response = await raceWithTimeout(
-          fetch('/api/chat', {
+          fetch(endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              ...(desktopCoding ? { 'X-Mira-Desktop': '1' } : {}),
+            },
             signal: attemptController.signal,
             body: JSON.stringify({
               requestId,
@@ -507,6 +543,8 @@ async function requestChat({ messages, images = [], systemPrompt, maxTokens, too
               ...(maxTokens ? { max_tokens: maxTokens } : {}),
               ...(Array.isArray(tools) && tools.length > 0 ? { tools } : {}),
               ...(typeof think === 'boolean' ? { think } : {}),
+              ...(desktopCoding ? { desktopCoding: true } : {}),
+              ...(requestClass === 'task' ? { requestClass: 'task' } : {}),
             }),
           }),
           getResponseHeadersTimeout(),
@@ -542,23 +580,31 @@ async function requestChat({ messages, images = [], systemPrompt, maxTokens, too
         const normalizedError = isAbortError(err) && attemptController.signal.aborted
           ? new ChatTimeoutError('response-headers')
           : err;
-        const retry = !receivedAnswer && shouldRetryChatRequest(normalizedError, attempt, maxAttempts);
-        diagnosticError('stream', retry ? 'request failed; automatic recovery started' : 'request failed', {
+        const retryCandidate = !receivedAnswer && shouldRetryChatRequest(normalizedError, attempt, maxAttempts);
+        diagnosticError('stream', retryCandidate ? 'request failed; checking automatic recovery' : 'request failed', {
           requestId,
           attempt,
-          retry,
+          retry: retryCandidate,
           error: normalizedError?.message || 'Unknown request error',
           errorType: normalizedError?.name || 'Error',
           elapsedMs: Date.now() - attemptStartedAt,
         });
-        if (!retry) throw normalizedError;
+        if (!retryCandidate) throw normalizedError;
 
         attemptController.abort();
         await cancelChatAttempt(requestId);
-        await Promise.all([
+        const [health] = await Promise.all([
           diagnoseChatFailure(normalizedError, attempt),
           wait(getChatRetryDelayMs(attempt)),
         ]);
+        if (!shouldRetryChatRequestAfterHealth(normalizedError, health)) {
+          diagnosticWarn('stream', 'automatic retry skipped while the model server is cold', {
+            requestId,
+            attempt,
+            loadedModelCount: Number(health?.loadedModelCount || 0),
+          });
+          throw normalizedError;
+        }
       } finally {
         cleanupAttemptSignal();
       }
@@ -608,36 +654,141 @@ export async function runChatCompletion({ messages, images = [], systemPrompt, m
   return { result: answer };
 }
 
+async function requestPollinationsFallback({ messages, systemPrompt, tools, maxTokens }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25_000);
+  activeChatAbortController = controller;
+  activeChatRequestId = `fallback:${createRequestId()}`;
+  try {
+    const response = await fetch('/api/code-assist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task: 'chat',
+        scope: 'desktop-coding',
+        messages,
+        systemPrompt,
+        tools,
+        maxTokens,
+      }),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new ChatHttpError(response.status, payload?.error || 'Fallback completion failed.');
+    const control = toolCallsToControl(payload?.toolCalls);
+    const answer = control || String(payload?.answer || payload?.suggestion || '').trim();
+    if (!answer) throw new Error('The fallback completion returned no result.');
+    diagnosticWarn('model', 'primary model unavailable; Pollinations completion fallback succeeded', {
+      toolCall: Boolean(control),
+      answerChars: answer.length,
+    });
+    return { answer, thinking: '', finishReason: payload?.finishReason, incomplete: payload?.finishReason === 'length' };
+  } finally {
+    clearTimeout(timeout);
+    if (activeChatAbortController === controller) activeChatAbortController = null;
+    if (String(activeChatRequestId || '').startsWith('fallback:')) activeChatRequestId = null;
+  }
+}
+
 export async function sendChatMessage(messages, onChunk, images = [], {
   onThinking,
   systemPrompt,
   tools = MODEL_TOOLS,
   think,
   maxTokens,
+  voice = false,
+  desktopCoding = false,
+  requestClass = 'chat',
+  returnDetails = false,
 } = {}) {
   let latestAnswer = '';
   let latestThinking = '';
-  const streamed = await requestChat({
-    messages,
-    images,
-    systemPrompt,
-    tools,
-    think,
-    maxTokens,
-    onChunk: ({ answerFull, thinkingFull }) => {
-      const split = splitThinkingFromRaw(answerFull || '');
-      const mergedThinking = [thinkingFull || '', split.thinking || '']
-        .filter(Boolean)
-        .join('\n')
-        .trim();
+  let streamed;
+  let desktopProviderError = null;
+  if (desktopCoding && !images.length && !voice) {
+    try {
+      const desktopOptions = {
+        messages,
+        systemPrompt: composeMiraSystemPrompt(systemPrompt),
+        tools,
+        think,
+        maxTokens,
+      };
+      let desktop = await requestDesktopAgentChat(desktopOptions);
+      if (desktop) {
+        if (desktop.finishReason === 'length') {
+          const firstSegment = desktop;
+          let first = true;
+          desktop = await completeChatResponse({ ...desktopOptions, requestClass }, async options => {
+            const segment = first ? firstSegment : await requestDesktopAgentChat(options);
+            first = false;
+            if (!segment) throw new Error('The desktop coding provider became unavailable.');
+            return { ...segment, incomplete: segment.finishReason === 'length' };
+          });
+        }
+        const control = toolCallsToControl(desktop.toolCalls);
+        const answer = control || String(desktop.answer || '').trim();
+        if (!answer) throw new Error('The desktop coding provider returned no result.');
+        const thinking = String(desktop.thinking || '').trim();
+        if (thinking) onThinking?.(thinking);
+        onChunk?.(answer, answer);
+        return returnDetails ? { ...desktop, answer, incomplete: desktop.incomplete || desktop.finishReason === 'length' } : answer;
+      }
+    } catch (error) {
+      desktopProviderError = error;
+      notifyDesktopProviderRequired(error);
+      diagnosticWarn('model', 'desktop coding provider unavailable; using primary model fallback', {
+        error: error?.message || 'Unknown desktop provider error',
+      });
+    }
+  }
+  try {
+    streamed = await requestChat({
+      messages,
+      images,
+      systemPrompt: composeMiraSystemPrompt(systemPrompt),
+      tools: voice ? [] : tools,
+      think: voice ? false : think,
+      maxTokens,
+      endpoint: voice ? '/api/voice-chat' : '/api/chat',
+      desktopCoding,
+      requestClass,
+      onChunk: ({ answerFull, thinkingFull }) => {
+        const split = splitThinkingFromRaw(answerFull || '');
+        const mergedThinking = [thinkingFull || '', split.thinking || '']
+          .filter(Boolean)
+          .join('\n')
+          .trim();
 
-      latestThinking = mergedThinking;
-      latestAnswer = split.answer || '';
+        latestThinking = mergedThinking;
+        latestAnswer = split.answer || '';
 
-      if (mergedThinking) onThinking?.(mergedThinking);
-      onChunk?.(latestAnswer, latestAnswer);
-    },
-  });
+        if (mergedThinking) onThinking?.(mergedThinking);
+        onChunk?.(latestAnswer, latestAnswer);
+      },
+    });
+  } catch (error) {
+    if (isAbortError(error) || images.length || voice || !desktopCoding) throw error;
+    diagnosticWarn('model', 'desktop coding providers failed; trying Pollinations coding fallback', {
+      error: error?.message || 'Unknown model failure',
+    });
+    try {
+      streamed = await completeChatResponse({
+        messages,
+        systemPrompt: composeMiraSystemPrompt(systemPrompt),
+        tools,
+        maxTokens,
+        requestClass,
+      }, requestPollinationsFallback);
+    } catch (fallbackError) {
+      if (desktopProviderError?.code === 'provider_reconnect_required') {
+        throw desktopProviderError;
+      }
+      throw fallbackError;
+    }
+    latestAnswer = streamed.answer;
+    onChunk?.(latestAnswer, latestAnswer);
+  }
 
   const split = splitThinkingFromRaw(streamed?.answer || '');
   const finalThinking = [streamed?.thinking || '', split.thinking || '']
@@ -652,7 +803,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
     .trim();
   const finalAnswer = split.answer || latestAnswer || rawWithoutThinkTags;
   if (finalThinking) onThinking?.(finalThinking);
-  if (finalAnswer) return finalAnswer;
+  if (finalAnswer) return returnDetails ? { ...streamed, answer: finalAnswer } : finalAnswer;
 
   // Never promote private reasoning into the visible answer.
   throw new Error('No result in response');

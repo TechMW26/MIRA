@@ -1,6 +1,9 @@
 const WEB_SEARCH_MARKER_RE = /\[(?:MIRA_WEB_SEARCH|WEB_SEARCH)\s*:\s*([^\]\r\n]{2,240})\]/i;
-const XML_WEB_SEARCH_RE = /<web_search>\s*([^<\r\n]{2,240})\s*<\/web_search>/i;
-const PARTIAL_WEB_SEARCH_RE = /(?:\[(?:MIRA_WEB_SEARCH|WEB_SEARCH)(?:\s*:)?|<web_search>)\s*[^\]\n<]*$/i;
+// Some OpenAI-compatible providers serialize the same control name with a
+// dot or dash instead of an underscore. Treat those spellings as controls,
+// never as assistant-visible prose.
+const XML_WEB_SEARCH_RE = /<web[._-]search>\s*([^<\r\n]{2,240})\s*<\/web[._-]search>/i;
+const PARTIAL_WEB_SEARCH_RE = /(?:\[(?:MIRA_WEB_SEARCH|WEB_SEARCH)(?:\s*:)?|<web[._-]search>)\s*[^\]\n<]*$/i;
 
 function cleanSearchQuery(value = '') {
   return String(value || '')

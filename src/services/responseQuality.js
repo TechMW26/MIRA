@@ -1,9 +1,56 @@
 import { isSearchResultRelevant } from './webSearch.js';
+import { isAssistantIdentityQuestion } from './contextPolicy.js';
 
-const IDENTITY_QUESTION_RE = /\b(who are you|what are you|your name|who (?:made|built|created|powers) you|what model)\b/i;
+const IDENTITY_QUESTION_RE = /\b(who (?:made|built|created|powers) you|what model)\b/i;
 const UNJUSTIFIED_REFUSAL_RE = /\b(?:i (?:cannot|can['’]?t|couldn['’]?t|am unable to|do not have|don['’]?t have)|unable to answer|cannot answer|can['’]?t answer|couldn['’]?t answer)\b/i;
 const SEARCH_META_RE = /\b(?:(?:the |these )?(?:provided )?search results?\s+(?:do not|don['’]?t|did not|didn['’]?t|only|contain|focus|discuss|provided)|(?:i\s+)?couldn['’]?t find (?:any )?(?:relevant )?(?:information|details|evidence)[^.!?]{0,80}(?:provided )?search results?)\b/i;
 const ACCESS_DENIAL_RE = /\b(?:no access to|cannot access|can't access|cannot browse|can't browse|knowledge cut[- ]?off|training data)\b/i;
+
+function normalizeRepetitionBlock(value = '') {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[`*_>#\[\](){}]/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function removeResponseRepetition(answer = '') {
+  const blocks = String(answer || '').replace(/\r\n?/g, '\n').split(/\n{2,}/);
+  const kept = [];
+  const seen = new Set();
+  let removedDuplicate = false;
+
+  blocks.forEach((block) => {
+    const trimmed = block.trim();
+    if (!trimmed) return;
+
+    // Generated code and quoted source material may intentionally repeat.
+    if (trimmed.includes('```')) {
+      kept.push(trimmed);
+      return;
+    }
+
+    const normalized = normalizeRepetitionBlock(trimmed);
+    if (normalized.length >= 40 && seen.has(normalized)) {
+      removedDuplicate = true;
+      return;
+    }
+
+    kept.push(trimmed);
+    if (normalized.length >= 40) seen.add(normalized);
+  });
+
+  // Models often stop halfway through one final copy of a repeated block.
+  if (removedDuplicate && kept.length > 1) {
+    const finalBlock = normalizeRepetitionBlock(kept.at(-1));
+    const isRepeatedFragment = finalBlock.length >= 12
+      && Array.from(seen).some((block) => block !== finalBlock && block.startsWith(finalBlock));
+    if (isRepeatedFragment) kept.pop();
+  }
+
+  return kept.join('\n\n').trim();
+}
 
 function meaningfulTokens(value = '') {
   const stop = new Set([
@@ -27,9 +74,10 @@ export function assessResponseQuality({
   const reasons = [];
   const grounded = Array.isArray(searchData?.results) && searchData.results.length > 0;
   const evidenceRelevant = grounded && isSearchResultRelevant(searchData, searchQuery || userQuery);
+  const identityRequested = isAssistantIdentityQuestion(userQuery) || IDENTITY_QUESTION_RE.test(userQuery);
 
   if (text.length < 12) reasons.push('answer-too-short');
-  if (!IDENTITY_QUESTION_RE.test(userQuery) && /^\s*i am mira\b/i.test(text)) {
+  if (!identityRequested && /^\s*i(?:'m| am) mira\b/i.test(text)) {
     reasons.push('irrelevant-identity-introduction');
   }
   if (ACCESS_DENIAL_RE.test(text)) reasons.push('false-capability-denial');
@@ -40,7 +88,7 @@ export function assessResponseQuality({
     reasons.push('search-process-meta-answer');
   }
   const queryTokens = meaningfulTokens(userQuery);
-  if (text.length >= 40 && queryTokens.length) {
+  if (!identityRequested && text.length >= 40 && queryTokens.length) {
     const lower = text.toLowerCase();
     const overlap = queryTokens.filter((token) => lower.includes(token)).length;
     if (overlap === 0) reasons.push('answer-off-topic');
@@ -83,7 +131,7 @@ export function humanizeAssistantText(answer = '') {
   const lines = String(answer || '').replace(/\r\n?/g, '\n').split('\n');
   let insideFence = false;
 
-  return lines.map((line) => {
+  const humanized = lines.map((line) => {
     if (/^\s*```/.test(line)) {
       insideFence = !insideFence;
       return line;
@@ -96,6 +144,8 @@ export function humanizeAssistantText(answer = '') {
       .replace(/\bAdditionally,\s*/gi, 'Also, ')
       .replace(/\bFurthermore,\s*/gi, 'Also, ');
   }).join('\n');
+
+  return removeResponseRepetition(humanized);
 }
 
 export function polishAssistantAnswer(answer = '', { grounded = false } = {}) {

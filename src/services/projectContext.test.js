@@ -61,3 +61,18 @@ test('project prompt retains document truth even when its turn is older than rec
   assert.match(prompt, /CANACT-spec\.docx/);
   assert.match(prompt, /onboarding, KYC/);
 });
+
+test('project prompt includes persistent instructions and uploaded references without chat history', () => {
+  const prompt = buildProjectContextPrompt({
+    projectProfile: {
+      instructions: 'Use the CANACT terminology and write for product managers.',
+      documents: {
+        spec: { name: 'CANACT requirements.docx', summary: 'CANACT uses verified profiles and a local activity feed.' },
+      },
+    },
+  });
+  assert.match(prompt, /PROJECT INSTRUCTIONS/);
+  assert.match(prompt, /product managers/);
+  assert.match(prompt, /CANACT requirements\.docx/);
+  assert.match(prompt, /verified profiles/);
+});

@@ -8,6 +8,8 @@ import {
   rankFreshResults,
 } from './_searchFreshness.js';
 import { expandCompoundWords, fuseSearchProviders } from '../src/services/searchRelevance.js';
+import { searchJina } from './_jinaSearch.js';
+import { guardRequest } from './_requestSecurity.js';
 
 const BRAVE_KEY = process.env.BRAVE_SEARCH_API_KEY;
 const GOOGLE_KEY = process.env.GOOGLE_SEARCH_API_KEY;
@@ -592,6 +594,8 @@ async function searchBingImages(query, anchorScope = null, strictAnchor = false)
 }
 
 export async function POST(req) {
+  const guarded = guardRequest(req, { limit: 30, windowMs: 60_000, key: 'search' });
+  if (guarded) return guarded;
   try {
     const { query, relevanceQuery, includeMedia = true, mediaQuery, anchor, strictAnchor = false, freshness = false } = await req.json();
     if (!query?.trim()) return new Response(JSON.stringify({ error: 'Query required', results: [] }), { status: 400 });
@@ -602,7 +606,8 @@ export async function POST(req) {
     const fresh = detectFreshnessIntent(searchQuery, freshness);
     const window = freshnessWindow(searchQuery);
 
-    const [brave, google, bingWeb, bing, gnews, ddg, ddgHtml, videos, bingImages, instagram] = await Promise.all([
+    const [jina, brave, google, bingWeb, bing, gnews, ddg, ddgHtml, videos, bingImages, instagram] = await Promise.all([
+      searchJina(searchQuery),
       searchBrave(searchQuery, fresh, window),
       searchGoogle(searchQuery, fresh, window),
       searchBingWeb(searchQuery),
@@ -616,6 +621,7 @@ export async function POST(req) {
     ]);
 
     const providerGroups = [
+      { provider: 'jina', results: jina, weight: 4 },
       { provider: 'brave', results: brave, weight: 3 },
       { provider: 'google', results: google, weight: 3 },
       { provider: 'duckduckgo-html', results: ddgHtml, weight: 2 },

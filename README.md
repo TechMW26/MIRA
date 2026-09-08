@@ -1,14 +1,14 @@
 # MIRA — Multi-Intelligent Responsive Assistant
 
-A conversational, research, vision, and media assistant backed by capability-selected Ollama models.
+A conversational, research, vision, and media assistant backed by MIRA and DeepSeek models.
 
 ## Features
 
-- **Capability-routed models** — The server selects chat/thinking and vision models dynamically from Ollama `/api/tags`
+- **Provider-routed chat** — The server routes web chat through MIRA with DeepSeek Flash as the fallback
 - **Automatic internet research** — Deterministic routing plus model-requested live search with citations
 - **Chat Interface** — Streaming responses, markdown rendering, syntax-highlighted code
 - **Permission-gated Chrome MCP inspection** — Agents can request structured website documentation only after user approval
-- **Image Analysis** — Ollama vision runs first; Gemini is used only as an ordered-key fallback
+- **Image Analysis** — Pollinations vision (OpenAI-compatible API)
 - **Image Generation** — Pollinations unified API with server-side authentication and live image-model discovery
 - **Project Management** — Organize conversations into projects
 - **Authentication** — Email/password registration and login via Firebase
@@ -37,33 +37,31 @@ Use these variables locally in `.env` and in Vercel Project Settings -> Environm
 ```bash
 # Firebase / storage
 VITE_FIREBASE_DATABASE_URL=
+MIRA_AUTH_SECRET=
 BLOB_READ_WRITE_TOKEN=
-
-# Chat server; the model is discovered from /api/tags.
-OLLAMA_API_URL=http://50.35.188.73:20005/api/chat
-# Optional internal override; must match a completion model from /api/tags.
-OLLAMA_CHAT_MODEL=
-OLLAMA_MAX_TOKENS=12000
-OLLAMA_CONTEXT_TOKENS=16384
-OLLAMA_TEMPERATURE=0.2
-OLLAMA_TOP_P=0.85
-OLLAMA_REPEAT_PENALTY=1.05
-OLLAMA_KEEP_ALIVE=-1
-OLLAMA_VISION_KEEP_ALIVE=0
-OLLAMA_START_TIMEOUT_MS=50000
-
-# Gemini fallback only. Primary vision is discovered from Ollama /api/tags.
-GEMINI_API_KEYS=
-GEMINI_VISION_MODEL=gemini-2.5-flash
 
 # Optional web search providers
 BRAVE_SEARCH_API_KEY=
 GOOGLE_SEARCH_API_KEY=
 GOOGLE_SEARCH_CX=
 
-# Pollinations image/video generation (server-side key)
+# Pollinations image/video generation, image analysis, and desktop coding fallback (server-side key)
 POLLINATIONS_API_KEY=
 POLLINATIONS_VIDEO_MODEL=wan-pro
+POLLINATIONS_VISION_MODEL=openai
+
+# Primary web chat provider (OpenAI-compatible). Falls back to DeepSeek.
+MIRA_BASE_URL=
+MIRA_OPENAI_BASE_URL=
+MIRA_API_TOKEN=
+MIRA_CHAT_MODEL=MIRA:latest
+
+# DeepSeek is the web chat fallback and desktop coding/workspace provider.
+DEEPSEEK_API_URL=https://api.deepseek.com
+DEEPSEEK_AGENT_MODEL=deepseek-v4-pro
+DEEPSEEK_CHAT_MODEL=deepseek-v4-flash
+DEEPSEEK_API_KEY=
+MIRA_DESKTOP_CODING_PROVIDER=deepseek
 ```
 
 ## Deployment (Vercel)
@@ -79,7 +77,7 @@ POLLINATIONS_VIDEO_MODEL=wan-pro
 - **Backend:** Vercel Serverless Functions (Edge Runtime)
 - **Database:** Firebase Realtime Database
 - **Auth:** Custom auth via Firebase RTB (SHA-256 hashed passwords)
-- **AI:** One dynamically discovered Ollama-compatible chat model; Gemini is isolated to image analysis
+- **AI:** MIRA (OpenAI-compatible endpoint) for primary chat with DeepSeek Flash as fallback, DeepSeek Pro plus Pollinations for coding workspaces, Pollinations for media generation and image analysis
 
 ## Internet Search Orchestration
 

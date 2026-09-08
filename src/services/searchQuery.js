@@ -1,13 +1,19 @@
 import { extractSearchSubject } from './searchRelevance.js';
+import { isAssistantIdentityQuestion } from './contextPolicy.js';
 
-function cleanQuery(value = '') {
+export function cleanSearchQuery(value = '') {
   return String(value || '')
     .replace(/^```(?:text)?|```$/gi, '')
     .replace(/^(?:query|search query)\s*:\s*/i, '')
+    .trim()
     .replace(/^["'`]+|["'`]+$/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 220);
+}
+
+export function modelSearchQuery(value = '') {
+  return cleanSearchQuery(value);
 }
 
 function contextAnchor(context = '') {
@@ -21,22 +27,27 @@ function contextAnchor(context = '') {
 }
 
 export function fallbackSearchQuery(latestMessage = '', context = '') {
-  const exact = cleanQuery(latestMessage)
+  if (isAssistantIdentityQuestion(latestMessage)) return '';
+  const exact = cleanSearchQuery(latestMessage)
     .replace(/^(?:okay|ok|alright|right)[,!.\s]+/i, '')
     .replace(/^(?:please\s+)?(?:can|could|would)\s+you\s+/i, '')
-    .replace(/^(?:please\s+)?(?:do|perform|prepare|give|provide)\s+(?:me\s+)?/i, '')
+    .replace(/^(?:please\s+)?(?:tell\s+me|let\s+me\s+know|explain)\s+(?:about\s+)?/i, '')
+    .replace(/^(?:please\s+)?(?:perform|prepare|give|provide)\s+(?:me\s+)?/i, '')
     .trim();
   const subject = extractSearchSubject(exact
     .replace(/^(?:hi|hello|hey|please|kindly|can you|could you|would you)[,!\.\s]+/i, ''));
-  const referential = /\b(it|its|this|that|these|those|they|them|same|former|latter)\b/i.test(subject);
+  const referential = /\b(it|its|this|that|these|those|they|them|their|theirs|his|her|hers|same|former|latter)\b/i.test(subject);
   const anchor = referential ? contextAnchor(context) : '';
   const asksPurpose = /\bwhat\s+(?:does|do|did)\b[\s\S]*\bdo\b/i.test(subject);
   const withoutReferences = subject
     .replace(/^(?:help\s+me\s+(?:with\s+)?(?:a\s+)?(?:better\s+)?understanding\s+(?:of|about)|help\s+me\s+(?:understand|learn\s+about)|explain)\s+/i, '')
     .replace(/\b(?:for|about|on)\s+(?:the\s+)?(?:same|former|latter)\b/gi, ' ')
-    .replace(/\b(it|its|this|that|these|those|they|them|same|former|latter)\b/gi, ' ')
+    .replace(/\b(it|its|this|that|these|those|they|them|their|theirs|his|her|hers|same|former|latter)\b/gi, ' ')
+    .replace(/\b(?:on|about|for)\s+(?=market\b)/gi, ' ')
+    .replace(/^what\s+(.+?)\s+(?:is|are|was|were)\s*\??$/i, '$1')
     .replace(/^(?:what|who|where|when|why|how)\s+/i, '')
     .replace(/^(?:does|do|did|is|are|was|were|can)\s+/i, '')
+    .replace(/^(?:the|a|an)\s+/i, '')
     .replace(/\bdo\s*$/i, '')
     .replace(/\b(?:some|extensive)\b/gi, ' ')
     .replace(/\s+/g, ' ')
@@ -48,5 +59,19 @@ export function fallbackSearchQuery(latestMessage = '', context = '') {
 export async function formSearchQuery({ latestMessage = '', context = '' } = {}) {
   const latest = String(latestMessage || '').trim();
   if (!latest) return '';
-  return fallbackSearchQuery(latest, context);
+  if (isAssistantIdentityQuestion(latest)) return '';
+  const fallback = fallbackSearchQuery(latest, context);
+  try {
+    const response = await fetch('/api/search-query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ latestMessage: latest, context: String(context || '') }),
+      signal: AbortSignal.timeout(11_000),
+    });
+    if (!response.ok) return fallback;
+    const result = await response.json().catch(() => ({}));
+    return cleanSearchQuery(result?.query) || fallback;
+  } catch {
+    return fallback;
+  }
 }

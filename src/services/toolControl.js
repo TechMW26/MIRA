@@ -1,4 +1,5 @@
 export const TOOL_NAMES = Object.freeze({
+  ASK_USER: 'user.ask',
   WEB_SEARCH: 'web.search',
   BROWSER_INSPECT: 'browser.inspect',
   CALCULATOR: 'calculator.evaluate',
@@ -8,14 +9,32 @@ export const TOOL_NAMES = Object.freeze({
   TASK: 'task.run',
   IMAGE: 'image.generate',
   VIDEO: 'video.generate',
+  DESKTOP_SCREEN_CONTEXT: 'desktop.screen_context',
   FILE_READ: 'filesystem.read',
   FILE_LIST: 'filesystem.list',
   FILE_WRITE: 'filesystem.write',
+  FILE_REPLACE: 'filesystem.replace',
   FILE_SEARCH: 'filesystem.search',
+  FILE_PREVIEW: 'filesystem.preview',
+  WORKSPACE_INDEX: 'workspace.index',
+  WORKSPACE_SEARCH: 'workspace.search',
+  WORKSPACE_VALIDATE: 'workspace.validate',
+  WORKSPACE_START: 'workspace.start',
   SHELL_RUN: 'shell.run',
+  SHELL_CANCEL: 'shell.cancel',
   TEST_RUN: 'test.run',
   GIT_STATUS: 'git.status',
   GIT_DIFF: 'git.diff',
+  GIT_INFO: 'git.info',
+  GIT_PULL: 'git.pull',
+  GIT_PUSH: 'git.push',
+  GIT_COMMIT: 'git.commit',
+  GIT_REMOTE_SET: 'git.remote.set',
+  CHANGE_LIST: 'change.list',
+  CHANGE_UNDO: 'change.undo',
+  CHANGE_REDO: 'change.redo',
+  APPROVAL_STATUS: 'approval.status',
+  APPROVAL_SET: 'approval.set',
 });
 
 const PREFIX = '[MIRA_TOOL:';
@@ -99,7 +118,14 @@ export function detectWebsiteInspectionRequest(text = '') {
   const value = String(text || '');
   const url = value.match(/https?:\/\/[^\s<>"')\]]+/i)?.[0]?.replace(/[.,;!?]+$/, '');
   if (!url) return null;
-  const inspectionIntent = /\b(study|inspect|crawl|audit|analy[sz]e|understand|open|visit|examine|review|check|map|document|source|dom|structure|stack|technology|technologies|framework|cms|hosting|backend|frontend|website)\b/i.test(value);
+  const inspectionIntent = /\b(study|inspect|crawl|audit|analy[sz]e|understand|open|visit|examine|review|check|map|document|source|dom|structure|stack|technology|technologies|framework|cms|hosting|backend|frontend|website|social(?:\s+account)?|profile)\b/i.test(value)
+    || /(?:वेबसाइट|साइट|पेज|सोशल|प्रोफाइल).{0,40}(?:देखो|खोलो|जाँचो|जांचो|क्रॉल|समझो|विश्लेषण|ऑडिट)/iu.test(value)
+    || /(?:देखो|खोलो|जाँचो|जांचो|क्रॉल|समझो|विश्लेषण|ऑडिट).{0,40}(?:वेबसाइट|साइट|पेज|सोशल|प्रोफाइल)/iu.test(value)
+    || /\b(?:sitio|página|perfil).{0,40}(?:inspecciona|revisa|analiza|abre)\b/iu.test(value)
+    || /(?:网站|网页|社交账号|个人资料|ウェブサイト|ページ|プロフィール|웹사이트|페이지|프로필).{0,40}(?:检查|分析|抓取|打开|調べ|分析|クロール|開いて|검사|분석|크롤링|열어)/iu.test(value)
+    || /(?:检查|分析|抓取|打开|調べ|クロール|開いて|검사|분석|크롤링|열어).{0,40}(?:网站|网页|社交账号|个人资料|ウェブサイト|ページ|プロフィール|웹사이트|페이지|프로필)/iu.test(value)
+    || /(?:موقع|صفحة|ملف\s+شخصي|сайт|страница|профиль).{0,40}(?:افحص|حلل|افتح|проверь|проанализируй|открой)/iu.test(value)
+    || /(?:افحص|حلل|افتح|проверь|проанализируй|открой).{0,40}(?:موقع|صفحة|ملف\s+شخصي|сайт|страница|профиль)/iu.test(value);
   if (!inspectionIntent) return null;
   return {
     name: TOOL_NAMES.BROWSER_INSPECT,

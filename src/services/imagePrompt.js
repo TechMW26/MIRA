@@ -1,5 +1,22 @@
 const IMAGE_GEN_PATTERN = /\[IMAGE_GEN(?:\:\s*|\]\s*)([\s\S]*?)(?:\]|$)/i;
 const INVALID_PROMPT_PATTERN = /(?:^|\[)(?:using tools?|mira_tool)|^(?:\.{2,}|…+|image|picture|photo|generated image)$/i;
+const CLARIFICATION_PATTERN = /(?:please\s+(?:provide|share|describe)|could you\s+(?:provide|share|describe)|once you share|i am ready to help|i need (?:more|the) details)/i;
+
+export function referencesImageContext(text = '') {
+  return /\b(?:above|previous|last|earlier|that|this|same|it|its|those|these)\b/i.test(text);
+}
+
+export function resolveImageSceneContext(userText = '', history = []) {
+  if (!referencesImageContext(userText)) return '';
+  // Keep the original details available to the model's visual summary. Do not
+  // replace the referenced scene with an earlier image or a clarification reply.
+  for (const message of [...history].reverse()) {
+    const text = String(message?.promptContent || message?.content || '').trim();
+    if (!text || text === userText || CLARIFICATION_PATTERN.test(text)) continue;
+    if (message.role === 'assistant' || message.role === 'user') return text;
+  }
+  return '';
+}
 const PROMPT_STOPWORDS = new Set([
   'a', 'an', 'and', 'the', 'of', 'to', 'for', 'in', 'on', 'with', 'please',
   'generate', 'create', 'make', 'draw', 'render', 'show', 'image', 'picture',
@@ -46,7 +63,7 @@ function containsWholePhrase(candidate = '', anchor = '') {
 
 export function isUsableImagePrompt(candidate = '', anchor = '') {
   const prompt = cleanImagePrompt(candidate);
-  if (prompt.length < 3 || INVALID_PROMPT_PATTERN.test(prompt)) return false;
+  if (prompt.length < 3 || INVALID_PROMPT_PATTERN.test(prompt) || CLARIFICATION_PATTERN.test(prompt)) return false;
   const anchorTerms = promptTerms(anchor);
   if (!anchorTerms.length) return true;
   const requiredCoverage = anchorTerms.length <= 3 ? 1 : 0.75;
@@ -55,7 +72,7 @@ export function isUsableImagePrompt(candidate = '', anchor = '') {
 
 function isRelatedImagePrompt(candidate = '', anchor = '') {
   const prompt = cleanImagePrompt(candidate);
-  if (prompt.length < 3 || INVALID_PROMPT_PATTERN.test(prompt)) return false;
+  if (prompt.length < 3 || INVALID_PROMPT_PATTERN.test(prompt) || CLARIFICATION_PATTERN.test(prompt)) return false;
   const anchorTerms = promptTerms(anchor);
   return !anchorTerms.length || promptCoverage(prompt, anchor) > 0;
 }
@@ -70,9 +87,13 @@ function appendAdditiveRefinement(parts, candidate, anchors) {
 
 export function normalizeImageGenerationOutput(modelText = '', userText = '', previousPrompt = '') {
   const markerPrompt = String(modelText || '').match(IMAGE_GEN_PATTERN)?.[1]?.trim();
-  const candidate = cleanImagePrompt(markerPrompt || modelText);
+  const candidate = markerPrompt && !CLARIFICATION_PATTERN.test(markerPrompt) ? cleanImagePrompt(markerPrompt) : '';
   const prior = cleanImagePrompt(previousPrompt);
   const correction = cleanImagePrompt(userText);
+
+  if (!prior && referencesImageContext(userText)) {
+    return 'Which scene should I illustrate? I could not resolve the reference from the available conversation. Please describe it or paste the relevant message.';
+  }
 
   let prompt = '';
   if (prior) {
@@ -96,7 +117,7 @@ export function normalizeImageGenerationOutput(modelText = '', userText = '', pr
     }
   }
 
-  return `[IMAGE_GEN: ${prompt || 'A high-quality, detailed image based on the user request'}]`;
+  return prompt ? `[IMAGE_GEN: ${prompt}]` : 'What would you like the image to show?';
 }
 
 export function imagePromptSeed(prompt = '') {

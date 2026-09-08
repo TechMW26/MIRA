@@ -17,7 +17,12 @@ function extractTimestamp(pathname = '') {
   return Number.isFinite(ts) ? ts : null;
 }
 
-export async function GET() {
+export async function GET(request) {
+  const cronSecret = String(process.env.CRON_SECRET || '').trim();
+  const authorization = String(request?.headers?.get?.('authorization') || '');
+  if (cronSecret && authorization !== `Bearer ${cronSecret}`) {
+    return json({ ok: false, error: 'Unauthorized.' }, 401);
+  }
   try {
     const cutoff = Date.now() - RETENTION_MS;
     let cursor;

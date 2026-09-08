@@ -1,0 +1,9 @@
+[Unit]
+Description=MIRA Ollama recovery watchdog
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mira-ollama-watchdog
+TimeoutStartSec=240

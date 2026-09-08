@@ -1,4 +1,5 @@
 export const config = { maxDuration: 60 };
+import { guardRequest } from './_requestSecurity.js';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MIME = /^image\/(png|jpe?g|webp|gif|avif)$/i;
@@ -10,7 +11,9 @@ const UPSTREAM_RETRY_ATTEMPTS = 2;
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
 const NSFW_PROMPT_PATTERN = /\b(nude|nudity|naked|explicit|erotic|porn|pornographic|xxx|18\+|lewd|nsfw|genitals?|penis|vagina|sex|sexual|breasts?|nipples?)\b/i;
 const INVALID_PROMPT_PATTERN = /(?:^|\[)(?:using tools?|mira_tool)|^(?:\.{2,}|…+|image|picture|photo|generated image)$/i;
-const POLLINATIONS_ORIGIN = 'https://gen.pollinations.ai';
+const POLLINATIONS_ORIGIN = String(process.env.POLLINATIONS_API_URL || 'https://gen.pollinations.ai')
+  .trim()
+  .replace(/\/+$/, '');
 const POLLINATIONS_GENERATIONS_URL = `${POLLINATIONS_ORIGIN}/v1/images/generations`;
 const FRESH_IMAGE_MODEL = 'klein';
 const EDIT_IMAGE_MODEL = 'kontext';
@@ -160,6 +163,8 @@ async function upstreamFailureResponse(upstream) {
 }
 
 export async function GET(req) {
+  const guarded = guardRequest(req, { limit: 12, windowMs: 60_000, key: 'generate-image' });
+  if (guarded) return guarded;
   const url = new URL(req.url);
   const rawPrompt = compactPrompt(url.searchParams.get('prompt') || '');
   if (!rawPrompt) {

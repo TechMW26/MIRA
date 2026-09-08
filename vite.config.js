@@ -3,27 +3,35 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
-  base: './',
+  // The web app uses BrowserRouter and must be reloadable from nested chat
+  // routes. A relative base makes Vite emit ./assets links, which browsers
+  // resolve below /project/:id/chat/:id and replace JavaScript with the SPA
+  // fallback HTML. Electron packaging explicitly overrides this with
+  // `vite build --base=./` because file:// assets must remain relative.
+  base: '/',
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
       injectRegister: 'auto',
       includeAssets: [
-        'favicon.svg',
+        'icons/icon-192.png',
+        'icons/icon-512.png',
+        'icons/icon-512-maskable.png',
+        'icons/apple-touch-icon.png',
       ],
       manifest: false,
       workbox: {
-        cacheId: 'mira-v2',
+        cacheId: 'mira-v3',
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: true,
-        importScripts: ['/pwa-cache-reset-v2.js'],
+        importScripts: ['/pwa-cache-reset-v3.js'],
         navigateFallbackDenylist: [/^\/api\//],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
       },
       devOptions: {
-        enabled: true,
+        enabled: false,
       },
     }),
   ],
@@ -55,13 +63,29 @@ export default defineConfig({
           });
         },
       },
+      '/api/auth': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/analyze': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/analyse': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/health': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search-query': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/browser-mcp': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/crawl': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/code-assist': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/voice-health': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/voice-speech': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/voice-transcribe': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/voice-chat': {
+        target: 'http://localhost:3002',
+        changeOrigin: true,
+        proxyTimeout: 0,
+        timeout: 0,
+      },
       '/api/image': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/generate-image': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/generate-video': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/media': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/cleanup-media': { target: 'http://localhost:3002', changeOrigin: true },
     },
   },
 });

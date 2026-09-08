@@ -1,4 +1,9 @@
 export const config = { maxDuration: 120 };
+import { guardRequest } from './_requestSecurity.js';
+
+const POLLINATIONS_ORIGIN = String(process.env.POLLINATIONS_API_URL || 'https://gen.pollinations.ai')
+  .trim()
+  .replace(/\/+$/, '');
 
 const ALLOWED_MODELS = new Set(['wan-pro', 'wan-pro-1080p']);
 const ALLOWED_MIME = /^video\/(mp4|webm|ogg|quicktime)$/i;
@@ -90,10 +95,12 @@ function buildVideoUrl({ prompt, model, duration, resolution, seed }) {
   });
   const key = String(process.env.POLLINATIONS_API_KEY || '').trim();
   if (key) params.set('key', key);
-  return `https://gen.pollinations.ai/video/${encodeURIComponent(prompt)}?${params.toString()}`;
+  return `${POLLINATIONS_ORIGIN}/video/${encodeURIComponent(prompt)}?${params.toString()}`;
 }
 
 export async function GET(req) {
+  const guarded = guardRequest(req, { limit: 4, windowMs: 60_000, key: 'generate-video' });
+  if (guarded) return guarded;
   const url = new URL(req.url);
   const prompt = compactPrompt(url.searchParams.get('prompt') || '');
   if (!prompt) {
