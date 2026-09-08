@@ -288,11 +288,17 @@ export default function Sidebar() {
       if (currentConversationId === convId) stopChatGeneration();
       const conv = [...conversations, ...sharedProjectConversations].find((c) => c.id === convId);
       if (conv?.ownerUid && conv.ownerUid !== user.uid && activeProject?.ownerUid !== user.uid) return;
-      if (conv?.projectId) {
-        await removeConversationFromProject(user.uid, conv.projectId, convId);
+      try {
+        await deleteConversation(conv?.ownerUid || user.uid, convId, {
+          projectId: conv?.projectId,
+          projectOwnerUid: projects.find(project => project.id === conv?.projectId)?.ownerUid || user.uid,
+        });
+        setConversations(previous => previous.filter(chat => chat.id !== convId));
+        setSharedProjectConversations(previous => previous.filter(chat => chat.id !== convId));
+        if (currentConversationId === convId) startNewChat();
+      } catch (error) {
+        window.alert(`Could not delete this chat. ${error?.message || 'Please try again.'}`);
       }
-      await deleteConversation(conv?.ownerUid || user.uid, convId);
-      if (currentConversationId === convId) startNewChat();
     }
   }
 

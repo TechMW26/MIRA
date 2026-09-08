@@ -14,9 +14,11 @@ import {
 } from 'firebase/database';
 import { buildProjectContextTurn } from './projectContext.js';
 import { orderMessages } from './messageOrder.js';
+import { conversationDeletionUpdates, evictDeletedConversation } from './conversationDeletion.js';
 import { fetchFirebaseSnapshot, writeFirebaseValue } from './firebaseRest.js';
 
 const PROJECT_RUN_LEASE_MS = 6 * 60 * 1000;
+const deletedConversationIds = new Set();
 const DATABASE_URL = import.meta.env.VITE_FIREBASE_DATABASE_URL
   || 'https://mira-3ffa4-default-rtdb.asia-southeast1.firebasedatabase.app';
 
@@ -137,13 +139,13 @@ export async function getConversation(uid, convId) {
 
 export function subscribeConversations(uid, callback) {
   const cacheKey = `mira-conversations-${uid}`;
-  const cached = readSubscriptionCache(cacheKey);
+  const cached = readSubscriptionCache(cacheKey).filter(chat => !deletedConversationIds.has(chat.id));
   if (cached.length) callback(cached);
   const convRef = ref(db, `conversations/${uid}`);
   return resilientOnValue(convRef, (snap) => {
     const convs = [];
     snap.forEach((child) => {
-      convs.push({ id: child.key, ...child.val() });
+      if (!deletedConversationIds.has(child.key)) convs.push({ id: child.key, ...child.val() });
     });
     convs.sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0));
     writeSubscriptionCache(cacheKey, convs);
@@ -152,6 +154,7 @@ export function subscribeConversations(uid, callback) {
 }
 
 export async function updateConversation(uid, convId, data) {
+  if (deletedConversationIds.has(convId)) return;
   await restPatch(`conversations/${uid}/${convId}`, {
     ...data,
     updatedAt: Date.now(),
@@ -159,16 +162,20 @@ export async function updateConversation(uid, convId, data) {
 }
 
 export async function updateConversationTitle(uid, convId, title) {
+  if (deletedConversationIds.has(convId)) return;
   await restPatch(`conversations/${uid}/${convId}`, {
     title,
     titleUpdatedAt: Date.now(),
   });
 }
 
-export async function deleteConversation(uid, convId) {
+export async function deleteConversation(uid, convId, options = {}) {
+  const updates = conversationDeletionUpdates(uid, convId, options);
+  // Collect optional media before removing messages, but never let its cleanup
+  // prevent the authoritative chat deletion.
+  let mediaItems = [];
   try {
     const messagesSnap = await restSnapshot(`messages/${convId}`);
-    const mediaItems = [];
     if (messagesSnap.exists()) {
       messagesSnap.forEach((child) => {
         const message = child.val() || {};
@@ -180,30 +187,30 @@ export async function deleteConversation(uid, convId) {
       });
     }
 
-    if (mediaItems.length > 0) {
-      await fetch('/api/media', {
+  } catch (error) {
+    console.warn('Conversation media lookup failed:', error?.message || error);
+  }
+  await restPatch('', updates);
+  deletedConversationIds.add(convId);
+  evictDeletedConversation(globalThis.localStorage, uid, convId);
+  if (mediaItems.length > 0) {
+      fetch('/api/media', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(8_000),
         body: JSON.stringify({
           action: 'delete',
           userId: uid,
           items: Array.from(new Map(mediaItems.map((item) => [item.pathname, item])).values()),
         }),
-      });
-    }
-  } catch (error) {
-    console.warn('Conversation media cleanup failed:', error?.message || error);
+      }).then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); })
+        .catch(error => console.warn('Conversation media cleanup failed:', error?.message || error));
   }
-
-  await Promise.all([
-    restDelete(`conversations/${uid}/${convId}`),
-    restDelete(`messages/${convId}`),
-  ]);
-  try { globalThis.localStorage?.removeItem(`mira-messages-${convId}`); } catch {}
 }
 
 // ── Messages ───────────────────────────────────────────
 export async function addMessage(convId, message) {
+  if (deletedConversationIds.has(convId)) throw new Error('This chat has been deleted.');
   const msgRef = push(ref(db, `messages/${convId}`));
   await restPut(`messages/${convId}/${msgRef.key}`, {
     ...message,
@@ -213,6 +220,7 @@ export async function addMessage(convId, message) {
 }
 
 export async function updateMessage(convId, msgId, data) {
+  if (deletedConversationIds.has(convId)) return;
   await restPatch(`messages/${convId}/${msgId}`, data);
 }
 
@@ -662,7 +670,7 @@ export function subscribeProjectConversations(projectId, callback) {
   return resilientOnValue(chatsRef, (snap) => {
     const conversations = [];
     snap.forEach((child) => conversations.push({ id: child.key, ...child.val(), projectId }));
-    callback(conversations.reverse());
+    callback(conversations.filter(chat => !deletedConversationIds.has(chat.id)).reverse());
   }, 'Project conversation', `projectChats/${projectId}`);
 }
 
@@ -821,6 +829,7 @@ export async function removeProjectReferenceDocument(uid, projectId, documentId)
 }
 
 export async function updateProjectConversation(projectId, convId, data) {
+  if (deletedConversationIds.has(convId)) return;
   if (!projectId || !convId) return;
   const chat = await restSnapshot(`projectChats/${projectId}/${convId}`);
   if (!chat.exists()) return;
