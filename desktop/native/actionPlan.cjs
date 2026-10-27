@@ -80,4 +80,3 @@ function channelContext(goal, app, targets = []) {
 }
 
 module.exports = { BROWSER_APP, DESKTOP_PLANNING_POLICY, safeNavigationUrl, allowsNewTab, validateActionBatch, channelContext, validateComputerAction, KEY_ACTIONS };
-

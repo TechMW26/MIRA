@@ -337,4 +337,3 @@ func handle(_ line: String) {
 if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--serve" {
     while let line = readLine() { autoreleasepool { handle(line) } }
 } else if CommandLine.arguments.count == 2 { handle(CommandLine.arguments[1]) }
-
