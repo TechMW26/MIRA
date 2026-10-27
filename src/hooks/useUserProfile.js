@@ -24,6 +24,7 @@ export default function useUserProfile() {
     bio: profile?.bio || '',
     age: profile?.age ?? null,
     gender: profile?.gender || '',
+    company: profile?.company || '',
     preferences: profile?.preferences || {},
   }), [profile, user]);
 }

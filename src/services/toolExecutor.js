@@ -1,5 +1,7 @@
 import { TOOL_NAMES } from './toolControl.js';
 import { executeDesktopTool } from './desktopBridge.js';
+import { runComputerTask } from './computerTask.js';
+import { createReminder, readProactiveStore, updateProactiveEvent } from './proactiveEvents.js';
 
 function evaluateExpression(expression = '') {
   const value = String(expression || '').trim();
@@ -61,8 +63,13 @@ async function executeJavaScript(code = '') {
   });
 }
 
-export async function executeHostTool(call, { runTask } = {}) {
+export async function executeHostTool(call, { runTask, isCurrentRun, userId } = {}) {
   const args = call?.arguments || {};
+  if (call?.name === TOOL_NAMES.REMINDER_CREATE) return JSON.stringify({ saved: true, event: createReminder(userId, args), delivery: 'On this device while MIRA runs; overdue catch-up on reopen.' });
+  if (call?.name === TOOL_NAMES.REMINDER_LIST) return JSON.stringify(readProactiveStore(userId).events.filter(e => e.type === 'reminder' && !['dismissed', 'completed'].includes(e.readState)));
+  if (call?.name === TOOL_NAMES.REMINDER_UPDATE) return JSON.stringify(updateProactiveEvent(userId, args.id, args.action, { until: args.until }));
+  if (call?.name === TOOL_NAMES.ACTIVITY_FEED) return JSON.stringify({ events: readProactiveStore(userId).events, connections: { email: false, calendar: false, whatsapp: false, calls: false, talio: false }, delivery: 'Local account-scoped activity on this device only.' });
+  if (call?.name === TOOL_NAMES.COMPUTER_TASK) return runComputerTask({ goal: args.goal, ...(isCurrentRun ? { alive: isCurrentRun } : {}) });
   if (call?.name === TOOL_NAMES.CALCULATOR) {
     return evaluateExpression(args.expression);
   }

@@ -13,7 +13,7 @@
     "dev": "concurrently --kill-others-on-fail --restart-tries -1 --restart-after exponential --names api,web \"node --watch dev-api.js\" \"vite\"",
     "dev:api": "node --watch dev-api.js",
     "dev:vite": "vite",
-    "test": "node --test src/services/*.test.js api/*.test.js",
+    "test": "node --test src/services/*.test.js api/*.test.js desktop/*.test.cjs",
     "build": "vite build",
     "preview": "vite preview",
     "desktop:dev": "concurrently --kill-others-on-fail --names web,desktop \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:3000 && electron desktop/main.cjs --dev\"",
@@ -77,6 +77,8 @@
     "productName": "MIRA",
     "icon": "public/mira-logo.png",
     "asar": true,
+    "beforePack": "desktop/buildComputerControl.cjs",
+    "asarUnpack": ["desktop/native/bin/**"],
     "npmRebuild": false,
     "electronLanguages": [
       "en",

@@ -6,6 +6,12 @@ export const AGENT_CAPABILITIES = Object.freeze({
   CURRENCY: 'currency.convert',
   CODE_BROWSER: 'code.run',
   TASK: 'task.run',
+  COMPUTER_TASK: 'computer.task',
+  COMPUTER_CONTROL: 'computer.control',
+  REMINDER_CREATE: 'reminder.create',
+  REMINDER_LIST: 'reminder.list',
+  REMINDER_UPDATE: 'reminder.update',
+  ACTIVITY_FEED: 'activity.feed',
   IMAGE: 'image.generate',
   VIDEO: 'video.generate',
   FILE_READ: 'filesystem.read',
@@ -36,6 +42,8 @@ export const AGENT_CAPABILITIES = Object.freeze({
 });
 
 export const DESKTOP_AGENT_CAPABILITIES = Object.freeze([
+  AGENT_CAPABILITIES.COMPUTER_TASK,
+  AGENT_CAPABILITIES.COMPUTER_CONTROL,
   AGENT_CAPABILITIES.FILE_READ,
   AGENT_CAPABILITIES.FILE_LIST,
   AGENT_CAPABILITIES.FILE_WRITE,
@@ -93,6 +101,10 @@ export function classifyDesktopWorkspaceRequest(text = '', runtime = getAgentRun
 }
 
 const WEB_CAPABILITIES = Object.freeze([
+  AGENT_CAPABILITIES.REMINDER_CREATE,
+  AGENT_CAPABILITIES.REMINDER_LIST,
+  AGENT_CAPABILITIES.REMINDER_UPDATE,
+  AGENT_CAPABILITIES.ACTIVITY_FEED,
   'user.ask',
   AGENT_CAPABILITIES.WEB_SEARCH,
   AGENT_CAPABILITIES.BROWSER_INSPECT,

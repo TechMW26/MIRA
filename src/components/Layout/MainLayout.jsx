@@ -6,6 +6,7 @@ import HudOverlay from '../Chat/HudOverlay';
 import MiraBloub from '../Chat/MiraBloub';
 import SettingsModal from '../Profile/ProfilePage';
 import DesktopWorkspace from '../Desktop/DesktopWorkspace';
+import ProactiveCenter from '../Chat/ProactiveCenter';
 
 export default function MainLayout() {
   const {
@@ -60,6 +61,7 @@ export default function MainLayout() {
 
       <div className="flex-1 flex flex-col min-w-0 relative z-10">
         <HudOverlay />
+        <ProactiveCenter />
 
         <div ref={workspaceSplitRef} className={`flex-1 min-h-0 flex ${showWorkspace ? 'desktop-workspace-split' : 'flex-col'}`}>
           {showWorkspace && <DesktopWorkspace style={{ flex: `0 0 ${workspacePercent}%` }} onExitWorkspace={() => setShowWorkspace(false)} />}

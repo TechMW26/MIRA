@@ -12,8 +12,18 @@ let cachedVoiceHealth = null;
 let cachedVoiceHealthAt = 0;
 
 export function detectVoiceLanguage(text = '', hintedLanguage = '') {
-  if (String(hintedLanguage).toLowerCase().startsWith('hi') || DEVANAGARI.test(String(text))) return 'hi';
-  return 'en';
+  const value = String(text || '').trim();
+  const previous = String(hintedLanguage).toLowerCase().startsWith('hi') ? 'hi' : 'en';
+  // ASR can transliterate a name or a tiny acknowledgement independently of
+  // the speaker's language. Those alone must not switch the voice accent.
+  if (/^(?:मीरा|मिरा|हाँ|हां|जी|नहीं|[\d\u0966-\u096f\s.,!?।]+)[.!?।,\s]*$/u.test(value)) return previous;
+  if (DEVANAGARI.test(value)) return 'hi';
+  const tokens = value.toLowerCase().match(/[a-z']+/g) || [];
+  const hindi = tokens.filter(t => /^(?:aap|tum|mujhe|mera|meri|kya|kaise|kyun|nahi|nahin|haan|hindi|batao|bataiye|karo|kijiye|chahiye|karna|samajh|rahi|raha|acha|achha|namaste|dhanyavaad)$/.test(t)).length;
+  if (hindi >= 2 || /\b(?:hindi mein|hindi me|kaise ho|kya hai)\b/i.test(value)) return 'hi';
+  const english = tokens.filter(t => /^(?:the|is|are|what|how|this|that|please|can|could|would|tell|show|open|play|want|need|you|your|i|my|me|we|it|was|thanks|english|explain|now)$/.test(t)).length;
+  if (tokens.length >= 3 && english >= 2 && !hindi) return 'en';
+  return previous;
 }
 
 export function normalizeVoiceTranscript(value = '') {
@@ -133,6 +143,7 @@ export function sanitizeVoiceOutput(value = '') {
     stripBrowserControl(stripToolControl(String(value || ''))),
   );
   return withoutControls
+    .replace(/\[MIRA_END_CONVERSATION\]/g, '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/<think>[\s\S]*$/gi, '')
     .replace(/```[\s\S]*?```/g, ' Code example omitted. ')
@@ -205,11 +216,11 @@ export async function transcribeVoice(blob, signal, { language = '' } = {}) {
   return response.json();
 }
 
-export async function synthesizeVoice(input, language, signal) {
+export async function synthesizeVoice(input, language, signal, { voiceId } = {}) {
   const response = await fetch('/api/voice-speech', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ input, language }),
+    body: JSON.stringify({ input, language, ...(voiceId ? { voiceId } : {}) }),
     signal,
   });
   if (!response.ok) throw await apiError(response, 'MIRA could not generate speech.');

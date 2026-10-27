@@ -131,7 +131,15 @@ export function fallbackAgentPlan(goal = '', requiresResearch = false) {
 
 export function parseAgentPlan(text = '', { goal = '', requiresResearch = false } = {}) {
   let researchSteps = 0;
-  const parsed = extractJsonArray(text).slice(0, MAX_TASK_STEPS).flatMap((step, index) => {
+  const candidates = extractJsonArray(text).slice(0, MAX_TASK_STEPS).filter(step => compact(step?.instruction || step?.prompt || step?.description));
+  const ids = candidates.map((step, index) => typeof step?.id === 'string' && /^[a-zA-Z0-9_-]{1,40}$/.test(step.id) ? step.id : `step-${index + 1}`);
+  // Never silently erase an invalid dependency: that could execute dependent
+  // work as if the missing prerequisite succeeded. Fall back to a safe chain.
+  if (new Set(ids).size !== ids.length || candidates.some((step, index) => Array.isArray(step.dependsOn)
+    && step.dependsOn.some(id => ids.indexOf(String(id)) < 0 || ids.indexOf(String(id)) >= index))) {
+    return fallbackAgentPlan(goal, requiresResearch);
+  }
+  const parsed = candidates.flatMap((step, index) => {
     const instruction = compact(step?.instruction || step?.prompt || step?.description || '', 900);
     if (!instruction) return [];
     const requestedTool = String(step?.tool || '').toLowerCase();
@@ -141,6 +149,12 @@ export function parseAgentPlan(text = '', { goal = '', requiresResearch = false 
     const tool = useResearch ? 'web.search' : 'reason';
     if (useResearch) researchSteps += 1;
     return [{
+      id: ids[index],
+      // Plans form a DAG in declared order. Missing dependencies preserve the
+      // old sequential contract; only explicit empty lists can run independently.
+      dependsOn: Array.isArray(step.dependsOn)
+        ? [...new Set(step.dependsOn)].map(id => ids.indexOf(String(id))).filter(prior => prior >= 0 && prior < index)
+        : index ? [index - 1] : [],
       title: compact(step?.title || `Step ${index + 1}`, 100),
       instruction,
       tool,
@@ -154,11 +168,11 @@ export function buildAgentPlanPrompt({ goal = '', context = '', requiresResearch
   return [
     'Create a compact execution plan for the goal below.',
     'First check the supplied context. If an essential decision or fact only the user can supply is missing, return only {"questions":["one to three focused questions"],"reason":"why the answers matter"} instead of a plan. Do not ask for information already supplied, optional preferences, or secrets. If the user delegates choices, use reasonable assumptions and proceed.',
-    `Use 2-${MAX_TASK_STEPS} sequential steps with explicit dependencies.`,
+    `Use 2-${MAX_TASK_STEPS} steps with explicit dependencies. Give every step a unique id and dependsOn containing only earlier step ids. Use [] only for truly independent evidence collection; analysis must depend on the evidence it uses.`,
     requiresResearch
       ? 'Use tool "web.search" only for steps that need new external evidence; use tool "reason" for analysis and synthesis.'
       : 'Use tool "reason" for every step. Do not request external tools.',
-    'If clarification is needed, return only the questions object described above and no execution steps. Otherwise return only this JSON plan: [{"title":"...","instruction":"...","tool":"reason|web.search","query":"required only for web.search"}]',
+    'If clarification is needed, return only the questions object described above and no execution steps. Otherwise return only this JSON plan: [{"id":"evidence","dependsOn":[],"title":"...","instruction":"...","tool":"reason|web.search","query":"required only for web.search"}]',
     `Goal: ${compact(goal)}`,
     context ? `Available context/evidence: ${compact(context)}` : '',
   ].filter(Boolean).join('\n\n');
@@ -243,10 +257,10 @@ function retryableTaskError(error) {
 }
 
 async function waitForRetry(attempt) {
-  // Provider recovery and rate-limit windows need breathing room. The old
-  // 250/500ms loop simply hit the same unhealthy server state three times.
-  const baseDelay = Math.min(3000, 1000 * (2 ** (attempt - 1)));
-  const jitter = Math.floor(Math.random() * 250);
+  // Bounded short backoff recovers transient failures without restarting the
+  // plan or asking the user to repeat a fully specified task.
+  const baseDelay = Math.min(1200, 200 * (2 ** (attempt - 1)));
+  const jitter = Math.floor(Math.random() * 60);
   await new Promise((resolve) => setTimeout(resolve, baseDelay + jitter));
 }
 
@@ -356,7 +370,9 @@ export async function runAgentTask({
   if (typeof generate !== 'function') throw new Error('The task planning model is unavailable.');
   const useResearch = agentTaskRequiresResearch(goal, requiresResearch);
   const validCheckpoint = Array.isArray(checkpoint?.plan) && checkpoint.plan.length > 0
-    && checkpoint.plan.every(step => typeof step?.title === 'string' && typeof step?.instruction === 'string' && ['reason', 'web.search'].includes(step.tool))
+    && checkpoint.plan.length <= MAX_TASK_STEPS
+    && checkpoint.plan.every((step, index) => typeof step?.title === 'string' && typeof step?.instruction === 'string' && ['reason', 'web.search'].includes(step.tool)
+      && (!Array.isArray(step.dependsOn) || step.dependsOn.every(prior => Number.isInteger(prior) && prior >= 0 && prior < index)))
     && Array.isArray(checkpoint.results) && checkpoint.results.length <= checkpoint.plan.length
     && checkpoint.results.every(result => ['done', 'error'].includes(result?.status) && typeof result.text === 'string');
   const results = validCheckpoint ? checkpoint.results.map(result => ({...result})) : [];
@@ -397,6 +413,13 @@ export async function runAgentTask({
 
   for (let index = results.length; index < plan.length; index += 1) {
     const step = plan[index];
+    const dependencies = Array.isArray(step.dependsOn) ? step.dependsOn : index ? [index - 1] : [];
+    if (dependencies.some(prior => results[prior]?.status !== 'done')) {
+      const failureReason = 'A required dependency did not complete; dependent work was not executed.';
+      results.push({ status: 'error', text: failureReason, failureReason });
+      onPhase?.({ phase: 'step-error', step: index + 1, total: plan.length, title: step.title, result: failureReason });
+      continue;
+    }
     onPhase?.({ phase: 'executing', step: index + 1, total: plan.length, title: step.title });
     try {
       const result = await executeStepWithRetry({
@@ -431,7 +454,6 @@ export async function runAgentTask({
             })), `${goal}\n${step.title}\n${step.instruction}`);
           } catch (error) {
             if (!retryableTaskError(error)) throw error;
-            generationUnavailable = true;
             usedGenerationRecovery = true;
             throw error;
           }

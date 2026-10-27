@@ -66,6 +66,7 @@ async function runSequentialPermissionQueue({
 }
 
 const capabilities = Object.freeze([
+  ...(process.platform === 'darwin' ? ['computer.task', 'computer.control'] : []),
   'filesystem.read',
   'filesystem.list',
   'filesystem.write',

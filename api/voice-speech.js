@@ -1,5 +1,6 @@
 import { json, proxyError, safeVoiceError, voiceFetch } from './_voiceProxy.js';
 import { guardRequest } from './_requestSecurity.js';
+import { generateMiraSpeech, stripMiraAudioTags } from './_miraSpeech.js';
 
 export const config = { maxDuration: 120 };
 
@@ -11,12 +12,16 @@ export async function POST(request) {
   const input = String(body?.input || '').replace(/\s+/g, ' ').trim();
   if (!input) return json({ error: 'Speech input is required.' }, 400);
   if (input.length > 1800) return json({ error: 'Speech input is too long.' }, 413);
+  const language = String(body?.language || '').toLowerCase();
+  if (language && !['en', 'hi', 'auto'].includes(language)) return json({ error: 'Choose English or Hindi for voice.' }, 400);
 
   try {
+    const speech = await generateMiraSpeech({ input, language: language === 'auto' ? '' : language, voiceId: body.voiceId, signal: request.signal });
+    if (speech) return speech;
     const response = await voiceFetch('/v1/audio/speech', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input, language: String(body?.language || 'auto') }),
+      body: JSON.stringify({ input: stripMiraAudioTags(input), language: language || 'auto' }),
       signal: request.signal,
     }, { attempts: 2, timeoutMs: 100_000 });
     if (!response.ok) return proxyError(response, 'Speech generation failed.');
@@ -30,6 +35,6 @@ export async function POST(request) {
       },
     });
   } catch (error) {
-    return json({ error: safeVoiceError(error, 'Speech generation is temporarily unavailable.') }, 503);
+    return json({ error: safeVoiceError(error, error.status === 400 ? error.message : 'Speech generation is temporarily unavailable.') }, error.status || 503);
   }
 }

@@ -40,7 +40,7 @@ test('task worker keeps old constraints, project context and complete continued 
   assert.match(extractAgentTaskAnswer(handoff),/complete workshop plan/);
 });
 
-test('incomplete steps are preserved as failed and incomplete conclusions are not marked final', async () => {
+test('incomplete steps are preserved and dependent work is not executed', async () => {
   const phases=[];
   let execution=0;
   const output=await runAgentTask({goal:'Plan a workshop',onPhase:p=>phases.push(p),generate:async(_,options)=>{
@@ -48,11 +48,12 @@ test('incomplete steps are preserved as failed and incomplete conclusions are no
     if(options.phase==='executing') return ++execution===1 ? {answer:'PRESERVED_PARTIAL_STEP',incomplete:true} : {answer:'Review complete',incomplete:false};
     return {answer:'PRESERVED_PARTIAL_CONCLUSION',incomplete:true};
   }});
-  assert.equal(phases.filter(p=>p.phase==='step-error').length,1);
-  assert.equal(phases.filter(p=>p.phase==='step-completed').length,1);
+  assert.equal(phases.filter(p=>p.phase==='step-error').length,2);
+  assert.equal(phases.filter(p=>p.phase==='step-completed').length,0);
+  assert.equal(execution,1);
   assert.ok(output.includes('PRESERVED_PARTIAL_STEP'));
   assert.equal(extractAgentTaskAnswer(output),'');
-  assert.match(extractAgentTaskFallback(output),/PRESERVED_PARTIAL_CONCLUSION/);
+  assert.match(extractAgentTaskFallback(output),/Incomplete areas/i);
   assert.ok(phases.some(p=>p.phase==='summary-error'));
 });
 
@@ -74,6 +75,34 @@ test('broadens repeated task searches instead of retrying the same branded sente
   assert.match(queries[1], /civic engagement app/i);
   assert.match(queries[1], /gamification retention benchmarks/i);
   assert.equal(new Set(queries).size, queries.length);
+});
+test('DAG dependencies retain declared ids and invalid references fall back to safe sequential plans', () => {
+  const plan = [
+    { id: 'first', title: 'Evidence A', instruction: 'Collect A', tool: 'reason', dependsOn: [] },
+    { id: 'second', title: 'Evidence B', instruction: 'Collect B', tool: 'reason', dependsOn: [] },
+    { id: 'combine', title: 'Combine', instruction: 'Combine A and B', tool: 'reason', dependsOn: ['first', 'second'] },
+  ];
+  assert.deepEqual(parseAgentPlan(JSON.stringify(plan))[2].dependsOn, [0, 1]);
+  for (const invalid of ['missing', 'combine']) {
+    const broken = structuredClone(plan); broken[1].dependsOn = [invalid];
+    assert.equal(parseAgentPlan(JSON.stringify(broken))[0].id, undefined);
+  }
+});
+test('an independent step can complete after another prerequisite fails, while its dependent step is blocked', async () => {
+  const calls = [];
+  const output = await runAgentTask({ goal: 'Prepare comparison', generate: async (prompt, options) => {
+    if (options.phase === 'planning') return JSON.stringify([
+      { id: 'a', title: 'A', instruction: 'A data', tool: 'reason', dependsOn: [] },
+      { id: 'b', title: 'B', instruction: 'B data', tool: 'reason', dependsOn: [] },
+      { id: 'c', title: 'C', instruction: 'Compare both', tool: 'reason', dependsOn: ['a', 'b'] },
+    ]);
+    calls.push(prompt);
+    if (/Current step: A/.test(prompt)) return { answer: 'Partial', incomplete: true };
+    return 'B data is complete.';
+  } });
+  assert.ok(calls.some(prompt => /Current step: B/.test(prompt)));
+  assert.ok(!calls.some(prompt => /Current step: C/.test(prompt)));
+  assert.match(output, /dependent work was not executed/);
 });
 
 test('infers live research from the task goal before any search has run', () => {
@@ -262,7 +291,7 @@ test('retries empty task steps and completes after a transient failure', async (
   assert.match(output, /Verification completed/);
 });
 
-test('marks unavailable reasoning as incomplete instead of duplicating previous evidence', async () => {
+test('actually retries a transient model outage before continuing dependent work', async () => {
   let executionCalls = 0;
   const output = await runAgentTask({
     goal: 'Research and summarize a market',
@@ -280,10 +309,9 @@ test('marks unavailable reasoning as incomplete instead of duplicating previous 
     },
   });
 
-  const fallback = extractAgentTaskFallback(output);
-  assert.equal(executionCalls, 1);
-  assert.match(fallback, /Incomplete areas/i);
-  assert.match(fallback, /Unavailable source/);
+  assert.equal(executionCalls, 4); // failed attempt, retry, dependent analysis, synthesis
+  assert.match(extractAgentTaskAnswer(output), /cautious market assessment/);
+  assert.doesNotMatch(extractAgentTaskAnswer(output), /Incomplete areas/i);
   assert.equal(agentTaskUsedRecovery(output), true);
 });
 

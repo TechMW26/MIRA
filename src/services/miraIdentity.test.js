@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   expressionForAssistantContent,
+  expressionForDeliveryCue,
   expressionForUserContent,
   expressionsForMiraActivity,
   messageHasError,
@@ -56,6 +57,13 @@ test('MIRA identity uses nuanced positive expressions for response meaning', () 
   assert.equal(expressionForAssistantContent('Haha, that was funny.'), 'laughing');
   assert.equal(expressionForAssistantContent('That name could mean several things.'), 'confused');
   assert.equal(expressionForAssistantContent('We should double-check that questionable claim.'), 'suspicious');
+});
+test('AI voice delivery cues drive matching visual expressions without guessing from keywords', () => {
+  assert.equal(expressionForDeliveryCue('[reassuring] I am here with you.'), 'attentive');
+  assert.equal(expressionForDeliveryCue('[chuckles] [fast] That was funny.'), 'laughing');
+  assert.equal(expressionForDeliveryCue('[excited] Congratulations!'), 'excited');
+  assert.equal(expressionForDeliveryCue('Plain response.'), '');
+  assert.equal(expressionForAssistantContent('[neutral] This is surprising.'), 'neutral');
 });
 
 test('MIRA identity recognizes assistant errors without misclassifying user text', () => {

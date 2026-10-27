@@ -15,10 +15,12 @@ import {
   Cake,
   UserCircle2,
   Brain,
+  Building2,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useChatContext } from '../../contexts/ChatContext';
 import { getUserProfile, updateUserProfile } from '../../services/database';
+import { DEFAULT_MIRA_VOICE_ID, MIRA_VOICE_IDS } from '../../config/miraPersonality.js';
 import {
   clearLearnedResponsePreferences,
   getLearnedResponsePreferences,
@@ -35,6 +37,7 @@ export default function SettingsModal({ onClose }) {
     bio: '',
     age: '',
     gender: '',
+    company: '',
   });
   const [preferences, setPreferences] = useState({
     responseStyle: 'balanced',
@@ -47,6 +50,7 @@ export default function SettingsModal({ onClose }) {
   const [learnedPreferences, setLearnedPreferences] = useState(() => getLearnedResponsePreferences(user?.uid));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [computerStatus, setComputerStatus] = useState('');
   const [activeSection, setActiveSection] = useState('profile');
   const [photoPreview, setPhotoPreview] = useState(null);
   const fileInputRef = useRef(null);
@@ -68,6 +72,7 @@ export default function SettingsModal({ onClose }) {
         bio: data.bio || '',
         age: data.age != null ? String(data.age) : '',
         gender: data.gender || '',
+        company: typeof data.company === 'string' ? data.company : data.company?.name || '',
       });
       if (data.preferences) {
         setPreferences((prev) => ({ ...prev, ...data.preferences }));
@@ -92,6 +97,7 @@ export default function SettingsModal({ onClose }) {
         bio: profile.bio,
         age: Number.isFinite(ageNum) && ageNum > 0 && ageNum < 130 ? ageNum : null,
         gender: profile.gender || '',
+        company: String(profile.company || '').trim().slice(0, 120),
         preferences,
       });
       // Persist preferences to localStorage for instant access by engine/UI
@@ -259,6 +265,7 @@ export default function SettingsModal({ onClose }) {
             {/* Fields */}
             <div className="space-y-4">
               <FormField icon={User} label="Display Name" value={profile.displayName} onChange={(v) => setProfile((p) => ({ ...p, displayName: v }))} placeholder="Your name" />
+              <FormField icon={Building2} label="Company" value={profile.company} onChange={(v) => setProfile((p) => ({ ...p, company: v.slice(0, 120) }))} placeholder="Optional company or organization" />
               <FormField icon={Mail} label="Email" value={profile.email} disabled note="Email cannot be changed" />
               <FormField icon={Phone} label="Phone Number" value={profile.phone} onChange={(v) => setProfile((p) => ({ ...p, phone: v }))} placeholder="+1 234 567 890" type="tel" />
               <div className="grid grid-cols-2 gap-3">
@@ -358,6 +365,24 @@ export default function SettingsModal({ onClose }) {
             </div>
 
             <ToggleRow label="Stream responses" desc="Show AI responses as they generate" value={preferences.streamResponses} onChange={(v) => setPreferences((p) => ({ ...p, streamResponses: v }))} />
+            <div className="glass-subtle rounded-2xl p-5 space-y-3">
+              <label htmlFor="mira-voice" className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Mira voice</label>
+              <select id="mira-voice" value={preferences.voiceId || DEFAULT_MIRA_VOICE_ID} onChange={event => setPreferences(p => ({ ...p, voiceId: event.target.value }))} className="w-full p-3 rounded-xl text-sm" style={{ background: 'var(--glass-bg)', color: 'var(--text-primary)', border: '1px solid var(--glass-border)' }}>
+                {MIRA_VOICE_IDS.map((id, index) => <option key={id} value={id}>{['Alisha', 'Natasha', 'Sia', 'Sreeja', 'Anushka', 'Varsha'][index]}</option>)}
+              </select>
+              <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>Expressive ElevenLabs V4 when configured by this deployment. Mira remembers your current English or Hindi preference and switches when you do.</p>
+            </div>
+            {window.miraDesktop?.platform === 'darwin' && <div className="glass-subtle rounded-2xl p-5 space-y-3">
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Computer control</h3>
+              <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>Only runs tasks you request. Screen captures go to the configured vision provider. Command + Shift + Escape stops a running task.</p>
+              <button type="button" className="px-3 py-2 rounded-xl text-xs" style={{ border: '1px solid var(--glass-border)' }} onClick={async () => {
+                try {
+                  const result = await window.miraDesktop.invokeTool({ name: 'computer.control', arguments: { operation: 'revoke' } });
+                  setComputerStatus(result?.ok ? 'Stopped. Approval is required again before the next computer task.' : result?.error || 'Could not revoke computer control.');
+                } catch { setComputerStatus('Could not revoke computer control.'); }
+              }}>Stop and revoke approval</button>
+              {computerStatus && <p role="status" className="text-xs">{computerStatus}</p>}
+            </div>}
             <ToggleRow label="Adaptive learning" desc="Learn only explicit response-style feedback on this device" value={preferences.adaptiveLearning} onChange={(v) => setPreferences((p) => ({ ...p, adaptiveLearning: v }))} />
             <div className="glass-subtle rounded-2xl p-5">
               <div className="flex items-start justify-between gap-4">

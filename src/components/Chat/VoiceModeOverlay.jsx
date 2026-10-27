@@ -18,13 +18,14 @@ export default function VoiceModeOverlay({
   statusLabel,
   transcript,
   response,
+  deliveryExpression,
   onClose,
   onRetry,
 }) {
   const isError = status === 'error';
   const safeTranscript = normalizeVoiceTranscript(transcript);
   const safeResponse = sanitizeVoiceOutput(response);
-  const expression = resolveMiraExpression({
+  const expression = status === 'speaking' && deliveryExpression ? deliveryExpression : resolveMiraExpression({
     voiceStatus: status,
     lastMessage: safeResponse ? { role: 'assistant', content: safeResponse } : null,
     latestUserMessage: safeTranscript ? { role: 'user', content: safeTranscript } : null,

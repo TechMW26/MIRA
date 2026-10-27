@@ -44,6 +44,28 @@
 }
 
 /* Desktop-only workspace IDE */
+.mira-activity-trigger { position:fixed; top:14px; z-index:46; display:flex; align-items:center; gap:7px; min-height:36px; padding:0 12px; border:1px solid var(--hud-cyan-dim); border-radius:var(--radius-inner); background:var(--bg-primary); color:var(--text-secondary); font-size:12px; }
+.mira-activity-panel { position:fixed; top:60px; right:16px; z-index:80; width:min(370px,calc(100vw - 32px)); max-height:calc(100dvh - 84px); overflow:auto; padding:18px; border:1px solid var(--glass-border); border-radius:var(--radius-panel); background:var(--bg-primary); color:var(--text-primary); box-shadow:0 14px 40px #0005; }
+.mira-activity-panel header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.mira-activity-panel h2 { font-size:15px; font-weight:600; }
+.mira-activity-note { font-size:11px; line-height:1.6; color:var(--text-tertiary); margin:10px 0; }
+.mira-activity-panel form { display:grid; gap:10px; margin:15px 0; }
+.mira-activity-panel label { display:grid; gap:5px; font-size:12px; }
+.mira-activity-panel input:not([type=checkbox]) { width:100%; min-width:0; padding:9px; border:1px solid var(--glass-border); border-radius:8px; background:var(--glass-bg); color:var(--text-primary); }
+.mira-activity-primary { padding:9px; border-radius:8px; background:var(--btn-primary-bg); color:var(--btn-primary-text); font-size:12px; }
+.mira-activity-panel details { font-size:12px; padding:10px 0; border-top:1px solid var(--glass-border); border-bottom:1px solid var(--glass-border); }
+.mira-activity-panel summary { cursor:pointer; }
+.mira-activity-panel .mira-activity-check { display:flex; align-items:center; gap:8px; margin-top:11px; }
+.mira-activity-times { display:flex; gap:10px; margin:12px 0; }
+.mira-activity-times label { flex:1; min-width:0; }
+.mira-activity-error { color:#f88; font-size:12px; }
+.mira-activity-items article { padding:12px 0; border-top:1px solid var(--glass-border); font-size:12px; }
+.mira-activity-items article strong,.mira-activity-items article time { display:block; overflow-wrap:anywhere; }
+.mira-activity-items article time { margin-top:5px; color:var(--text-tertiary); font-size:11px; }
+.mira-activity-items article p { margin-top:7px; }
+.mira-activity-items article div,.mira-activity-alert div div { display:flex; flex-wrap:wrap; gap:12px; margin-top:9px; font-size:11px; color:var(--hud-cyan-soft); }
+.mira-activity-alert { position:fixed; top:60px; right:16px; z-index:79; width:min(350px,calc(100vw - 32px)); padding:18px 30px 18px 18px; border:1px solid var(--hud-cyan-dim); border-radius:var(--radius-panel); background:var(--bg-primary); color:var(--text-primary); box-shadow:0 10px 35px #0005; font-size:13px; }
+.mira-activity-alert-close { position:absolute; right:10px; top:10px; }
 .desktop-workspace-trigger {
   position: fixed;
   top: 14px;

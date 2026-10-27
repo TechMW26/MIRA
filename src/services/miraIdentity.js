@@ -49,6 +49,8 @@ export function messageHasError(message) {
 
 export function expressionForAssistantContent(content = '') {
   const text = String(content || '');
+  const delivery = expressionForDeliveryCue(text);
+  if (delivery) return delivery;
   if (/\b(?:done|completed|fixed|resolved|passed|successful(?:ly)?|ready|shipped|deployed)\b/i.test(text)) return 'proud';
   if (/\b(?:haha|hehe|lol|funny|joke|laugh)\b/i.test(text)) return 'laughing';
   if (/\b(?:wow|surpris(?:e|ed|ing)|unexpected|remarkable|incredible)\b/i.test(text)) return 'surprised';
@@ -59,6 +61,11 @@ export function expressionForAssistantContent(content = '') {
   if (/\b(?:good news|sounds good|happy to|glad that)\b/i.test(text)) return 'happy';
   if (/[!！]\s*$/.test(text.trim())) return 'excited';
   return 'neutral';
+}
+
+export function expressionForDeliveryCue(content = '') {
+  const cue = String(content).match(/\[(warm|confident|curious|neutral|laughs|chuckles|excited|reassuring)\]/i)?.[1]?.toLowerCase();
+  return ({ warm: 'happy', confident: 'proud', curious: 'curious', neutral: 'neutral', laughs: 'laughing', chuckles: 'laughing', excited: 'excited', reassuring: 'attentive' })[cue] || '';
 }
 
 export function expressionForUserContent(content = '') {

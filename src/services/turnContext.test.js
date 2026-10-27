@@ -25,7 +25,7 @@ test('clarification replies retain the original task but explicit topic switches
   assert.equal(selectTurnContext('Use a budget of 5000 dollars', pending), pending);
   assert.deepEqual(selectTurnContext('New topic: explain photosynthesis', pending), []);
 });
-test('failed HTML stays in task details but never reaches later reasoning or conclusion', async () => {
+test('failed HTML stays in task details and blocks dependent reasoning or conclusion', async () => {
   const prompts = [];
   let execution = 0;
   const output = await runAgentTask({goal:'Plan a workshop',generate:async(prompt, options)=>{
@@ -36,5 +36,7 @@ test('failed HTML stays in task details but never reaches later reasoning or con
   }});
   assert.match(output,/REJECTED_NEBULA_ARTIFACT/);
   for(const {prompt} of prompts.slice(2)) assert.doesNotMatch(prompt,/REJECTED_NEBULA_ARTIFACT/);
-  assert.match(prompts.at(-1).prompt,/response was interrupted/);
+  assert.equal(execution,1);
+  assert.equal(prompts.filter(p=>p.phase==='synthesizing').length,0);
+  assert.match(output,/dependent work was not executed/);
 });

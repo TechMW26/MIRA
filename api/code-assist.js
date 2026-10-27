@@ -187,7 +187,7 @@ function parseToolArguments(value) {
 export function prepareDeepSeekTools(tools = []) {
   const used = new Set();
   const aliases = new Map();
-  const prepared = (Array.isArray(tools) ? tools : []).slice(0, 32).flatMap((tool) => {
+  const prepared = (Array.isArray(tools) ? tools : []).slice(0, 64).flatMap((tool) => {
     const definition = tool?.function;
     if (tool?.type !== 'function' || !definition?.name) return [];
     const originalName = String(definition.name);

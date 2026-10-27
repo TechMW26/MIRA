@@ -4,7 +4,7 @@ export const config = { maxDuration: 60 };
 
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const MAX_PROMPT_CHARS = 6000;
+const MAX_PROMPT_CHARS = 12000;
 const MAX_IMAGES = 6;
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const ALLOWED_IMAGE_MIME = /^image\/(?:png|jpe?g|webp|gif|heic|heif)$/i;

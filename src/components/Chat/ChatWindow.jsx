@@ -9,6 +9,7 @@ import {
   subscribeConversationQueue,
   subscribeConversationRun,
   updateConversationPrompt,
+  updateUserProfile,
 } from '../../services/database';
 import {
   createQueuedPrompt,
@@ -35,8 +36,11 @@ import {
   resolveVoiceConversationBinding,
   resolveVoiceTurnAnswer,
   sanitizeVoiceOutput,
+  detectVoiceLanguage,
 } from '../../services/voiceConversation';
+import { MIRA_VOICE_IDS, stripMiraAudioTags } from '../../config/miraPersonality.js';
 import {
+  expressionForDeliveryCue,
   resolveMiraActivity,
   resolveMiraExpression,
   shouldShowMiraWelcome,
@@ -179,6 +183,8 @@ export default function ChatWindow({ onMiraExpressionChange, compact = false }) 
     editMessage,
   } = useChat();
   const userProfile = useUserProfile();
+  const voiceLanguageRef = useRef(userProfile.preferences?.voiceLanguage || 'en');
+  useEffect(() => { if (['en', 'hi'].includes(userProfile.preferences?.voiceLanguage)) voiceLanguageRef.current = userProfile.preferences.voiceLanguage; }, [userProfile.preferences?.voiceLanguage]);
 
   const [webSearch, setWebSearch] = useState(false);
   const [panel, setPanel] = useState(null); // 'canvas' | 'tasks' | 'tools' | 'prompts'
@@ -192,6 +198,7 @@ export default function ChatWindow({ onMiraExpressionChange, compact = false }) 
   const [voiceScreenOpen, setVoiceScreenOpen] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceResponse, setVoiceResponse] = useState('');
+  const [voiceDelivery, setVoiceDelivery] = useState('');
   const scrollAreaRef = useRef(null);
   const autoScrollRef = useRef(true);
   const queueDrainRef = useRef(false);
@@ -244,33 +251,50 @@ export default function ChatWindow({ onMiraExpressionChange, compact = false }) 
   }, [sendMessage]);
 
   const handleVoiceTranscript = useCallback(async (text, { language } = {}) => {
+    language = detectVoiceLanguage(text, language || voiceLanguageRef.current);
+    if (language !== voiceLanguageRef.current) {
+      voiceLanguageRef.current = language;
+      if (userProfile.uid) updateUserProfile(userProfile.uid, { 'preferences/voiceLanguage': language }).catch(() => {});
+    }
     setVoiceTranscript(text);
     setVoiceResponse('');
+    setVoiceDelivery('');
     voiceRef.current?.beginSpeech(language);
     let streamedAnswer = '';
+    let shouldClose = false;
     const result = await sendToChat(text, [], false, {
       voice: true,
       onResponseChunk: (answer, { final = false } = {}) => {
+        shouldClose ||= String(answer).includes('[MIRA_END_CONVERSATION]');
+        const delivery = expressionForDeliveryCue(answer);
+        if (delivery) setVoiceDelivery(delivery);
         const visibleAnswer = sanitizeVoiceOutput(answer);
         if (!visibleAnswer) return;
         streamedAnswer = visibleAnswer;
-        setVoiceResponse(visibleAnswer);
+        setVoiceResponse(stripMiraAudioTags(visibleAnswer));
         voiceRef.current?.queueSpeech(visibleAnswer, language, final);
       },
     });
     const visibleAnswer = resolveVoiceTurnAnswer(result?.answer, streamedAnswer);
+    shouldClose ||= String(result?.answer || '').includes('[MIRA_END_CONVERSATION]');
     if (!visibleAnswer) {
       throw new Error('Mira returned an empty voice response.');
     }
-    setVoiceResponse(visibleAnswer);
+    setVoiceResponse(stripMiraAudioTags(visibleAnswer));
     if (voiceRef.current?.active) {
       await voiceRef.current.finishSpeech(visibleAnswer, language);
     }
-  }, [sendToChat]);
+    if (shouldClose) {
+      voiceRef.current?.shutdown();
+      voiceConversationRef.current = '';
+      setVoiceScreenOpen(false);
+    }
+  }, [sendToChat, userProfile.uid]);
 
   const voice = useVoiceConversation({
     onTranscript: handleVoiceTranscript,
     onInterrupt: stopGenerating,
+    voiceId: MIRA_VOICE_IDS.includes(userProfile.preferences?.voiceId) ? userProfile.preferences.voiceId : undefined,
   });
   voiceRef.current = voice;
 
@@ -444,7 +468,7 @@ export default function ChatWindow({ onMiraExpressionChange, compact = false }) 
   // conversation hydrates. Keep the identity in chat mode for that session so
   // the home-to-chat transition runs exactly once.
   const showingWelcome = shouldShowMiraWelcome(currentConversationId, messages);
-  const miraExpression = resolveMiraExpression({
+  const miraExpression = voice.status === 'speaking' && voiceDelivery ? voiceDelivery : resolveMiraExpression({
     isWelcome: showingWelcome,
     isGenerating,
     isSearching,
@@ -497,6 +521,7 @@ export default function ChatWindow({ onMiraExpressionChange, compact = false }) 
           statusLabel={voice.statusLabel}
           transcript={voiceTranscript}
           response={voiceResponse}
+          deliveryExpression={voiceDelivery}
           onClose={closeVoiceMode}
           onRetry={retryVoiceMode}
         />

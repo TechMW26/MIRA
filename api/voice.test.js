@@ -100,6 +100,10 @@ test('voice chat streams from the DeepSeek voice provider with Mira and conversa
           { role: 'user', content: 'Hello' },
         ],
         systemPrompt: 'Project context: CANACT.',
+        tools: [
+          { type: 'function', function: { name: 'computer.task', parameters: { type: 'object', properties: { goal: { type: 'string' } } } } },
+          { type: 'function', function: { name: 'unknown.admin', parameters: {} } },
+        ],
       }),
     }));
     assert.equal(response.status, 200);
@@ -110,6 +114,9 @@ test('voice chat streams from the DeepSeek voice provider with Mira and conversa
     assert.equal(body.model, 'deepseek-v4-flash');
     assert.equal(body.stream, true);
     assert.equal(body.thinking.type, 'disabled');
+    assert.equal(body.tools.length, 1);
+    assert.equal(body.tools[0].function.name, 'computer__task');
+    assert.equal(body.tool_choice, 'auto');
     assert.match(body.messages[0].content, /You are Mira/);
     assert.match(body.messages[0].content, /no Markdown/);
     assert.match(body.messages[0].content, /\[MIRA_WEB_SEARCH: concise search query\]/);

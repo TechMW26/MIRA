@@ -19,6 +19,19 @@ test('detects Hindi from transcript hints and Devanagari text', () => {
   assert.equal(detectVoiceLanguage('नमस्ते', ''), 'hi');
   assert.equal(detectVoiceLanguage('Namaste', 'hi-IN'), 'hi');
 });
+test('meaningful current English/Hindi switches override stale language hints while fragments retain them', () => {
+  assert.equal(detectVoiceLanguage('What is the weather today?', 'hi'), 'en');
+  assert.equal(detectVoiceLanguage('Mujhe batao kya hua', 'en'), 'hi');
+  assert.equal(detectVoiceLanguage('हाँ, अब हिंदी में बताओ', 'en'), 'hi');
+  assert.equal(detectVoiceLanguage('Mansi', 'hi'), 'hi');
+  assert.equal(detectVoiceLanguage('मीरा', 'en'), 'en');
+  assert.equal(detectVoiceLanguage('हाँ', 'en'), 'en');
+  assert.equal(detectVoiceLanguage('४२', 'en'), 'en');
+});
+test('AI end-conversation marker is never spoken or displayed', () => {
+  assert.equal(sanitizeVoiceOutput('[warm] Bye! [MIRA_END_CONVERSATION]'), '[warm] Bye!');
+  assert.equal(sanitizeSpeechText('[warm] Bye! [MIRA_END_CONVERSATION]'), '[warm] Bye!');
+});
 
 test('repairs common short-utterance recognition of the Mira name', () => {
   assert.equal(normalizeVoiceTranscript('Hello, MRW.'), 'Hello, Mira.');

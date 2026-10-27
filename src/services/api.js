@@ -163,7 +163,8 @@ function parseToolArguments(value) {
 export function toolCallsToControl(toolCalls = []) {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
   for (const toolCall of toolCalls) {
-    const name = String(toolCall?.function?.name || toolCall?.name || '').trim().toLowerCase();
+    const requested = String(toolCall?.function?.name || toolCall?.name || '').trim().toLowerCase();
+    const name = Object.values(TOOL_NAMES).find(name => name === requested || name.replace(/[^A-Za-z0-9_-]/g, '__') === requested);
     if (!Object.values(TOOL_NAMES).includes(name)) continue;
     const args = parseToolArguments(toolCall?.function?.arguments ?? toolCall?.arguments);
     return `[MIRA_TOOL: ${JSON.stringify({ name, arguments: args })}]`;
@@ -227,10 +228,30 @@ export function extractThinkingText(payload) {
   return '';
 }
 
-function parseStreamData(data) {
-  if (!data || data === '[DONE]') return { answer: '', thinking: '', completed: data === '[DONE]' };
+function parseStreamData(data, toolState) {
+  const flushTools = () => {
+    if (!toolState || toolState.emitted || !toolState.calls.size) return '';
+    toolState.emitted = true;
+    return toolCallsToControl([...toolState.calls.values()]);
+  };
+  if (!data || data === '[DONE]') return { answer: data === '[DONE]' ? flushTools() : '', thinking: '', completed: data === '[DONE]' };
   try {
     const payload = JSON.parse(data);
+    const calls = extractToolCalls(payload);
+    if (toolState && (calls.length || toolState.calls.size)) {
+      for (const [position, call] of calls.entries()) {
+        const index = call.index ?? position;
+        const previous = toolState.calls.get(index) || { type: 'function', function: { name: '', arguments: '' } };
+        const part = call.function || call;
+        if (part.name) previous.function.name += String(part.name);
+        if (typeof part.arguments === 'string') previous.function.arguments += part.arguments;
+        else if (part.arguments && typeof part.arguments === 'object') previous.function.arguments = JSON.stringify(part.arguments);
+        toolState.calls.set(index, previous);
+      }
+      const complete = Boolean(payload.choices?.[0]?.finish_reason || payload.done
+        || calls.length && !payload.choices?.[0]?.delta && calls.every(call => call.index === undefined));
+      return { answer: complete ? flushTools() : '', thinking: '', completed: complete, finishReason: payload.choices?.[0]?.finish_reason || '' };
+    }
     return {
       answer: extractChatText(payload),
       thinking: extractThinkingText(payload),
@@ -300,6 +321,7 @@ function extractCompleteJsonChunks(buffer) {
 }
 
 export async function readChatResponse(response, onChunk, signal) {
+  const toolState = { calls: new Map(), emitted: false };
   const reader = response.body?.getReader();
   if (!reader) {
     const text = await response.text();
@@ -355,12 +377,12 @@ export async function readChatResponse(response, onChunk, signal) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('event:') || trimmed.startsWith('id:')) continue;
       const data = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
-      append(parseStreamData(data));
+      append(parseStreamData(data, toolState));
     }
 
     const parsed = extractCompleteJsonChunks(buffer);
     for (const chunk of parsed.chunks) {
-      append(parseStreamData(chunk));
+      append(parseStreamData(chunk, toolState));
     }
     buffer = parsed.remainder;
 
@@ -368,7 +390,7 @@ export async function readChatResponse(response, onChunk, signal) {
       const remainder = buffer.trim();
       if (remainder) {
         const data = remainder.startsWith('data:') ? remainder.slice(5).trim() : remainder;
-        append(parseStreamData(data));
+        append(parseStreamData(data, toolState));
       }
       buffer = '';
     }
@@ -747,7 +769,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
       messages,
       images,
       systemPrompt: composeMiraSystemPrompt(systemPrompt),
-      tools: voice ? [] : tools,
+      tools,
       think: voice ? false : think,
       maxTokens,
       endpoint: voice ? '/api/voice-chat' : '/api/chat',

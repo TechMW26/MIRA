@@ -16,6 +16,19 @@ function functionTool(name, description, properties, required = []) {
 }
 
 export const MODEL_TOOLS = [
+  functionTool('reminder.create', 'Actually schedule a one-time reminder explicitly requested by the user in this signed-in account on this device. Resolve the requested time from current time/timezone context. Ask only if the time or subject is genuinely missing. Delivery while MIRA is open, with overdue catch-up on reopen; not a background OS alarm or recurring schedule.', {
+    title: { type: 'string', description: 'Short reminder subject in the user language.' },
+    summary: { type: 'string', description: 'Optional relevant details.' },
+    dueAt: { type: 'string', description: 'Future ISO 8601 timestamp with an explicit timezone offset or Z.' },
+  }, ['title', 'dueAt']),
+  functionTool('reminder.list', 'Read this account’s reminders stored on the current device. Do not infer mail, meeting, WhatsApp or Talio workplace access.', {}, []),
+  functionTool('reminder.update', 'Snooze, dismiss or complete an existing account reminder by its exact id. Read reminder.list first if the id is not already in context.', {
+    id: { type: 'string' }, action: { type: 'string', enum: ['snooze', 'dismiss', 'complete'] }, until: { type: 'string', description: 'Future ISO timestamp including timezone; required only for snooze.' },
+  }, ['id', 'action']),
+  functionTool('activity.feed', 'Read known account activity and connection status. External mail/calendar/WhatsApp/calls are not connected and must not be invented.', {}, []),
+  functionTool(AGENT_CAPABILITIES.COMPUTER_TASK, 'Carry out a requested task in installed applications using the native computer executor. Give the full user goal and relevant prior corrections; it plans grounded mouse/keyboard steps, retries safely and verifies the final screen. Installed apps first. Do not claim completion before the result. Only available in a compatible MIRA desktop build.', {
+    goal: { type: 'string', description: 'Complete user-authorized computer task, retaining app, recipient, exact content, constraints and relevant follow-up context.' },
+  }, ['goal']),
   functionTool('user.ask', 'Ask the user for essential missing context or a material decision. Pauses work until their reply. Check existing conversation first; do not ask for secrets.', {
     questions: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'string' }, description: 'One to three focused questions, avoiding details already supplied.' },
     reason: { type: 'string', description: 'Briefly explain why these answers are needed.' },

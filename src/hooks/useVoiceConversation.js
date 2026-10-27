@@ -27,7 +27,7 @@ function supportedAudioType() {
 
 function primeSpeechItem(item, controller) {
   if (!item.audioResult) {
-    item.audioResult = synthesizeVoice(item.text, item.language, controller?.signal)
+    item.audioResult = synthesizeVoice(item.text, item.language, controller?.signal, { voiceId: item.voiceId })
       .then((audio) => ({ audio }))
       .catch((error) => ({ error }));
   }
@@ -38,7 +38,9 @@ function primeSpeechWindow(queue, controller, count = 2) {
   queue.slice(0, count).forEach((item) => primeSpeechItem(item, controller));
 }
 
-export default function useVoiceConversation({ onTranscript, onInterrupt }) {
+export default function useVoiceConversation({ onTranscript, onInterrupt, voiceId }) {
+  const selectedVoiceRef = useRef(voiceId);
+  selectedVoiceRef.current = voiceId;
   const [active, setActive] = useState(false);
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState('');
@@ -305,6 +307,7 @@ export default function useVoiceConversation({ onTranscript, onInterrupt }) {
     for (const chunk of splitSpeechText(increment.text, 148)) {
       speechQueueRef.current.push({
         text: chunk,
+        voiceId: selectedVoiceRef.current,
         language: stream.language,
         generation: stream.generation,
       });

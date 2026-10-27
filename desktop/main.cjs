@@ -3,6 +3,7 @@ const {
   BrowserWindow,
   desktopCapturer,
   dialog,
+  globalShortcut,
   ipcMain,
   Notification,
   safeStorage,
@@ -23,6 +24,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { promisify } = require('node:util');
 const { sendToWindow } = require('./windowMessaging.cjs');
+const { createComputerControl } = require('./computerControl.cjs');
 const {
   requestDeepSeekChat,
   requestDeepSeekCompletion,
@@ -49,6 +51,7 @@ const WORKSPACE_LEGACY_HISTORY_FILE = 'history.jsonl';
 const MAX_WORKSPACE_MEMORY_BYTES = 2 * 1024 * 1024;
 const MAX_WORKSPACE_MEMORY_EVENTS = 500;
 const DESKTOP_CAPABILITIES = Object.freeze([
+  ...(process.platform === 'darwin' ? ['computer.task', 'computer.control'] : []),
   'filesystem.read',
   'filesystem.list',
   'filesystem.write',
@@ -77,6 +80,7 @@ const DESKTOP_CAPABILITIES = Object.freeze([
 ]);
 
 let workspaceRoot = '';
+let computerControl = null;
 let desktopEnvironmentPromise = null;
 let workspaceCommandTrust = false;
 let workspaceVectorIndex = null;
@@ -1317,6 +1321,10 @@ async function invokeDesktopTool(window, call = {}) {
   const name = String(call?.name || '');
   const args = call?.arguments && typeof call.arguments === 'object' ? call.arguments : {};
   if (!DESKTOP_CAPABILITIES.includes(name)) throw new Error('This desktop tool is not available.');
+  if (name === 'computer.control') {
+    computerControl ||= createComputerControl({ app, desktopCapturer, screen, dialog, systemPreferences, globalShortcut });
+    return JSON.stringify(await computerControl.handle(args, window));
+  }
 
   if (name === 'filesystem.read') {
     const target = await resolveWorkspacePath(window, args.path);
@@ -2101,3 +2109,4 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+app.on('will-quit', () => computerControl?.cancel());
