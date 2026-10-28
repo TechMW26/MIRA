@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useChatContext } from '../../contexts/ChatContext';
+import TalioConnection from './TalioConnection.jsx';
 import { getUserProfile, updateUserProfile } from '../../services/database';
 import { DEFAULT_MIRA_VOICE_ID, MIRA_VOICE_IDS } from '../../config/miraPersonality.js';
 import {
@@ -415,6 +416,7 @@ export default function SettingsModal({ onClose }) {
         {/* Account section */}
         {activeSection === 'account' && (
           <div className="space-y-4 animate-fade-in">
+            <TalioConnection userId={user?.uid} />
             <div className="glass-subtle rounded-2xl p-5 space-y-3">
               <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Account Info</h3>
               <div className="space-y-2">

@@ -64,6 +64,7 @@ export default defineConfig({
         },
       },
       '/api/auth': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/talio-link': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/analyze': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/analyse': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/health': { target: 'http://localhost:3002', changeOrigin: true },

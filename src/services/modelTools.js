@@ -16,6 +16,12 @@ function functionTool(name, description, properties, required = []) {
 }
 
 export const MODEL_TOOLS = [
+  functionTool('talio.context', 'Read the explicitly linked Talio account’s own tasks, projects, meetings, attendance or leave. Supply the requested domain in query; do not search the public web for private workplace data. Existing Talio role permissions apply. If unlinked, direct the user to Settings > Account > Talio workplace; never infer a link from matching emails.', { query: { type: 'string' } }, ['query']),
+  functionTool('talio.activity', 'Read the explicitly linked Talio account’s verified attention feed. Do not infer external email, WhatsApp or call access unless the returned connection status says it is available.', {}, []),
+  functionTool('talio.action', 'Perform a supported linked Talio workplace action. For reads: lookup_people/open_task/open_project/open_meeting use fields.query. For writes, MIRA asks the user to confirm the exact payload before execution: create_task (title, assignees), create_project (name,startDate,endDate,heads), create_meeting (title,agenda,scheduledStart,scheduledEnd,invitees,type), assign_task (taskTitle,assignees), send_message (recipient,content), invite_project/invite_meeting (query,invitees), schedule_reminder (message,scheduledFor,timezone). Resolve missing details and use exact names or known typed IDs. Never retry uncertain writes; inspect talio.receipt first. Never claim success without the receipt.', {
+    action: { type: 'object', properties: { type: { type: 'string', enum: ['lookup_people', 'open_task', 'open_project', 'open_meeting', 'create_task', 'create_project', 'create_meeting', 'assign_task', 'send_message', 'invite_project', 'invite_meeting', 'schedule_reminder'] }, fields: { type: 'object', description: 'Exact fields required for this action, including explicit timezone offsets for meeting/reminder dates.' } }, required: ['type', 'fields'] },
+  }, ['action']),
+  functionTool('talio.receipt', 'Recover the outcome of a previously attempted Talio write, without repeating it. Use its exact returned requestId and actionType. Pending/uncertain/missing does not authorize replay.', { requestId: { type: 'string' }, actionType: { type: 'string' } }, ['requestId', 'actionType']),
   functionTool('reminder.create', 'Actually schedule a one-time reminder explicitly requested by the user in this signed-in account on this device. Resolve the requested time from current time/timezone context. Ask only if the time or subject is genuinely missing. Delivery while MIRA is open, with overdue catch-up on reopen; not a background OS alarm or recurring schedule.', {
     title: { type: 'string', description: 'Short reminder subject in the user language.' },
     summary: { type: 'string', description: 'Optional relevant details.' },
@@ -25,7 +31,7 @@ export const MODEL_TOOLS = [
   functionTool('reminder.update', 'Snooze, dismiss or complete an existing account reminder by its exact id. Read reminder.list first if the id is not already in context.', {
     id: { type: 'string' }, action: { type: 'string', enum: ['snooze', 'dismiss', 'complete'] }, until: { type: 'string', description: 'Future ISO timestamp including timezone; required only for snooze.' },
   }, ['id', 'action']),
-  functionTool('activity.feed', 'Read known account activity and connection status. External mail/calendar/WhatsApp/calls are not connected and must not be invented.', {}, []),
+  functionTool('activity.feed', 'Read device-local activity only, not external connections. Use talio.activity for an explicitly linked Talio feed. Do not invent mail/calendar/WhatsApp/call access.', {}, []),
   functionTool(AGENT_CAPABILITIES.COMPUTER_TASK, 'Carry out a requested task in installed applications using the native computer executor. Give the full user goal and relevant prior corrections; it plans grounded mouse/keyboard steps, retries safely and verifies the final screen. Installed apps first. Do not claim completion before the result. Only available in a compatible MIRA desktop build.', {
     goal: { type: 'string', description: 'Complete user-authorized computer task, retaining app, recipient, exact content, constraints and relevant follow-up context.' },
   }, ['goal']),

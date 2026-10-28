@@ -149,6 +149,28 @@ function bearerToken(request, body = {}) {
   return authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
 }
 
+// Sensitive account integrations must authenticate the credential itself, never
+// the remembered browser identity or an email/profile supplied by the client.
+export async function authenticateMiraAccount(request, body = {}) {
+  const token = bearerToken(request, body)
+  if (!token || token.length > 4096) return null
+  if (authSecret()) {
+    const session = verifySession(token)
+    if (session) {
+      const profile = await firebaseRequest(`users/${session.uid}`)
+      return profile ? publicUser(session.uid, profile) : null
+    }
+  }
+  const apiKey = process.env.VITE_FIREBASE_API_KEY
+  if (!apiKey) return null
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken: token }), signal: AbortSignal.timeout(8000),
+  })
+  if (!response.ok) return null
+  const profile = (await response.json())?.users?.[0]
+  return profile?.localId && !profile.disabled ? publicUser(profile.localId, profile) : null
+}
+
 async function login(request, body) {
   const email = normalizedEmail(body.email);
   const password = String(body.password || '');

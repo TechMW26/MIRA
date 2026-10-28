@@ -21,6 +21,7 @@ import {
   saveServerSession,
 } from '../services/authSessionStore';
 import { createServerAuthRequest } from '../services/authTransport';
+import { clearWorkplaceMemory } from '../services/workplacePrivacy.js';
 
 const AuthContext = createContext(null);
 const SESSION_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -237,6 +238,7 @@ export function AuthProvider({ children }) {
   }
 
   async function logout() {
+    clearWorkplaceMemory();
     if (firebaseAuthConfigured && auth) await signOut(auth);
     clearRememberedSession();
     localStorage.removeItem('mira_legacy_session');

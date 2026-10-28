@@ -4,7 +4,7 @@ function fingerprint(call) {
   const stable = value => Array.isArray(value) ? value.map(stable) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value;
   return `${call.name}:${JSON.stringify(stable(call.arguments || {}))}`;
 }
-const READ_TOOLS = new Set(['reminder.list', 'activity.feed', 'calculator.evaluate', 'weather.lookup', 'currency.convert', 'filesystem.read', 'filesystem.list', 'filesystem.search', 'git.status', 'git.diff']);
+const READ_TOOLS = new Set(['talio.context', 'talio.activity', 'talio.receipt', 'reminder.list', 'activity.feed', 'calculator.evaluate', 'weather.lookup', 'currency.convert', 'filesystem.read', 'filesystem.list', 'filesystem.search', 'git.status', 'git.diff']);
 export function normalizeToolOutcome(call, value) {
   const result = typeof value === 'string' ? value : JSON.stringify(value);
   let payload = value;

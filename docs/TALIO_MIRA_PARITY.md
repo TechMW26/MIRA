@@ -46,11 +46,16 @@
 
 ## Explicit boundaries
 
-- This is **not full Talio workplace parity**: no standalone authenticated Talio
-  account link exists. Employee/task/meeting/transcript data must not be inferred
-  from an email match or copied session. A production connector needs Talio's
-  authenticated scoped token-exchange/data APIs and a user-initiated linking flow.
-- Email, calendar, WhatsApp and calls are not connected. The UI and model context
+- Explicit Talio account linking is implemented in Settings → Account. A short-lived
+  device approval binds a scoped, revocable grant to the signed-in Talio account
+  and the current MIRA browser/app account. Read-only is the default; writes need
+  an approved action scope and individual confirmation. Accounts are never merged.
+  Own task/project/meeting/attendance/leave context and the existing Talio attention
+  feed use fresh role/tenant checks. This is not unrestricted workplace parity.
+  Workplace replies synchronize encrypted, not as plaintext in legacy history.
+  Their decryption is bound to the current account, grant and message identity;
+  disconnecting or re-linking makes earlier encrypted replies unavailable.
+- Separate email, calendar, WhatsApp and calls are not connected by this flow. The UI and model context
   say so. Future adapters can insert verified events through `addProactiveEvent`
   only after authenticating the source account. No private event data is placed
   in the repository's existing unauthenticated Firebase REST paths.

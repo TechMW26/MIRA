@@ -16,6 +16,7 @@ import { buildProjectContextTurn } from './projectContext.js';
 import { orderMessages } from './messageOrder.js';
 import { conversationDeletionUpdates, evictDeletedConversation } from './conversationDeletion.js';
 import { fetchFirebaseSnapshot, writeFirebaseValue } from './firebaseRest.js';
+import { protectWorkplaceMessage, openWorkplaceMessages } from './workplacePrivacy.js';
 
 const PROJECT_RUN_LEASE_MS = 6 * 60 * 1000;
 const deletedConversationIds = new Set();
@@ -212,16 +213,16 @@ export async function deleteConversation(uid, convId, options = {}) {
 export async function addMessage(convId, message) {
   if (deletedConversationIds.has(convId)) throw new Error('This chat has been deleted.');
   const msgRef = push(ref(db, `messages/${convId}`));
-  await restPut(`messages/${convId}/${msgRef.key}`, {
+  await restPut(`messages/${convId}/${msgRef.key}`, await protectWorkplaceMessage(convId, {
     ...message,
     timestamp: Number.isFinite(message?.timestamp) ? message.timestamp : Date.now(),
-  });
+  }, undefined, msgRef.key));
   return msgRef.key;
 }
 
 export async function updateMessage(convId, msgId, data) {
   if (deletedConversationIds.has(convId)) return;
-  await restPatch(`messages/${convId}/${msgId}`, data);
+  await restPatch(`messages/${convId}/${msgId}`, await protectWorkplaceMessage(convId, data, undefined, msgId));
 }
 
 export async function deleteMessage(convId, msgId) {
@@ -231,9 +232,17 @@ export async function deleteMessage(convId, msgId) {
 export function subscribeMessages(convId, callback) {
   const cacheKey = `mira-messages-${convId}`;
   const cached = readSubscriptionCache(cacheKey);
-  if (cached.length) callback(orderMessages(cached));
+  let emission = 0, active = true, latest = cached;
+  const emit = async messages => {
+    const version = ++emission;
+    // Ordinary conversations keep their existing synchronous hydration path.
+    if (!messages.some(message => message.privateTalio)) { if (active) callback(orderMessages(messages)); return; }
+    const opened = await openWorkplaceMessages(convId, messages);
+    if (active && version === emission) callback(orderMessages(opened));
+  };
+  if (cached.length) emit(cached);
   const msgRef = query(ref(db, `messages/${convId}`), orderByChild('timestamp'));
-  return resilientOnValue(msgRef, (snap) => {
+  const unsubscribe = resilientOnValue(msgRef, (snap) => {
     const msgs = [];
     snap.forEach((child) => {
       msgs.push({ id: child.key, ...child.val() });
@@ -247,8 +256,12 @@ export function subscribeMessages(convId, callback) {
         : message?.attachments,
     }));
     writeSubscriptionCache(cacheKey, cacheable);
-    callback(ordered);
+    latest = ordered;
+    emit(ordered);
   }, 'Message', `messages/${convId}`, 700);
+  const refreshPrivate = () => emit(latest);
+  globalThis.window?.addEventListener('mira:talio-link-changed', refreshPrivate);
+  return () => { active = false; emission++; unsubscribe(); globalThis.window?.removeEventListener('mira:talio-link-changed', refreshPrivate); };
 }
 
 // ── Shared project context ─────────────────────────────

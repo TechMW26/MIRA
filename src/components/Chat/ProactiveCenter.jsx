@@ -56,7 +56,7 @@ export default function ProactiveCenter() {
         <div className="mira-activity-times">{['start', 'end'].map(name => <label key={name}>{name === 'start' ? 'From' : 'Until'}<input type="time" value={store.settings.quietHours[name]} onChange={event => change(() => updateProactiveSettings(uid, { quietHours: { [name]: event.target.value } }))} /></label>)}</div>
         {EVENT_TYPES.filter(type => type !== 'reminder').map(type => <label className="mira-activity-check" key={type}><input type="checkbox" checked={store.settings.categories[type] !== false} onChange={event => change(() => updateProactiveSettings(uid, { categories: { [type]: event.target.checked } }))} />{type.replaceAll('_', ' ')}</label>)}
       </details>
-      <p className="mira-activity-note">Connections: email, calendar, WhatsApp, calls and Talio workplace are not connected. Mira does not monitor these sources.</p>
+      <p className="mira-activity-note">This panel shows device-local activity, not external monitoring. Link Talio explicitly in Settings → Account for workplace tools. Other email, calendar, WhatsApp and call accounts are not connected here.</p>
       {error && <p role="alert" className="mira-activity-error">{error}</p>}
       <div className="mira-activity-items">{!events.length ? <p className="mira-activity-note">No active reminders or activity yet.</p> : events.map(event => <article key={event.id}>
         <strong>{event.title}</strong><time dateTime={new Date(event.dueAt).toISOString()}>{new Date(Math.max(event.dueAt, event.snoozedUntil)).toLocaleString()}</time>

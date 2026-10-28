@@ -101,6 +101,7 @@ export function classifyDesktopWorkspaceRequest(text = '', runtime = getAgentRun
 }
 
 const WEB_CAPABILITIES = Object.freeze([
+  'talio.context', 'talio.action', 'talio.activity', 'talio.receipt',
   AGENT_CAPABILITIES.REMINDER_CREATE,
   AGENT_CAPABILITIES.REMINDER_LIST,
   AGENT_CAPABILITIES.REMINDER_UPDATE,

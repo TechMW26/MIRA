@@ -1,4 +1,8 @@
 export const TOOL_NAMES = Object.freeze({
+  TALIO_CONTEXT: 'talio.context',
+  TALIO_ACTION: 'talio.action',
+  TALIO_ACTIVITY: 'talio.activity',
+  TALIO_RECEIPT: 'talio.receipt',
   ASK_USER: 'user.ask',
   WEB_SEARCH: 'web.search',
   BROWSER_INSPECT: 'browser.inspect',
