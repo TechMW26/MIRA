@@ -60,7 +60,7 @@ export default function TalioConnection({ userId }) {
       <label className="flex gap-2 text-xs"><input type="checkbox" checked={allowActions} onChange={event => setAllowActions(event.target.checked)} disabled={busy || checking || Boolean(pending)} />Also allow supported workplace actions, with confirmation each time</label>
       <button type="button" disabled={busy || checking || Boolean(pending)} onClick={begin} className="px-3 py-2 rounded-xl border text-sm disabled:opacity-50">{busy ? 'Connecting…' : pending ? 'Waiting for Talio approval…' : 'Connect Talio'}</button>
     </>}
-    {pending && <div role="status" className="space-y-2 text-sm"><p>Approve code <strong className="font-mono">{pending.userCode}</strong> in Talio. Never approve a code someone else sent you.</p><a href={pending.url} target="_blank" rel="noopener noreferrer" className="underline">Open Talio approval</a><p className="text-xs">The code expires in five minutes. Return here after approval.</p></div>}
+    {pending && <div role="status" className="space-y-2 text-sm"><p>Approve code <strong className="font-mono">{pending.userCode}</strong> in Talio. Never approve a code someone else sent you.</p><a href={pending.url} target="_blank" rel="noopener noreferrer" className="underline">Open Talio approval</a><p className="text-xs">The code expires in five minutes. Return here after approval. If your company requires Talio Desktop, open its Settings → MIRA → Standalone MIRA connections and enter this code.</p></div>}
     {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
     <a href="https://app.talio.in/dashboard/mira/connect" target="_blank" rel="noopener noreferrer" className="block text-xs underline">Manage connections in Talio</a>
   </section>;

@@ -3,6 +3,8 @@ release
 dist
 dev-dist
 /desktop
+/api/*.test.js
+/src/**/*.test.js
 /Mira-Logo.png
 MIRA-macOS-arm64.dmg
 MIRA-macOS-arm64.zip

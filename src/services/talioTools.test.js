@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { executeHostTool } from './toolExecutor.js';
 import { selectModelTools } from './modelTools.js';
 import { getAgentRuntimeCapabilities } from './agentCapabilities.js';
@@ -7,6 +8,11 @@ import { getAgentRuntimeCapabilities } from './agentCapabilities.js';
 test('linked workplace tools are advertised without removing existing capabilities', () => {
   const names = selectModelTools({ runtime: getAgentRuntimeCapabilities({}) }).map(tool => tool.function.name);
   for (const name of ['talio.context', 'talio.activity', 'talio.action', 'talio.receipt', 'web.search', 'reminder.create']) assert.ok(names.includes(name), name);
+});
+test('server and service test modules are not deployed as public API functions', () => {
+  const ignore = fs.readFileSync(new URL('../../.vercelignore', import.meta.url), 'utf8');
+  assert.ok(ignore.includes('/api/*.test.js'));
+  assert.ok(ignore.includes('/src/**/*.test.js'));
 });
 test('read tools only call their fixed operation', async () => {
   const calls = [];
