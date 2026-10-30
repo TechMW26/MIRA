@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
+import { getSelectedModel, setSelectedModel } from '../../services/modelPreference';
 import {
   Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Loader,
   Globe, Code2, Zap, Wrench, BookMarked, Share2, ListPlus, CornerDownRight, Pencil, Check,
+  Mic, MicOff,
 } from 'lucide-react';
 import { extractFileText, isExtractableFile } from '../../utils/fileParser';
 import {
@@ -91,6 +93,7 @@ export default function ChatInput({
   onSteer,
   onStop,
   isGenerating,
+  isStartingChat = false,
   isConversationBusy = false,
   busyUser = null,
   isSearching,
@@ -107,6 +110,10 @@ export default function ChatInput({
   onSendQueuedNow,
   onHeightChange,
   currentUserId = '',
+  voiceActive = false,
+  voiceStatus = 'idle',
+  voiceStatusLabel = 'Voice mode',
+  onToggleVoice,
 }) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState([]);
@@ -116,6 +123,7 @@ export default function ChatInput({
   const [editingQueuedId, setEditingQueuedId] = useState(null);
   const [editingQueuedContent, setEditingQueuedContent] = useState('');
   const textareaRef = useRef(null);
+  const [selectedModel, updateSelectedModel] = useState(getSelectedModel);
   const fileInputRef = useRef(null);
   const dragCounterRef = useRef(0);
   const dockRef = useRef(null);
@@ -183,6 +191,10 @@ export default function ChatInput({
   function handleSubmit(e, mode = queueMode ? 'queue' : 'send') {
     e?.preventDefault();
     if (!input.trim() && attachments.length === 0) return;
+    if (isStartingChat) {
+      setAttachmentNotice('Preparing this chat. Your next message is still here.');
+      return;
+    }
     if (mode === 'queue' && queueLimitReached) {
       setAttachmentNotice('The prompt queue is full. Remove one before adding another.');
       return;
@@ -439,6 +451,17 @@ export default function ChatInput({
             style={{ flexDirection: 'column', alignItems: 'stretch', padding: '4px 8px 4px 18px' }}
           >
             <div className="hud-tool-strip hud-tool-strip-inside">
+              <select
+                aria-label="AI model"
+                title="MIRA Fast for everyday questions; MIRA Pro for deeper understanding and complex tasks"
+                value={selectedModel}
+                disabled={isGenerating || isStartingChat || isConversationBusy}
+                onChange={(event) => updateSelectedModel(setSelectedModel(event.target.value))}
+                style={{ background: '#242424', color: '#fff', border: 0, borderRadius: 8, padding: '6px 8px', maxWidth: 130 }}
+              >
+                <option value="mira-fast">MIRA Fast</option>
+                <option value="mira-pro">MIRA Pro</option>
+              </select>
               {toolStrip.map(({ id, icon: Icon, title, active, onClick }) => (
                 <button
                   key={id}
@@ -488,6 +511,18 @@ export default function ChatInput({
                   ? 'Enter queues · Command/Control + Enter steers now'
                   : `${busyUser?.displayName || busyUser?.email || 'A collaborator'} is responding · Enter queues your prompt`}
               </p>
+            )}
+
+            {(voiceActive || voiceStatus === 'connecting' || voiceStatus === 'error') && (
+              <div className="voice-mode-status" role="status" aria-live="polite" data-state={voiceStatus}>
+                <span className="voice-mode-status__pulse" />
+                <span>{voiceStatusLabel}</span>
+                {voiceActive && (
+                  <button type="button" onClick={onToggleVoice} aria-label="End voice conversation">
+                    End
+                  </button>
+                )}
+              </div>
             )}
 
             {attachments.length > 0 && (
@@ -560,7 +595,29 @@ export default function ChatInput({
                 {parsing ? <Loader size={18} className="animate-spin" /> : <Paperclip size={18} />}
               </button>
 
-              {isGenerating ? (
+              <button
+                type="button"
+                onClick={onToggleVoice}
+                className="composer-icon-btn"
+                data-active={voiceActive || undefined}
+                title={voiceActive ? 'End voice conversation' : 'Start voice conversation'}
+                aria-label={voiceActive ? 'End voice conversation' : 'Start voice conversation'}
+                aria-pressed={voiceActive}
+              >
+                {voiceActive ? <MicOff size={18} /> : <Mic size={18} />}
+              </button>
+
+              {isStartingChat ? (
+                <button
+                  type="button"
+                  disabled
+                  className="composer-send-btn"
+                  title="Preparing chat"
+                  aria-label="Preparing chat"
+                >
+                  <Loader size={18} className="animate-spin" />
+                </button>
+              ) : isGenerating ? (
                 <>
                   <button
                     type="button"

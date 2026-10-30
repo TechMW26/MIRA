@@ -1,148 +1,101 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildGeminiVisionPayload,
-  buildOllamaVisionPayload,
-  generateGeminiVisionAnalysis,
+  buildPollinationsVisionPayload,
+  generatePollinationsVisionAnalysis,
   generateVisionAnalysis,
-  getGeminiApiKeys,
   POST,
-  selectVisionRegistryModel,
 } from './analyze.js';
 
-test('builds Gemini requests only when image input is present', () => {
+test('builds Pollinations vision requests only when image input is present', () => {
   assert.throws(
-    () => buildGeminiVisionPayload({ prompt: 'Explain this', images: [] }),
+    () => buildPollinationsVisionPayload({ prompt: 'Explain this', images: [] }),
     /image is required/i,
   );
-  const payload = buildGeminiVisionPayload({
+  const payload = buildPollinationsVisionPayload({
     prompt: 'Read this image',
     images: [{ mimeType: 'image/png', base64: 'YWJj' }],
   });
-  assert.equal(payload.contents[0].parts[0].text, 'Read this image');
-  assert.deepEqual(payload.contents[0].parts[1].inlineData, {
-    mimeType: 'image/png',
-    data: 'YWJj',
+  assert.equal(payload.model, 'openai');
+  assert.deepEqual(payload.messages[0].content[0], { type: 'text', text: 'Read this image' });
+  assert.deepEqual(payload.messages[0].content[1], {
+    type: 'image_url',
+    image_url: { url: 'data:image/png;base64,YWJj' },
   });
 });
 
-test('loads a deduplicated ordered Gemini key fallback chain', () => {
-  assert.deepEqual(getGeminiApiKeys({
-    GEMINI_API_KEY: 'primary',
-    GEMINI_API_KEYS: 'primary,secondary',
-    GEMINI_FALLBACK_API_KEYS: '["third", "secondary"]',
-    GEMINI_API_KEY_4: 'fourth',
-  }), ['primary', 'secondary', 'third', 'fourth']);
+test('honors an explicit Pollinations vision model override', () => {
+  const previous = process.env.POLLINATIONS_VISION_MODEL;
+  process.env.POLLINATIONS_VISION_MODEL = 'gpt-4o';
+  try {
+    const payload = buildPollinationsVisionPayload({
+      prompt: 'Read this image',
+      images: [{ mimeType: 'image/jpeg', base64: 'YWJj' }],
+    });
+    assert.equal(payload.model, 'gpt-4o');
+  } finally {
+    if (previous === undefined) delete process.env.POLLINATIONS_VISION_MODEL;
+    else process.env.POLLINATIONS_VISION_MODEL = previous;
+  }
 });
 
-test('selects the vision-capable model from the dynamic registry', () => {
-  assert.deepEqual(selectVisionRegistryModel([
-    { name: 'chat-model', capabilities: ['completion', 'tools', 'thinking'] },
-    { name: 'vision-model', capabilities: ['completion', 'vision'] },
-  ]), {
-    name: 'vision-model',
-    capabilities: ['completion', 'vision'],
-  });
-});
-
-test('builds an Ollama vision request with validated image data', () => {
-  const payload = buildOllamaVisionPayload({
-    registryModel: { name: 'vision-model' },
-    prompt: 'Read this image',
-    images: [{ mimeType: 'image/png', base64: 'YWJj' }],
-  });
-  assert.equal(payload.model, 'vision-model');
-  assert.equal(payload.think, false);
-  assert.equal(payload.keep_alive, 0);
-  assert.deepEqual(payload.messages[0].images, ['YWJj']);
-});
-
-test('falls back to the next Gemini key after a rejected credential', async () => {
+test('streams image analysis through Pollinations with bearer authentication', async () => {
   const originalFetch = globalThis.fetch;
-  const originalKeys = process.env.GEMINI_API_KEYS;
-  const originalModel = process.env.GEMINI_VISION_MODEL;
-  const attemptedKeys = [];
-  process.env.GEMINI_API_KEYS = 'rejected-key,working-key';
-  process.env.GEMINI_VISION_MODEL = 'configured-vision-model';
-  globalThis.fetch = async (_url, options) => {
-    attemptedKeys.push(options.headers['x-goog-api-key']);
-    if (attemptedKeys.length === 1) {
-      return new Response(JSON.stringify({ error: { message: 'Rejected' } }), { status: 403 });
-    }
+  const originalKey = process.env.POLLINATIONS_API_KEY;
+  process.env.POLLINATIONS_API_KEY = 'pollinations-secret';
+  let upstream;
+  globalThis.fetch = async (url, options) => {
+    upstream = { url: String(url), options };
     return new Response(JSON.stringify({
-      candidates: [{ content: { parts: [{ text: 'Visible image details' }] } }],
+      choices: [{ message: { content: 'Visible image details' } }],
     }), { status: 200 });
   };
 
   try {
-    const result = await generateGeminiVisionAnalysis({
+    const result = await generatePollinationsVisionAnalysis({
       prompt: 'Describe it',
       images: [{ mimeType: 'image/jpeg', base64: 'YWJj' }],
     });
     assert.equal(result, 'Visible image details');
-    assert.deepEqual(attemptedKeys, ['rejected-key', 'working-key']);
+    assert.equal(upstream.url, 'https://gen.pollinations.ai/v1/chat/completions');
+    assert.equal(upstream.options.headers.Authorization, 'Bearer pollinations-secret');
+    assert.doesNotMatch(upstream.options.body, /pollinations-secret/);
   } finally {
     globalThis.fetch = originalFetch;
-    if (originalKeys === undefined) delete process.env.GEMINI_API_KEYS;
-    else process.env.GEMINI_API_KEYS = originalKeys;
-    if (originalModel === undefined) delete process.env.GEMINI_VISION_MODEL;
-    else process.env.GEMINI_VISION_MODEL = originalModel;
+    if (originalKey === undefined) delete process.env.POLLINATIONS_API_KEY;
+    else process.env.POLLINATIONS_API_KEY = originalKey;
   }
 });
 
-test('uses local vision before Gemini', async () => {
-  const originalFetch = globalThis.fetch;
-  const originalOllamaUrl = process.env.OLLAMA_API_URL;
-  const calls = [];
-  process.env.OLLAMA_API_URL = 'http://local-vision.test:11434/api/chat';
-  globalThis.fetch = async (url, options = {}) => {
-    calls.push(String(url));
-    if (String(url).endsWith('/api/tags')) {
-      return new Response(JSON.stringify({
-        models: [
-          { name: 'chat-model', capabilities: ['completion', 'thinking'] },
-          { name: 'vision-model', capabilities: ['completion', 'vision'] },
-        ],
-      }), { status: 200 });
-    }
-    const body = JSON.parse(options.body);
-    assert.equal(body.model, 'vision-model');
-    return new Response(JSON.stringify({ message: { content: 'Local visual details' } }), { status: 200 });
-  };
-
+test('requires a server-side Pollinations key for image analysis', async () => {
+  const previousKey = process.env.POLLINATIONS_API_KEY;
+  delete process.env.POLLINATIONS_API_KEY;
   try {
-    const result = await generateVisionAnalysis({
-      prompt: 'Describe it',
-      images: [{ mimeType: 'image/jpeg', base64: 'YWJj' }],
-    });
-    assert.equal(result, 'Local visual details');
-    assert.equal(calls.length, 2);
-    assert.equal(calls.some((url) => url.includes('googleapis.com')), false);
+    const response = await POST(new Request('http://localhost/api/analyze', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'Describe it',
+        images: [{ mimeType: 'image/jpeg', base64: 'YWJj' }],
+      }),
+    }));
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /POLLINATIONS_API_KEY/i);
   } finally {
-    globalThis.fetch = originalFetch;
-    if (originalOllamaUrl === undefined) delete process.env.OLLAMA_API_URL;
-    else process.env.OLLAMA_API_URL = originalOllamaUrl;
+    if (previousKey === undefined) delete process.env.POLLINATIONS_API_KEY;
+    else process.env.POLLINATIONS_API_KEY = previousKey;
   }
 });
 
-test('uses Gemini only when local vision is unavailable', async () => {
+test('runs Pollinations as the single vision provider', async () => {
   const originalFetch = globalThis.fetch;
-  const originalOllamaUrl = process.env.OLLAMA_API_URL;
-  const originalKeys = process.env.GEMINI_API_KEYS;
-  const originalModel = process.env.GEMINI_VISION_MODEL;
+  const originalKey = process.env.POLLINATIONS_API_KEY;
   const calls = [];
-  process.env.OLLAMA_API_URL = 'http://no-vision.test:11434/api/chat';
-  process.env.GEMINI_API_KEYS = 'fallback-key';
-  process.env.GEMINI_VISION_MODEL = 'fallback-model';
+  process.env.POLLINATIONS_API_KEY = 'vision-key';
   globalThis.fetch = async (url) => {
     calls.push(String(url));
-    if (String(url).endsWith('/api/tags')) {
-      return new Response(JSON.stringify({
-        models: [{ name: 'chat-model', capabilities: ['completion', 'thinking'] }],
-      }), { status: 200 });
-    }
     return new Response(JSON.stringify({
-      candidates: [{ content: { parts: [{ text: 'Fallback visual details' }] } }],
+      choices: [{ message: { content: 'Pollinations visual details' } }],
     }), { status: 200 });
   };
 
@@ -151,20 +104,17 @@ test('uses Gemini only when local vision is unavailable', async () => {
       prompt: 'Describe it',
       images: [{ mimeType: 'image/jpeg', base64: 'YWJj' }],
     });
-    assert.equal(result, 'Fallback visual details');
-    assert.equal(calls.some((url) => url.includes('googleapis.com')), true);
+    assert.equal(result, 'Pollinations visual details');
+    assert.equal(calls.some((url) => url.includes('gen.pollinations.ai')), true);
+    assert.equal(calls.some((url) => url.includes('googleapis.com')), false);
   } finally {
     globalThis.fetch = originalFetch;
-    if (originalOllamaUrl === undefined) delete process.env.OLLAMA_API_URL;
-    else process.env.OLLAMA_API_URL = originalOllamaUrl;
-    if (originalKeys === undefined) delete process.env.GEMINI_API_KEYS;
-    else process.env.GEMINI_API_KEYS = originalKeys;
-    if (originalModel === undefined) delete process.env.GEMINI_VISION_MODEL;
-    else process.env.GEMINI_VISION_MODEL = originalModel;
+    if (originalKey === undefined) delete process.env.POLLINATIONS_API_KEY;
+    else process.env.POLLINATIONS_API_KEY = originalKey;
   }
 });
 
-test('rejects text-only requests before calling Gemini', async () => {
+test('rejects text-only requests before calling Pollinations', async () => {
   const response = await POST(new Request('http://localhost/api/analyze', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

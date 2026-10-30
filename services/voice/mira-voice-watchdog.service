@@ -1,0 +1,7 @@
+[Unit]
+Description=Health check and recover MIRA voice service
+After=mira-voice.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mira-voice-watchdog

@@ -23,7 +23,21 @@ async function registerApplicationWorker() {
   });
 }
 
-if (window.location.protocol !== 'file:') registerApplicationWorker();
+async function clearApplicationWorkers() {
+  const registrations = await navigator.serviceWorker?.getRegistrations?.() || [];
+  await Promise.all(registrations.map((registration) => registration.unregister().catch(() => false)));
+  const cacheNames = await globalThis.caches?.keys?.() || [];
+  await Promise.all(cacheNames.map((name) => globalThis.caches.delete(name)));
+  if (navigator.serviceWorker?.controller && !sessionStorage.getItem('mira-dev-worker-cleared')) {
+    sessionStorage.setItem('mira-dev-worker-cleared', 'true');
+    window.location.reload();
+  }
+}
+
+if (window.location.protocol !== 'file:') {
+  if (window.miraDesktop || import.meta.env.DEV) clearApplicationWorkers().catch(() => {});
+  else registerApplicationWorker();
+}
 
 const ApplicationRouter = window.location.protocol === 'file:' ? HashRouter : BrowserRouter;
 

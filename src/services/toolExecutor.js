@@ -1,5 +1,8 @@
 import { TOOL_NAMES } from './toolControl.js';
 import { executeDesktopTool } from './desktopBridge.js';
+import { runComputerTask } from './computerTask.js';
+import { createReminder, readProactiveStore, updateProactiveEvent } from './proactiveEvents.js';
+import { talioRequest } from './talioLink.js';
 
 function evaluateExpression(expression = '') {
   const value = String(expression || '').trim();
@@ -61,8 +64,29 @@ async function executeJavaScript(code = '') {
   });
 }
 
-export async function executeHostTool(call, { runTask } = {}) {
+export async function executeHostTool(call, { runTask, isCurrentRun, userId, allowWorkplace = true, onPrivateWorkplaceResult, workplaceRequest = talioRequest } = {}) {
   const args = call?.arguments || {};
+  if (String(call?.name || '').startsWith('talio.') && !allowWorkplace) throw new Error('Private Talio tools cannot run on behalf of another chat participant.');
+  if ([TOOL_NAMES.TALIO_CONTEXT, TOOL_NAMES.TALIO_ACTIVITY, TOOL_NAMES.TALIO_RECEIPT].includes(call?.name)) {
+    if (isCurrentRun && !isCurrentRun()) throw new Error('This task was stopped.');
+    const result = await workplaceRequest(({ 'talio.context': 'context', 'talio.activity': 'activity', 'talio.receipt': 'receipt' })[call.name], args);
+    onPrivateWorkplaceResult?.();
+    return JSON.stringify(result);
+  }
+  if (call?.name === TOOL_NAMES.TALIO_ACTION) {
+    if (isCurrentRun && !isCurrentRun()) throw new Error('This task was stopped.');
+    const readOnly = ['lookup_people', 'open_task', 'open_project', 'open_meeting'].includes(args.action?.type);
+    if (!readOnly && !globalThis.window?.confirm?.('Allow this Talio workplace action?\n\n' + JSON.stringify(args.action, null, 2).slice(0, 3500))) return JSON.stringify({ success: false, cancelled: true, error: 'The workplace action was not approved.' });
+    if (isCurrentRun && !isCurrentRun()) throw new Error('This task was stopped.');
+    const requestId = crypto.randomUUID();
+    try { const result = await workplaceRequest('action', { action: args.action, confirmed: !readOnly, requestId }); onPrivateWorkplaceResult?.(); return JSON.stringify({ ...result, requestId, actionType: args.action?.type }); }
+    catch (error) { return JSON.stringify({ success: false, uncertain: !readOnly && (!error.status || error.status >= 500), requestId, actionType: args.action?.type, error: error.message, instruction: 'Do not repeat an uncertain write. Read talio.receipt with this identity first.' }); }
+  }
+  if (call?.name === TOOL_NAMES.REMINDER_CREATE) return JSON.stringify({ saved: true, event: createReminder(userId, args), delivery: 'On this device while MIRA runs; overdue catch-up on reopen.' });
+  if (call?.name === TOOL_NAMES.REMINDER_LIST) return JSON.stringify(readProactiveStore(userId).events.filter(e => e.type === 'reminder' && !['dismissed', 'completed'].includes(e.readState)));
+  if (call?.name === TOOL_NAMES.REMINDER_UPDATE) return JSON.stringify(updateProactiveEvent(userId, args.id, args.action, { until: args.until }));
+  if (call?.name === TOOL_NAMES.ACTIVITY_FEED) return JSON.stringify({ events: readProactiveStore(userId).events, source: 'device-local', connections: { email: false, calendar: false, whatsapp: false, calls: false }, talio: 'Use talio.activity to check a separately linked workplace.', delivery: 'Local account-scoped activity on this device only.' });
+  if (call?.name === TOOL_NAMES.COMPUTER_TASK) return runComputerTask({ goal: args.goal, ...(isCurrentRun ? { alive: isCurrentRun } : {}) });
   if (call?.name === TOOL_NAMES.CALCULATOR) {
     return evaluateExpression(args.expression);
   }
@@ -104,11 +128,24 @@ export async function executeHostTool(call, { runTask } = {}) {
     TOOL_NAMES.FILE_READ,
     TOOL_NAMES.FILE_LIST,
     TOOL_NAMES.FILE_WRITE,
+    TOOL_NAMES.FILE_REPLACE,
     TOOL_NAMES.FILE_SEARCH,
+    TOOL_NAMES.WORKSPACE_INDEX,
+    TOOL_NAMES.WORKSPACE_SEARCH,
+    TOOL_NAMES.WORKSPACE_VALIDATE,
+    TOOL_NAMES.WORKSPACE_START,
     TOOL_NAMES.SHELL_RUN,
     TOOL_NAMES.TEST_RUN,
     TOOL_NAMES.GIT_STATUS,
     TOOL_NAMES.GIT_DIFF,
+    TOOL_NAMES.GIT_INFO,
+    TOOL_NAMES.GIT_PULL,
+    TOOL_NAMES.GIT_PUSH,
+    TOOL_NAMES.GIT_COMMIT,
+    TOOL_NAMES.GIT_REMOTE_SET,
+    TOOL_NAMES.CHANGE_LIST,
+    TOOL_NAMES.CHANGE_UNDO,
+    TOOL_NAMES.CHANGE_REDO,
   ].includes(call?.name)) {
     return await executeDesktopTool(call);
   }

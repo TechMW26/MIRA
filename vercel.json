@@ -3,6 +3,7 @@
   "functions": {
     "api/chat.js": { "maxDuration": 300, "regions": ["iad1"] },
     "api/analyze.js": { "maxDuration": 60, "regions": ["iad1"] },
+    "api/code-assist.js": { "maxDuration": 30, "regions": ["iad1"] },
     "api/media.js": { "maxDuration": 120 },
     "api/cleanup-media.js": { "maxDuration": 300 }
   },
@@ -10,6 +11,15 @@
     { "path": "/api/cleanup-media", "schedule": "0 3 * * *" }
   ],
   "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https: wss:; frame-src 'self' http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Permissions-Policy", "value": "camera=(self), microphone=(self), display-capture=(self)" }
+      ]
+    },
     {
       "source": "/sw.js",
       "headers": [
@@ -31,7 +41,13 @@
       ]
     },
     {
-      "source": "/pwa-cache-reset-v2.js",
+      "source": "/pwa-cache-reset-v3.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/asset-recovery-v3.js",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
       ]
@@ -57,6 +73,9 @@
   ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/project/(.*)/chat/assets/(.*)", "destination": "/asset-recovery-v3.js" },
+    { "source": "/project/assets/(.*)", "destination": "/asset-recovery-v3.js" },
+    { "source": "/chat/assets/(.*)", "destination": "/asset-recovery-v3.js" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

@@ -2,11 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildEvidenceFallbackAnswer,
+  buildDeepResearchQueries,
   buildSearchRetryQueries,
   cleanSearchEvidenceText,
   isSearchResultRelevant,
   searchWeb,
 } from './webSearch.js';
+
+test('builds bounded deep-research queries for official presence, socials, and reputation', () => {
+  const queries = buildDeepResearchQueries('Research Acme Labs');
+  assert.equal(queries.length, 3);
+  assert.ok(queries.some((query) => /official website.*LinkedIn/i.test(query)));
+  assert.ok(queries.some((query) => /reviews.*complaints.*credibility/i.test(query)));
+});
+
+test('uses evidence and benchmark queries for product research instead of profile lookups', () => {
+  const queries = buildDeepResearchQueries('civic score app gamification engagement benchmarks');
+  assert.equal(queries.length, 3);
+  assert.ok(queries.some((query) => /case studies.*retention.*benchmarks/i.test(query)));
+  assert.ok(queries.some((query) => /competitors.*trust safety/i.test(query)));
+  assert.equal(queries.some((query) => /LinkedIn|company profile|complaints/i.test(query)), false);
+});
 
 test('builds simpler fallback queries for empty search results', () => {
   const queries = buildSearchRetryQueries('What is the most expensive yacht in India?');
@@ -53,8 +69,9 @@ test('builds a readable evidence answer when model regeneration fails', () => {
     }],
   }, 'algae tree');
   assert.doesNotMatch(answer, /^#{1,6}\s+Summary/i);
-  assert.match(answer, /^The installation uses microalgae/);
-  assert.match(answer, /uses microalgae to absorb carbon dioxide/);
+  assert.match(answer, /^I found sources, but could not finish a reliable answer/);
+  assert.match(answer, /have not synthesized or verified a conclusion/);
+  assert.doesNotMatch(answer, /uses microalgae to absorb carbon dioxide/);
   assert.match(answer, /### Sources/);
   assert.match(answer, /Bhopal installs an algae tree/);
   assert.match(answer, /\(May 11, 2026\)/);

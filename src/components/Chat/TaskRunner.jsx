@@ -37,11 +37,13 @@ function extractJsonArray(text) {
 }
 
 const PHASE_LABELS = {
+  'awaiting-input': 'Waiting for your reply',
   planning: 'Planning',
   executing: 'Executing',
   synthesizing: 'Synthesizing',
   responding: 'Writing response',
   completed: 'Completed',
+  partial: 'Completed with issues',
   stopped: 'Stopped',
   error: 'Failed',
 };
@@ -188,9 +190,9 @@ export default function TaskRunner({
   };
 
   if (workflow) {
-    const finishedSteps = workflow.steps.filter((task) => (
-      task.status === STATUS.done || task.status === STATUS.error
-    )).length;
+    const completedSteps = workflow.steps.filter((task) => task.status === STATUS.done).length;
+    const failedSteps = workflow.steps.filter((task) => task.status === STATUS.error).length;
+    const finishedSteps = completedSteps + failedSteps;
     const totalSteps = workflow.steps.length;
     const progress = workflow.status === 'completed'
       ? 100
@@ -216,7 +218,11 @@ export default function TaskRunner({
           </div>
           <div>
             <div className="flex items-center justify-between text-[10px] mb-1.5" style={{ color: 'var(--text-tertiary)' }}>
-              <span>{totalSteps ? `${finishedSteps} of ${totalSteps} steps finished` : phaseLabel}</span>
+              <span>
+                {totalSteps
+                  ? `${completedSteps} of ${totalSteps} steps completed${failedSteps ? ` · ${failedSteps} failed` : ''}`
+                  : phaseLabel}
+              </span>
               <span>{Math.min(100, progress)}%</span>
             </div>
             <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--hover-bg)' }}>
@@ -275,7 +281,9 @@ export default function TaskRunner({
         </div>
 
         <div className="p-3 flex-shrink-0" style={{ borderTop: '1px solid var(--border)' }}>
-          {isRunning ? (
+          {workflow.status === 'awaiting-input' ? (
+            <p role="status" className="text-xs" style={{ color: 'var(--text-primary)' }}>Reply to MIRA’s questions in the chat to continue.</p>
+          ) : isRunning ? (
             <button
               onClick={onStop}
               className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition-all hover:opacity-90"

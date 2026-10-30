@@ -4,7 +4,21 @@ import {
   cleanImagePrompt,
   imagePromptSeed,
   normalizeImageGenerationOutput,
+  resolveImageSceneContext,
 } from './imagePrompt.js';
+
+test('resolves above-scene references and rejects clarification text as a prompt', () => {
+  const scene = 'A red fox beside a blue lake under snowy mountains.';
+  const request = 'Can you create an image of the above scene!';
+  const context = resolveImageSceneContext(request, [{role:'assistant',content:scene}]);
+  assert.equal(context, scene);
+  const output = normalizeImageGenerationOutput('I am ready to help. Please provide the details of the scene.', request, context);
+  assert.ok(output.includes(scene));
+  assert.ok(!output.includes('Please provide'));
+  assert.ok(!output.includes('ADDITIVE VISUAL'));
+  assert.ok(!normalizeImageGenerationOutput('[IMAGE_GEN: random portrait]', request).includes('[IMAGE_GEN:'));
+  assert.equal(resolveImageSceneContext('Create an image of a yellow boat', [{role:'assistant',content:scene}]), '');
+});
 
 test('falls back to the user subject when the model returns a placeholder', () => {
   assert.equal(

@@ -7,6 +7,7 @@ import {
   getResponseHeadersTimeout,
   isChatTimeoutError,
   shouldRetryChatRequest,
+  shouldRetryChatRequestAfterHealth,
 } from './chatRequestPolicy.js';
 
 test('uses bounded phase-aware timeouts instead of an unbounded response wait', () => {
@@ -30,4 +31,17 @@ test('recognizes browser and server model-start timeouts', () => {
   assert.equal(isChatTimeoutError({ name: 'ChatTimeoutError' }), true);
   assert.equal(isChatTimeoutError(new Error('The model is busy and did not begin responding in time.')), true);
   assert.equal(isChatTimeoutError(new Error('A normal request failed.')), false);
+});
+
+test('does not duplicate a failed request while every completion model is cold', () => {
+  const coldHealth = {
+    ready: true,
+    registryReachable: true,
+    completionModelCount: 2,
+    loadedModelCount: 0,
+  };
+  assert.equal(shouldRetryChatRequestAfterHealth({ status: 503 }, coldHealth), false);
+  assert.equal(shouldRetryChatRequestAfterHealth(new Error('The model is still starting.'), coldHealth), false);
+  assert.equal(shouldRetryChatRequestAfterHealth({ status: 503 }, { ...coldHealth, loadedModelCount: 1 }), true);
+  assert.equal(shouldRetryChatRequestAfterHealth({ status: 503 }, null), true);
 });

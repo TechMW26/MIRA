@@ -86,20 +86,6 @@ export function buildEvidenceFallbackAnswer(payload = {}, query = '') {
     return `I searched for “${String(query || '').trim()}”, but the available sources did not contain enough relevant evidence to answer reliably.`;
   }
 
-  const facts = [];
-  for (const result of results) {
-    const sentences = cleanSearchEvidenceText(result.snippet, 520).match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
-    for (const sentence of sentences.slice(0, 2)) {
-      const fact = sentence.replace(/\s+/g, ' ').trim();
-      if (fact.length < 24) continue;
-      const normalized = fact.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
-      if (facts.some((existing) => existing.normalized.includes(normalized) || normalized.includes(existing.normalized))) continue;
-      facts.push({ text: fact, normalized });
-      if (facts.length >= 3) break;
-    }
-    if (facts.length >= 3) break;
-  }
-
   const details = results.map((result) => {
     const published = result.publishedAt ? new Date(result.publishedAt) : null;
     const date = published && !Number.isNaN(published.getTime())
@@ -117,9 +103,7 @@ export function buildEvidenceFallbackAnswer(payload = {}, query = '') {
     const title = safeUrl ? `[${titleText}](${safeUrl})` : titleText;
     return `- ${title}${date}`;
   });
-  const summary = facts.map((fact) => fact.text).join(' ')
-    || 'The retrieved sources did not contain enough clean detail for a reliable summary.';
-  return `${summary}\n\n### Sources\n\n${details.join('\n')}`;
+  return `I found sources, but could not finish a reliable answer to your question. The links below are available for reference; I have not synthesized or verified a conclusion from them. Please retry the answer.\n\n### Sources\n\n${details.join('\n')}`;
 }
 
 async function readSearchResponse(response) {
@@ -145,7 +129,7 @@ function hasUsefulSearchData(payload, query, includeMedia = false, requireTextRe
   return requireTextResults ? hasRelevantText : Boolean(hasMedia || hasRelevantText);
 }
 
-export async function searchWeb(payload = {}, options = {}) {
+async function searchWebOnce(payload = {}, options = {}) {
   const {
     attemptsPerQuery = 2,
     retryEmpty = true,
@@ -266,4 +250,116 @@ export async function searchWeb(payload = {}, options = {}) {
     error: lastError?.message || 'Web search failed after retries.',
   });
   throw lastError || new Error('Web search failed after retries.');
+}
+
+export function buildDeepResearchQueries(query = '') {
+  const raw = String(query || '').replace(/\s+/g, ' ').trim();
+  const subject = extractSearchSubject(raw) || raw;
+  if (!subject) return [];
+  const words = subject.split(/\s+/).filter(Boolean);
+  const quoted = subject.includes(' ') && words.length <= 8 ? `"${subject}"` : subject;
+  const productResearch = /\b(?:app|application|platform|product|software|market|competitor|engagement|retention|gamification|benchmark|ratings?|reputation|civic|community|users?)\b/i.test(subject);
+  if (productResearch) {
+    return Array.from(new Set([
+      raw,
+      `${subject} case studies user engagement retention benchmarks research`,
+      `${subject} competitors product strategy trust safety best practices`,
+    ].filter(Boolean))).slice(0, 3);
+  }
+  return Array.from(new Set([
+    raw,
+    `${quoted} official website company profile LinkedIn social media`,
+    `${quoted} reviews reputation complaints news articles credibility`,
+  ].filter(Boolean))).slice(0, 3);
+}
+
+function mergeDeepResults(payloads = [], query = '') {
+  const results = [];
+  const seen = new Set();
+  for (const payload of payloads) {
+    for (const result of payload?.results || []) {
+      const key = String(result.url || result.title || '').toLowerCase().replace(/\/+$/, '');
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      results.push(cleanSearchResult(result));
+    }
+  }
+  return rankSearchResults(results, query, 16);
+}
+
+async function crawlDeepResults(results = [], signal) {
+  const urls = results
+    .map((result) => result?.url)
+    .filter((url) => /^https?:\/\//i.test(url || ''))
+    .slice(0, 5);
+  if (!urls.length) return [];
+  try {
+    const response = await fetch('/api/crawl', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls }),
+      signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    return Array.isArray(payload?.pages) ? payload.pages : [];
+  } catch {
+    return [];
+  }
+}
+
+async function searchWebDeep(payload = {}, options = {}) {
+  const queries = buildDeepResearchQueries(payload?.query);
+  const searches = await Promise.allSettled(queries.map((query, index) => searchWebOnce({
+    ...payload,
+    query,
+    includeMedia: index === 0 && Boolean(payload.includeMedia),
+    deepResearch: false,
+  }, {
+    ...options,
+    attemptsPerQuery: index === 0 ? 2 : 1,
+    retryEmpty: index === 0,
+  })));
+  const payloads = searches.flatMap((entry) => entry.status === 'fulfilled' ? [entry.value] : []);
+  if (!payloads.length) {
+    const failure = searches.find((entry) => entry.status === 'rejected');
+    throw failure?.reason || new Error('Deep web research failed.');
+  }
+  const results = mergeDeepResults(payloads, payload.query);
+  const pages = payload.crawl === false ? [] : await crawlDeepResults(results, options.signal);
+  const pagesByUrl = new Map(pages.map((page) => [String(page.url || '').replace(/\/+$/, ''), page]));
+  const enrichedResults = results.map((result) => {
+    const page = pagesByUrl.get(String(result.url || '').replace(/\/+$/, ''));
+    if (!page) return result;
+    const pageEvidence = cleanSearchEvidenceText(page.content || page.summary || '', 2_400);
+    return {
+      ...result,
+      ...(pageEvidence ? { snippet: pageEvidence, crawled: true } : {}),
+      accessStatus: page.accessStatus || 'ok',
+    };
+  });
+  const first = payloads[0] || {};
+  return {
+    ...first,
+    results: enrichedResults,
+    source: `deep:${payloads.map((item) => item.source).filter(Boolean).join('+') || 'search'}`,
+    research: {
+      deep: true,
+      queries,
+      crawled: pages.filter((page) => page.accessStatus === 'ok').length,
+      restricted: pages.filter((page) => page.accessStatus && page.accessStatus !== 'ok')
+        .map((page) => ({ url: page.url, status: page.accessStatus })),
+    },
+    searchMeta: {
+      ...(first.searchMeta || {}),
+      originalQuery: payload.query,
+      queryUsed: queries.join(' | '),
+      attempts: payloads.reduce((sum, item) => sum + Number(item.searchMeta?.attempts || 1), 0),
+      deep: true,
+    },
+  };
+}
+
+export async function searchWeb(payload = {}, options = {}) {
+  if (payload?.deepResearch) return searchWebDeep(payload, options);
+  return searchWebOnce(payload, options);
 }
