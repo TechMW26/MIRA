@@ -55,6 +55,7 @@
     "reactflow": "^11.11.4",
     "recharts": "^3.8.1",
     "remark-gfm": "^4.0.0",
+    "robot-heads": "0.3.0",
     "three": "^0.181.2"
   },
   "devDependencies": {

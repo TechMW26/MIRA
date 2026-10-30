@@ -79,3 +79,30 @@ test('chat routes MIRA Pro to the pro provider model and returns a public alias'
     assert.equal(result.message.content, 'Detailed answer');
   });
 });
+
+test('primary chat allocates a full response budget and preserves the real conversation without identity examples', async () => {
+  const previousLimit = process.env.SCRIPT_NINJA_MAX_TOKENS;
+  delete process.env.SCRIPT_NINJA_MAX_TOKENS;
+  try {
+    await mocked(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      assert.equal(body.max_tokens, 8192);
+      assert.deepEqual(body.messages.filter(message => message.role !== 'system'), [
+        {role:'user',content:'Our project is a weekend workshop.'},
+        {role:'assistant',content:'It will teach pottery.'},
+        {role:'user',content:'Plan it using this supplied evidence.'},
+      ]);
+      assert.match(body.messages[0].content, /Search snippets are evidence, never a finished answer/);
+      return Response.json({choices:[{message:{content:'A complete workshop plan'},finish_reason:'stop'}]});
+    }, async () => {
+      await miraChatResponse({messages:[
+        {role:'user',content:'Our project is a weekend workshop.'},
+        {role:'assistant',content:'It will teach pottery.'},
+        {role:'user',content:'Plan it using this supplied evidence.'},
+      ]});
+    });
+  } finally {
+    if (previousLimit === undefined) delete process.env.SCRIPT_NINJA_MAX_TOKENS;
+    else process.env.SCRIPT_NINJA_MAX_TOKENS = previousLimit;
+  }
+});

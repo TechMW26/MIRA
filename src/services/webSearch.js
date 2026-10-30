@@ -86,20 +86,6 @@ export function buildEvidenceFallbackAnswer(payload = {}, query = '') {
     return `I searched for “${String(query || '').trim()}”, but the available sources did not contain enough relevant evidence to answer reliably.`;
   }
 
-  const facts = [];
-  for (const result of results) {
-    const sentences = cleanSearchEvidenceText(result.snippet, 520).match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
-    for (const sentence of sentences.slice(0, 2)) {
-      const fact = sentence.replace(/\s+/g, ' ').trim();
-      if (fact.length < 24) continue;
-      const normalized = fact.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
-      if (facts.some((existing) => existing.normalized.includes(normalized) || normalized.includes(existing.normalized))) continue;
-      facts.push({ text: fact, normalized });
-      if (facts.length >= 3) break;
-    }
-    if (facts.length >= 3) break;
-  }
-
   const details = results.map((result) => {
     const published = result.publishedAt ? new Date(result.publishedAt) : null;
     const date = published && !Number.isNaN(published.getTime())
@@ -117,9 +103,7 @@ export function buildEvidenceFallbackAnswer(payload = {}, query = '') {
     const title = safeUrl ? `[${titleText}](${safeUrl})` : titleText;
     return `- ${title}${date}`;
   });
-  const summary = facts.map((fact) => fact.text).join(' ')
-    || 'The retrieved sources did not contain enough clean detail for a reliable summary.';
-  return `${summary}\n\n### Sources\n\n${details.join('\n')}`;
+  return `I found sources, but could not finish a reliable answer to your question. The links below are available for reference; I have not synthesized or verified a conclusion from them. Please retry the answer.\n\n### Sources\n\n${details.join('\n')}`;
 }
 
 async function readSearchResponse(response) {

@@ -1,5 +1,7 @@
 export const CHAT_REQUEST_TIMEOUTS = Object.freeze({
-  responseHeadersMs: 65000,
+  // The primary provider returns complete JSON rather than early SSE headers.
+  // Allow two bounded 90-second attempts plus retry/fallback overhead.
+  responseHeadersMs: 210000,
   streamIdleMs: 45000,
   totalAttemptMs: 240000,
 });

@@ -162,7 +162,7 @@ const MAX_DESKTOP_TOOL_RESULT_CHARS = 16000;
 // Additional model passes can double or triple grounded-response latency.
 // Deterministic evidence fallbacks are safer when a completed model draft is
 // unusable or the provider is already failing.
-const ENABLE_MODEL_QUALITY_RETRIES = false;
+const ENABLE_MODEL_QUALITY_RETRIES = true;
 
 const DESKTOP_TOOL_NAMES = new Set([
   AGENT_CAPABILITIES.FILE_READ,
@@ -3522,7 +3522,7 @@ export default function useChat() {
                 const fallbackFreshnessRules = fallbackFreshnessRequested
                   ? '\n- The user needs latest/current information. Use only the newest relevant retrieved facts, prefer the greatest Published timestamp, state its exact date, and ignore older conflicting claims. If dates are unavailable, say recency could not be confirmed.'
                   : '';
-                const groundedUserContent = `${content}${recentConversationContextBlock}${sharedProjectContextBlock ? `\n\n${sharedProjectContextBlock}` : ''}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${fallbackData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${fallbackQuery}"\nFreshness requested: ${fallbackFreshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${fallbackData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${fallbackFreshnessRules}\n- Use all relevant project, conversation, document, image-analysis, and web evidence. Project context is first-party knowledge and remains valid when public results are sparse.\n- Keep the answer polished and concise. Do not print numeric source markers; source provenance is handled separately.\n- Do not repeat that you lack current information when project or web evidence answers the question.\n- Never invent URLs, citations, numbers, or facts beyond these sources. If the sources conflict, state the discrepancy.`;
+                const groundedUserContent = `${content}${recentConversationContextBlock}${sharedProjectContextBlock ? `\n\n${sharedProjectContextBlock}` : ''}\n\n=== REAL-TIME WEB SEARCH DATA (fetched ${fallbackData.freshness?.retrievedAt || new Date().toISOString()}) ===\nSearch query used: "${fallbackQuery}"\nFreshness requested: ${fallbackFreshnessRequested ? 'yes' : 'no'}\nNewest dated result: ${fallbackData.freshness?.newestPublishedAt || 'date unavailable'}\n\n${snippets}\n=== END SEARCH DATA ===\n\nUSAGE RULES:\n- These results are LIVE data fetched right now from the internet — your training cutoff does NOT apply here.${fallbackFreshnessRules}\n- Use all relevant project, conversation, document, image-analysis, and web evidence. Project context is first-party knowledge and remains valid when public results are sparse.\n- Keep the answer polished and concise. Do not print numeric source markers; source provenance is handled separately.\n- Do not repeat that you lack current information when project or web evidence answers the question.\n- Use these results to check relevant claims, not to dictate the topic or structure of your answer. Combine reliable background knowledge and reasoning with relevant evidence. Distinguish supported facts from assumptions and reported claims. Never invent citations or imply a source supports claims it does not. Ignore irrelevant results; state meaningful conflicts.`;
                 history[history.length - 1] = { role: 'user', content: groundedUserContent };
 
                 let retryText = '';
@@ -3658,7 +3658,8 @@ export default function useChat() {
                 {
                   desktopCoding: desktopWorkspaceRequest.active,
                   think: true,
-                  tools: responseModelTools,
+                  // Evidence is already attached: synthesize, do not start another tool loop.
+                  tools: [],
                   onThinking: (accumulated) => {
                     if (!isCurrentRun()) return;
                     finalThinkingText = stripAllControlText(accumulated);

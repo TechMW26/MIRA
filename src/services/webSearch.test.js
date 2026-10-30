@@ -69,8 +69,9 @@ test('builds a readable evidence answer when model regeneration fails', () => {
     }],
   }, 'algae tree');
   assert.doesNotMatch(answer, /^#{1,6}\s+Summary/i);
-  assert.match(answer, /^The installation uses microalgae/);
-  assert.match(answer, /uses microalgae to absorb carbon dioxide/);
+  assert.match(answer, /^I found sources, but could not finish a reliable answer/);
+  assert.match(answer, /have not synthesized or verified a conclusion/);
+  assert.doesNotMatch(answer, /uses microalgae to absorb carbon dioxide/);
   assert.match(answer, /### Sources/);
   assert.match(answer, /Bhopal installs an algae tree/);
   assert.match(answer, /\(May 11, 2026\)/);

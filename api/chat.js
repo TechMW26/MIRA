@@ -162,7 +162,7 @@ function jsonResponse(payload, status = 200) {
   });
 }
 
-function normalizeMessages(messages = [], systemPrompt = '', requestClass = 'chat') {
+function normalizeMessages(messages = [], systemPrompt = '', requestClass = 'chat', includeIdentityPrimer = true) {
   const normalized = (Array.isArray(messages) ? messages : [])
     .slice(-40)
     .map((message) => ({
@@ -183,7 +183,7 @@ function normalizeMessages(messages = [], systemPrompt = '', requestClass = 'cha
   }
   return [
     { role: 'system', content: composeMiraSystemPrompt(systemPrompt) },
-    ...MIRA_IDENTITY_PRIMER,
+    ...(includeIdentityPrimer ? MIRA_IDENTITY_PRIMER : []),
     ...withoutSystem,
   ];
 }
@@ -267,7 +267,7 @@ export async function deepSeekChatResponse(body, signal, { recovery = '' } = {})
 export async function miraChatResponse(body, signal, { recovery = '' } = {}) {
   if (scriptNinjaConfigured()) {
     const result = await requestScriptNinja({
-      messages: normalizeMessages(body?.messages, body?.systemPrompt, body?.requestClass),
+      messages: normalizeMessages(body?.messages, body?.systemPrompt, body?.requestClass, false),
       tools: sanitizeTools(body?.tools), maxTokens: body?.max_tokens, signal, model: body?.model,
     });
     return new Response(`${JSON.stringify(result)}\n`, {status: 200, headers: {

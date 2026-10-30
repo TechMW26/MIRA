@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { RobotHead } from 'robot-heads';
+import { miraRobotState, MIRA_ROBOT_COLORS } from '../../services/miraRobotState';
 import { expressionsForMiraActivity } from '../../services/miraIdentity';
 import { getGlobeLayout } from '../../utils/globeLayout';
 
@@ -196,19 +198,16 @@ export default function MiraBloub({
           '--bloub-y': `${centerY}px`,
           '--bloub-roll': `${face.roll}deg`,
           '--eye-split': `${face.split}%`,
+          filter: 'none',
         }}
         role="img"
         aria-label={`Mira is ${activity === 'idle' ? activeExpression : activity}`}
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
-        <div className="mira-bloub__body">
-          <span className="mira-bloub__shine" />
-          <span className="mira-bloub__face">
-            <Eye config={face.eyes[0]} side="left" />
-            <Eye config={face.eyes[1]} side="right" />
-          </span>
-        </div>
+        <RobotHead shape="circle" state={miraRobotState(activity, activeExpression)} size={size}
+          {...MIRA_ROBOT_COLORS} antenna={false} floorShadow={false} interactive
+          aria-label={`MIRA ${activity}`} />
       </div>
     </div>
   );
