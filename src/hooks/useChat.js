@@ -91,6 +91,7 @@ import {
   conversationHydrationTimeline,
   hasConversationHydrated,
   mergeRealtimeAssistantSnapshot,
+  shouldRecoverInterruptedResponse,
 } from '../services/chatHydration.js';
 import { buildSearchToolGuidance, decideRetrievalPolicy } from '../services/retrievalPolicy.js';
 import {
@@ -1042,6 +1043,7 @@ export default function useChat() {
   const generationRunRef = useRef(0);
   const sendSequenceRef = useRef(0);
   const activeResponseRef = useRef(null);
+  const sessionStartedAtRef = useRef(Date.now());
   const workspaceHistoryRef = useRef([]);
   const optimisticConversationIdRef = useRef(null);
   const sendGateRef = useRef(createChatSendGate());
@@ -1293,43 +1295,30 @@ export default function useChat() {
 
   useEffect(() => {
     if (!currentConversationId || activeProjectId || isGenerating) return undefined;
-    const interrupted = messages.filter((message) => (
-      message?.role === 'assistant' && message?.isStreaming
-    ));
-    if (!interrupted.length) return undefined;
-
-    const timer = setTimeout(() => {
+    if (!messages.some(message => message?.role === 'assistant' && message.isStreaming)) return undefined;
+    const recover = () => {
       if (activeResponseRef.current?.conversationId === currentConversationId) return;
-      const interruptedIds = new Set(interrupted.map((message) => message.id));
-      setMessages((previous) => previous.map((message) => (
-        interruptedIds.has(message.id)
+      setMessages((previous) => {
+        if (!previous.some(message => shouldRecoverInterruptedResponse(message, { sessionStartedAt: sessionStartedAtRef.current }))) return previous;
+        return previous.map((message) => (
+        shouldRecoverInterruptedResponse(message, { sessionStartedAt: sessionStartedAtRef.current })
           ? {
             ...message,
             content: String(message.content || '').trim()
-              || 'This response was interrupted when the session reloaded. Please retry to continue.',
+              || 'This earlier response did not finish. Please retry to continue.',
             interrupted: true,
             isStreaming: false,
+            recoveredLocally: true,
           }
           : message
-      )));
-      interrupted.forEach((message) => {
-        updateMessage(currentConversationId, message.id, {
-          content: String(message.content || '').trim()
-            || 'This response was interrupted when the session reloaded. Please retry to continue.',
-          interrupted: true,
-          isStreaming: false,
-          streamCompletedAt: Date.now(),
-        }).catch((error) => {
-          diagnosticWarn('stream', 'interrupted response recovery failed', {
-            conversationId: currentConversationId,
-            messageId: message.id,
-            error: error?.message || 'Unknown persistence error',
-          });
-        });
+        ));
       });
-    }, 2500);
-
-    return () => clearTimeout(timer);
+      // Recovery is a local display state: another tab/device may still own
+      // this run. Never overwrite its persisted response from a viewer.
+    };
+    const timer = setInterval(recover, 30_000);
+    const initialTimer = setTimeout(recover, 2500);
+    return () => { clearTimeout(initialTimer); clearInterval(timer); };
   }, [activeProjectId, currentConversationId, isGenerating, messages]);
 
   const stopGenerating = useCallback(() => {

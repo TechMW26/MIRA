@@ -6,7 +6,28 @@ import {
   hasConversationHydrated,
   mergeRealtimeAssistantSnapshot,
   shouldDeferMissingConversationReset,
+  shouldRecoverInterruptedResponse,
+  ORPHANED_RESPONSE_GRACE_MS,
 } from './chatHydration.js';
+
+test('recovery never mistakes a current-session response or slow provider for a reload', () => {
+  const sessionStartedAt = 1_000_000;
+  const message = {role:'assistant',isStreaming:true,streamStartedAt:sessionStartedAt+1};
+  assert.equal(shouldRecoverInterruptedResponse(message,{sessionStartedAt,now:sessionStartedAt+ORPHANED_RESPONSE_GRACE_MS*2}), false);
+  const earlier = {...message,streamStartedAt:sessionStartedAt-1000};
+  assert.equal(shouldRecoverInterruptedResponse(earlier,{sessionStartedAt,now:sessionStartedAt+2500}), false);
+  assert.equal(shouldRecoverInterruptedResponse(earlier,{sessionStartedAt,now:sessionStartedAt+ORPHANED_RESPONSE_GRACE_MS}), true);
+  assert.equal(shouldRecoverInterruptedResponse(earlier,{sessionStartedAt,now:sessionStartedAt+ORPHANED_RESPONSE_GRACE_MS,active:true}), false);
+  assert.equal(shouldRecoverInterruptedResponse({...earlier,streamUpdatedAt:sessionStartedAt},{sessionStartedAt,now:sessionStartedAt+2500}), false);
+});
+
+test('delayed streaming snapshots cannot reopen a completed answer; local recovery can receive a live result', () => {
+  const complete = {role:'assistant',isStreaming:false,content:'Hello!',streamStartedAt:100};
+  const stale = {...complete,isStreaming:true,content:''};
+  assert.equal(mergeRealtimeAssistantSnapshot(stale,complete).isStreaming,false);
+  assert.equal(mergeRealtimeAssistantSnapshot(stale,complete).content,'Hello!');
+  assert.equal(mergeRealtimeAssistantSnapshot({...stale,content:'Continuing'}, {...complete,recoveredLocally:true}).isStreaming,true);
+});
 
 test('preserves a just-sent optimistic message while its new conversation hydrates', () => {
   const previous = [

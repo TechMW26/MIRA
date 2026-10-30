@@ -1,4 +1,15 @@
 export const MISSING_CONVERSATION_GRACE_MS = 3_000;
+export const ORPHANED_RESPONSE_GRACE_MS = 10 * 60_000;
+
+export function shouldRecoverInterruptedResponse(message, { sessionStartedAt, now = Date.now(), active = false } = {}) {
+  if (active || message?.role !== 'assistant' || !message.isStreaming) return false;
+  const started = Number(message.streamStartedAt || message.timestamp);
+  const updated = Number(message.streamUpdatedAt || started);
+  // A new placeholder or a slow, non-streaming response is not a reload.
+  return Number.isFinite(started) && Number.isFinite(updated)
+    && started > 0 && started < sessionStartedAt
+    && now - updated >= ORPHANED_RESPONSE_GRACE_MS;
+}
 
 export function conversationHydrationTimeline(previous = [], { preserveOptimistic = false } = {}) {
   if (!preserveOptimistic) return [];
@@ -25,6 +36,12 @@ export function mergeRealtimeAssistantSnapshot(incoming, previous = null, stable
     : [];
 
   const merged = { ...incoming };
+  // Delayed realtime snapshots must never reopen a finalized message.
+  if (incoming.isStreaming && previous?.isStreaming === false
+      && !previous.recoveredLocally && priorContent.trim()
+      && Number(incoming.streamStartedAt || 0) <= Number(previous.streamStartedAt || 0)) {
+    return { ...incoming, ...previous, localEcho: false };
+  }
 
   // Realtime propagation may briefly replay an older message body. Once a
   // generated asset has a durable URL, never downgrade that message to only a
