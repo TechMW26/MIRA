@@ -109,6 +109,13 @@ function withTimeout(parentSignal, timeoutMs) {
 }
 
 async function requestMiraQuery({ latestMessage, context, signal }) {
+  if (scriptNinjaConfigured()) {
+    const result = await requestScriptNinja({messages: [
+      {role: 'system', content: 'You are MIRA\'s precise contextual web-search query planner.'},
+      {role: 'user', content: plannerPrompt({latestMessage, context})},
+    ], maxTokens: 128, signal});
+    return cleanQuery(result.message.content);
+  }
   const { apiUrl, apiKey, model } = miraPlannerConfig();
   if (!apiUrl || !apiKey) {
     const error = new Error('MIRA query planning is not configured.');
@@ -158,7 +165,7 @@ async function requestMiraQueryWithRetry({ latestMessage, context, signal }) {
       return await requestMiraQuery({
         latestMessage,
         context,
-        signal: withTimeout(signal, MIRA_PLANNER_TIMEOUT_MS),
+        signal: withTimeout(signal, scriptNinjaConfigured() ? 10_000 : MIRA_PLANNER_TIMEOUT_MS),
       });
     } catch (error) {
       lastError = error;
@@ -235,3 +242,4 @@ export async function POST(req) {
     });
   }
 }
+import { requestScriptNinja, scriptNinjaConfigured } from './_scriptNinja.js';

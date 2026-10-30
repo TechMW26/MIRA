@@ -152,7 +152,7 @@ test('keeps Pollinations completion fallback scoped to desktop coding work', asy
       [{ role: 'user', content: 'Fix this workspace.' }],
       () => {},
       [],
-      { desktopCoding: true, think: false },
+      { model: null, desktopCoding: true, think: false },
     );
     assert.equal(response, 'Coding fallback response.');
     assert.equal(fallbackCalls, 1);
@@ -196,16 +196,23 @@ test('uses the desktop coding provider only for explicitly marked coding work', 
     assert.equal(regular, 'Self-hosted response.');
     assert.equal(desktopCalls, 0);
     assert.equal(primaryCalls, 1);
+    const selected = await sendChatMessage(
+      [{ role: 'user', content: 'Analyze this function.' }], () => {}, [],
+      { model: 'mira-pro', desktopCoding: true, think: false },
+    );
+    assert.equal(selected, 'Self-hosted response.');
+    assert.equal(desktopCalls, 0);
+    assert.equal(primaryCalls, 2);
 
     const coding = await sendChatMessage(
       [{ role: 'user', content: 'Fix this function.' }],
       () => {},
       [],
-      { desktopCoding: true, think: false },
+      { model: null, desktopCoding: true, think: false },
     );
     assert.equal(coding, 'Desktop coding response.');
     assert.equal(desktopCalls, 1);
-    assert.equal(primaryCalls, 1);
+    assert.equal(primaryCalls, 2);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalWindow === undefined) delete globalThis.window;

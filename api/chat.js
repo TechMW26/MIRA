@@ -76,6 +76,7 @@ let miraUnavailableUntil = 0;
 export function isMiraFallbackEligible(error) {
   const status = Number(error?.status || 0);
   const code = String(error?.code || '');
+  if (error?.name === 'TimeoutError') return true;
   if ([408, 425, 429].includes(status) || status >= 500) return true;
   if ([
     'mira_connect_timeout',
@@ -264,6 +265,16 @@ export async function deepSeekChatResponse(body, signal, { recovery = '' } = {})
 }
 
 export async function miraChatResponse(body, signal, { recovery = '' } = {}) {
+  if (scriptNinjaConfigured()) {
+    const result = await requestScriptNinja({
+      messages: normalizeMessages(body?.messages, body?.systemPrompt, body?.requestClass),
+      tools: sanitizeTools(body?.tools), maxTokens: body?.max_tokens, signal, model: body?.model,
+    });
+    return new Response(`${JSON.stringify(result)}\n`, {status: 200, headers: {
+      'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache, no-transform',
+      'X-Mira-Provider': 'script-ninja',
+    }});
+  }
   if (!MIRA_CHAT_API_URL) throw new Error('MIRA chat provider is not configured.');
   const chatMessages = normalizeMessages(body?.messages, body?.systemPrompt, body?.requestClass);
   if (!chatMessages.length) throw new Error('MIRA chat requires messages.');
@@ -437,7 +448,7 @@ export async function POST(req) {
     if (contentLength > MAX_BODY_BYTES) return jsonResponse({ error: 'Request body is too large.' }, 413);
 
     body = await req.json();
-    const desktopCodingRequest = body?.desktopCoding === true
+    const desktopCodingRequest = !scriptNinjaConfigured() && body?.desktopCoding === true
       && req.headers?.get?.('x-mira-desktop') === '1';
     requestId = String(body?.requestId || '').trim();
     if (body?.action === 'cancel') {
@@ -548,11 +559,11 @@ export async function POST(req) {
     // MIRA is mandatory for web chat/task traffic. DeepSeek is only an outage
     // fallback after MIRA has been attempted and failed with a retryable
     // transport, timeout, rate-limit, or upstream-service error.
-    if (!MIRA_CHAT_API_URL || !MIRA_CHAT_API_KEY) {
+    if (!scriptNinjaConfigured() && (!MIRA_CHAT_API_URL || !MIRA_CHAT_API_KEY)) {
       return finishEarlyResponse(miraConfigurationError());
     }
 
-    if (MIRA_CHAT_API_URL && Date.now() >= miraUnavailableUntil) {
+    if ((scriptNinjaConfigured() || MIRA_CHAT_API_URL) && Date.now() >= miraUnavailableUntil) {
       try {
         const response = await requestMiraPrimary(body, controller.signal);
         miraUnavailableUntil = 0;
@@ -586,3 +597,4 @@ export async function POST(req) {
     return jsonResponse({ error: aborted ? 'Generation stopped.' : (error?.message || 'Chat request failed.') }, aborted ? 499 : 500);
   }
 }
+import { requestScriptNinja, scriptNinjaConfigured } from './_scriptNinja.js';

@@ -1,5 +1,6 @@
 export const config = { maxDuration: 30 };
 import { guardRequest } from './_requestSecurity.js';
+import { requestScriptNinja, scriptNinjaConfigured } from './_scriptNinja.js';
 
 const POLLINATIONS_ORIGIN = String(process.env.POLLINATIONS_API_URL || 'https://gen.pollinations.ai')
   .trim()
@@ -366,10 +367,10 @@ export async function POST(request) {
   }
   const desktopRequest = isDesktopRequest(request);
   const key = serverKey();
-  if (desktopRequest && task !== 'embedding' && !deepSeekKey()) {
+  if (desktopRequest && task !== 'embedding' && !deepSeekKey() && !scriptNinjaConfigured()) {
     return json({ error: 'Desktop coding assistance is not configured.' }, 503);
   }
-  if ((!desktopRequest || task === 'embedding') && !key) {
+  if ((!desktopRequest || task === 'embedding') && !key && (task === 'embedding' || !scriptNinjaConfigured())) {
     return json({ error: 'Code assistance is not configured.' }, 503);
   }
 
@@ -408,6 +409,13 @@ export async function POST(request) {
       if (!desktopRequest && body?.scope !== 'desktop-coding') {
         return json({ error: 'Chat completions are restricted to coding workspaces.' }, 403);
       }
+      if (scriptNinjaConfigured()) {
+        const result = await requestScriptNinja({messages: [
+          {role: 'system', content: String(body.systemPrompt || 'Assist with the coding workspace.')},
+          ...(Array.isArray(body.messages) ? body.messages : []),
+        ], tools: Array.isArray(body.tools) ? body.tools : [], maxTokens: body.maxTokens, signal: controller.signal, model: body.model});
+        return json({suggestion: result.message.content || '', model: result.model, finishReason: result.done_reason});
+      }
       const result = desktopRequest ? await requestDesktopChat({
         messages: body.messages,
         systemPrompt: body.systemPrompt,
@@ -445,6 +453,10 @@ export async function POST(request) {
       { role: 'system', content: 'You are a fast, precise coding copilot. Follow the output contract exactly and never expose credentials.' },
       { role: 'user', content: prompt },
     ];
+    if (scriptNinjaConfigured()) {
+      const result = await requestScriptNinja({messages: chatMessages, maxTokens: task === 'completion' ? 220 : 1600, signal: controller.signal, model: body.model});
+      return json({suggestion: cleanSuggestion(result.message.content, task === 'completion' ? 4000 : 12000), model: result.model});
+    }
     if (desktopRequest) {
       const model = deepSeekModel();
       const result = await deepSeekJson({

@@ -11,7 +11,7 @@ test('desktop task continuation retains phase context and completion metadata', 
     return {ok:true,answer:requests.length===1?'## Plan\n1. Prepare':' the room.\n2. Welcome guests.',finishReason:requests.length===1?'length':'stop'};
   }}};
   try {
-    const result=await sendChatMessage([{role:'user',content:'Plan an online workshop, no weekends.'}],()=>{},[],{desktopCoding:true,requestClass:'task',returnDetails:true,tools:[]});
+    const result=await sendChatMessage([{role:'user',content:'Plan an online workshop, no weekends.'}],()=>{},[],{model:null,desktopCoding:true,requestClass:'task',returnDetails:true,tools:[]});
     assert.equal(requests.length,2);
     assert.match(requests[1].messages[0].content,/no weekends/);
     assert.equal(requests[1].messages[1].content,'## Plan\n1. Prepare');

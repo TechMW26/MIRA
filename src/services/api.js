@@ -1,4 +1,5 @@
 import { MODEL_TOOLS } from './modelTools.js';
+import { getSelectedModel } from './modelPreference.js';
 import { TOOL_NAMES } from './toolControl.js';
 import {
   CHAT_REQUEST_TIMEOUTS,
@@ -511,10 +512,11 @@ export function installGenerationExitCancellation() {
 }
 
 async function requestChat(options) {
-  return completeChatResponse(options, requestChatSegment);
+  return completeChatResponse({ model: getSelectedModel(), ...options }, requestChatSegment);
 }
 
 async function requestChatSegment({
+  model,
   messages,
   images = [],
   systemPrompt,
@@ -558,6 +560,7 @@ async function requestChatSegment({
             signal: attemptController.signal,
             body: JSON.stringify({
               requestId,
+              model,
               messages,
               ...(systemPrompt ? { systemPrompt } : {}),
               images,
@@ -713,6 +716,7 @@ async function requestPollinationsFallback({ messages, systemPrompt, tools, maxT
 }
 
 export async function sendChatMessage(messages, onChunk, images = [], {
+  model = getSelectedModel(),
   onThinking,
   systemPrompt,
   tools = MODEL_TOOLS,
@@ -727,7 +731,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
   let latestThinking = '';
   let streamed;
   let desktopProviderError = null;
-  if (desktopCoding && !images.length && !voice) {
+  if (!model && desktopCoding && !images.length && !voice) {
     try {
       const desktopOptions = {
         messages,
@@ -766,6 +770,7 @@ export async function sendChatMessage(messages, onChunk, images = [], {
   }
   try {
     streamed = await requestChat({
+      model,
       messages,
       images,
       systemPrompt: composeMiraSystemPrompt(systemPrompt),

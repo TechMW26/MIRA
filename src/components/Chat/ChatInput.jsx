@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { getSelectedModel, setSelectedModel } from '../../services/modelPreference';
 import {
   Send, Square, Paperclip, X, FileText, Image as ImageIcon, FileCode, File, Loader,
   Globe, Code2, Zap, Wrench, BookMarked, Share2, ListPlus, CornerDownRight, Pencil, Check,
@@ -122,6 +123,7 @@ export default function ChatInput({
   const [editingQueuedId, setEditingQueuedId] = useState(null);
   const [editingQueuedContent, setEditingQueuedContent] = useState('');
   const textareaRef = useRef(null);
+  const [selectedModel, updateSelectedModel] = useState(getSelectedModel);
   const fileInputRef = useRef(null);
   const dragCounterRef = useRef(0);
   const dockRef = useRef(null);
@@ -449,6 +451,17 @@ export default function ChatInput({
             style={{ flexDirection: 'column', alignItems: 'stretch', padding: '4px 8px 4px 18px' }}
           >
             <div className="hud-tool-strip hud-tool-strip-inside">
+              <select
+                aria-label="AI model"
+                title="MIRA Fast for everyday questions; MIRA Pro for deeper understanding and complex tasks"
+                value={selectedModel}
+                disabled={isGenerating || isStartingChat || isConversationBusy}
+                onChange={(event) => updateSelectedModel(setSelectedModel(event.target.value))}
+                style={{ background: '#242424', color: '#fff', border: 0, borderRadius: 8, padding: '6px 8px', maxWidth: 130 }}
+              >
+                <option value="mira-fast">MIRA Fast</option>
+                <option value="mira-pro">MIRA Pro</option>
+              </select>
               {toolStrip.map(({ id, icon: Icon, title, active, onClick }) => (
                 <button
                   key={id}
