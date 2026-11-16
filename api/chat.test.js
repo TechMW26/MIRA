@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildDeepSeekPayload,
   buildUpstreamPayload,
   getContextTokens,
   getUpstreamStartTimeoutMs,
@@ -125,4 +126,43 @@ test('forwards allowlisted tools when Ollama tags omit tool capability metadata'
     tools: [{ type: 'function', function: { name: 'weather.lookup', parameters: { type: 'object', properties: { city: { type: 'string' } } } } }],
   });
   assert.deepEqual(payload.tools.map((tool) => tool.function.name), ['weather.lookup']);
+});
+
+test('builds an OpenAI-compatible DeepSeek streaming payload from normalized messages', () => {
+  const payload = buildDeepSeekPayload({
+    messages: [
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi there' },
+    ],
+    systemPrompt: 'You are Mira.',
+    maxTokens: 500,
+  });
+  assert.equal(payload.model, 'deepseek-chat');
+  assert.equal(payload.stream, true);
+  assert.equal(payload.max_tokens, 500);
+  assert.ok(Array.isArray(payload.messages));
+  assert.deepEqual(payload.messages[0], { role: 'system', content: 'You are Mira.' });
+  assert.deepEqual(payload.messages[1], { role: 'user', content: 'Hello' });
+  assert.deepEqual(payload.messages[2], { role: 'assistant', content: 'Hi there' });
+});
+
+test('caps DeepSeek max_tokens at the shared ceiling', () => {
+  const payload = buildDeepSeekPayload({
+    messages: [{ role: 'user', content: 'Hello' }],
+    maxTokens: 999999,
+  });
+  assert.equal(payload.max_tokens, 12000);
+});
+
+test('trims long histories to the bounded window before sending upstream', () => {
+  const messages = [];
+  for (let i = 0; i < 30; i += 1) {
+    messages.push({ role: 'user', content: `Turn ${i}` });
+    messages.push({ role: 'assistant', content: `Reply ${i}` });
+  }
+  const payload = buildDeepSeekPayload({ messages });
+  // 20-message cap (no system prompt): the oldest turns are dropped.
+  assert.equal(payload.messages.length, 20);
+  assert.equal(payload.messages[0].content, 'Turn 20');
+  assert.equal(payload.messages.at(-1).content, 'Reply 29');
 });

@@ -21,7 +21,11 @@ function createRequestId() {
 }
 
 function isAbortError(err) {
-  return err?.name === 'AbortError' || /abort|stopp?ed/i.test(String(err?.message || ''));
+  if (err?.name === 'AbortError') return true;
+  const message = String(err?.message || '');
+  // A stopped request surfaces as a transport error ("Failed to fetch") when the
+  // abort lands while the body is streaming. Never report that as a real failure.
+  return /abort|stopp?ed|request was cancelled/i.test(message);
 }
 
 class ChatTimeoutError extends Error {
@@ -401,16 +405,20 @@ async function extractApiError(response) {
     const payload = await response.json();
     const candidate = payload?.error?.message || payload?.error || payload?.detail || payload?.message || '';
     const text = typeof candidate === 'string' ? candidate : JSON.stringify(candidate || '');
-    return String(text)
+    const message = String(text)
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 240);
+    return { message, code: typeof payload?.code === 'string' ? payload.code : '' };
   } catch {
     const text = await response.text().catch(() => '');
-    return String(text || '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 240);
+    return {
+      message: String(text || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 240),
+      code: '',
+    };
   }
 }
 
@@ -472,6 +480,19 @@ export function installGenerationExitCancellation() {
   };
 }
 
+function normalizeChatError(err) {
+  if (!err || typeof err !== 'object') return err;
+  // Browsers report a dropped connection as a bare TypeError. Give the user an
+  // actionable message instead of the opaque "Failed to fetch".
+  if (err instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(String(err.message || ''))) {
+    const wrapped = new Error('The connection to MIRA dropped before the response finished. Please try again.');
+    wrapped.name = 'ChatNetworkError';
+    wrapped.cause = err;
+    return wrapped;
+  }
+  return err;
+}
+
 async function requestChat({ messages, images = [], systemPrompt, maxTokens, tools = MODEL_TOOLS, think, onChunk }) {
   const controller = new AbortController();
   activeChatAbortController = controller;
@@ -520,8 +541,10 @@ async function requestChat({ messages, images = [], systemPrompt, maxTokens, too
           elapsedMs: Date.now() - attemptStartedAt,
         });
         if (!response.ok) {
-          const message = await extractApiError(response);
-          throw new ChatHttpError(response.status, message);
+          const apiError = await extractApiError(response);
+          const error = new ChatHttpError(response.status, apiError.message);
+          if (apiError.code) error.code = apiError.code;
+          throw error;
         }
         const streamed = await readChatResponse(response, (chunk) => {
           if (String(chunk?.answerFull || '').trim()) receivedAnswer = true;
@@ -541,7 +564,7 @@ async function requestChat({ messages, images = [], systemPrompt, maxTokens, too
         if (controller.signal.aborted) throw new DOMException('Generation stopped by user.', 'AbortError');
         const normalizedError = isAbortError(err) && attemptController.signal.aborted
           ? new ChatTimeoutError('response-headers')
-          : err;
+          : normalizeChatError(err);
         const retry = !receivedAnswer && shouldRetryChatRequest(normalizedError, attempt, maxAttempts);
         diagnosticError('stream', retry ? 'request failed; automatic recovery started' : 'request failed', {
           requestId,
