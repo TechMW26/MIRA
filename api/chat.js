@@ -3,6 +3,8 @@ import { parseOllamaKeepAlive } from './ollamaConfig.js';
 export const config = { maxDuration: 300 };
 
 const OLLAMA_CHAT_API_URL = String(process.env.OLLAMA_API_URL || '').trim();
+const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
+const DEEPSEEK_MODEL = String(process.env.DEEPSEEK_MODEL || 'deepseek-chat').trim();
 const OLLAMA_MAX_TOKENS = Number(process.env.OLLAMA_MAX_TOKENS || 12000);
 const OLLAMA_TEMPERATURE = Number(process.env.OLLAMA_TEMPERATURE || 0.2);
 const OLLAMA_TOP_P = Number(process.env.OLLAMA_TOP_P || 0.85);
@@ -31,6 +33,24 @@ const ALLOWED_TOOL_NAMES = new Set([
   'git.diff',
 ]);
 const ACTIVE_CHAT_REQUESTS = new Map();
+// Cancels are delivered as keepalive/beacon POSTs, so they can land after the
+// request they target has already finished. Remember recent cancellations so a
+// late-arriving cancel is never mistaken for "abort the current stream" — it
+// only ever cancels the exact requestId it names.
+const RECENTLY_CANCELLED = new Map();
+const RECENTLY_CANCELLED_TTL_MS = 60 * 1000;
+
+function rememberCancelled(requestId) {
+  if (!requestId) return;
+  const now = Date.now();
+  if (RECENTLY_CANCELLED.size > 200) {
+    for (const [id, at] of RECENTLY_CANCELLED) {
+      if (now - at > RECENTLY_CANCELLED_TTL_MS) RECENTLY_CANCELLED.delete(id);
+    }
+  }
+  RECENTLY_CANCELLED.set(requestId, now);
+}
+
 const MODEL_REGISTRY_CACHE = { expiresAt: 0, selected: null };
 const MODEL_REGISTRY_CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -118,9 +138,90 @@ async function fetchRegistryModel(signal) {
   }
 }
 
+const REACHABILITY_CACHE = { checkedAt: 0, reachable: true };
+const REACHABILITY_CACHE_TTL_MS = 5 * 1000;
+
+// Returns true when the upstream host cannot be reached at the connection
+// level at all. Bounded to a brief window so a merely-slow host is never
+// misclassified. Uses a short TTL cache so a burst of requests against a dead
+// host fail together instead of each waiting the full probe window.
+async function probeUpstreamReachability(signal) {
+  const baseUrl = getOllamaBaseUrl(OLLAMA_CHAT_API_URL);
+  if (!baseUrl) return true;
+
+  const now = Date.now();
+  if (now - REACHABILITY_CACHE.checkedAt < REACHABILITY_CACHE_TTL_MS) {
+    return !REACHABILITY_CACHE.reachable;
+  }
+
+  const controller = new AbortController();
+  const abortFromSignal = () => controller.abort();
+  signal?.addEventListener?.('abort', abortFromSignal, { once: true });
+  const timeout = setTimeout(() => controller.abort(), 2500);
+  let reachable = true;
+  try {
+    const response = await fetch(`${baseUrl}/api/tags`, {
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+    reachable = response.ok;
+  } catch {
+    // Abort (our timeout or client abort) or a connection-level failure both
+    // mean "we could not confirm the host is reachable." Distinguish a client
+    // abort from a genuine probe timeout so we never report unreachable on a
+    // cancelled request.
+    if (signal?.aborted) reachable = true;
+    else reachable = false;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener?.('abort', abortFromSignal);
+  }
+  REACHABILITY_CACHE.checkedAt = now;
+  REACHABILITY_CACHE.reachable = reachable;
+  return !reachable;
+}
+
+function getDeepSeekApiKey(env = process.env) {
+  return String(env?.DEEPSEEK_API_KEY || env?.SCRIPT_NINJA_KEY || '').trim();
+}
+
+// DeepSeek exposes an OpenAI-compatible /chat/completions endpoint. The
+// client already parses OpenAI SSE (`data: {...}` chunks ending in
+// `data: [DONE]`), so we translate the normalized conversation into that
+// shape and proxy the stream through unchanged.
+export function buildDeepSeekPayload({ messages = [], systemPrompt = '', maxTokens = OLLAMA_MAX_TOKENS } = {}) {
+  const normalized = normalizeMessages(messages, systemPrompt);
+  return {
+    model: DEEPSEEK_MODEL,
+    messages: normalized,
+    stream: true,
+    max_tokens: Math.max(1, Math.min(Number(maxTokens) || OLLAMA_MAX_TOKENS, MAX_TOKENS_CAP)),
+    temperature: OLLAMA_TEMPERATURE,
+    top_p: OLLAMA_TOP_P,
+  };
+}
+
+async function fetchDeepSeek(payload, signal) {
+  const key = getDeepSeekApiKey();
+  if (!key) throw new Error('DEEPSEEK_API_KEY is not configured.');
+  return fetch(DEEPSEEK_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify(payload),
+    signal,
+  });
+}
+
 function normalizeMessages(messages = [], systemPrompt = '') {
+  const parsedLimit = Number(process.env.OLLAMA_HISTORY_MESSAGES);
+  const historyLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
+    ? Math.max(1, Math.round(parsedLimit))
+    : 20;
   const normalized = (Array.isArray(messages) ? messages : [])
-    .slice(-40)
+    .slice(-historyLimit)
     .map((message) => ({
       role: ALLOWED_ROLES.has(message?.role) ? message.role : 'user',
       content: typeof message?.content === 'string' ? message.content : String(message?.content || ''),
@@ -219,6 +320,91 @@ async function fetchUpstream(payload, signal) {
   });
 }
 
+async function streamDeepSeekFallback({ controller, req, requestId, body, onClientAbort }) {
+  if (!getDeepSeekApiKey()) {
+    req.signal?.removeEventListener?.('abort', onClientAbort);
+    if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+    return jsonResponse({
+      error: 'The model is currently unreachable. Please try again shortly.',
+      code: 'model_unreachable',
+    }, 503);
+  }
+
+  try {
+    const payload = buildDeepSeekPayload({
+      messages: body.messages,
+      systemPrompt: body.systemPrompt,
+      maxTokens: body.max_tokens,
+    });
+    const upstream = await fetchDeepSeek(payload, controller.signal);
+    if (!upstream.ok) {
+      const detail = await upstream.text().catch(() => '');
+      req.signal?.removeEventListener?.('abort', onClientAbort);
+      if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+      return jsonResponse({ error: detail || `Fallback request failed (${upstream.status}).` }, 502);
+    }
+    return proxyUpstreamStream({
+      upstream,
+      controller,
+      req,
+      requestId,
+      onClientAbort,
+      defaultContentType: 'text/event-stream',
+    });
+  } catch (error) {
+    if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+    const aborted = error?.name === 'AbortError';
+    return jsonResponse(
+      { error: aborted ? 'Generation stopped.' : (error?.message || 'Fallback request failed.') },
+      aborted ? 499 : 500,
+    );
+  }
+}
+
+function proxyUpstreamStream({ upstream, controller, req, requestId, onClientAbort, defaultContentType = 'application/x-ndjson' }) {
+  const proxiedBody = new ReadableStream({
+    async start(streamController) {
+      const reader = upstream.body?.getReader();
+      if (!reader) {
+        streamController.close();
+        return;
+      }
+      const onAbort = () => {
+        reader.cancel().catch?.(() => {});
+        try { streamController.close(); } catch {}
+      };
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+      try {
+        while (!controller.signal.aborted) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          streamController.enqueue(value);
+        }
+      } catch {
+        // The client or upstream may close a streaming connection normally.
+      } finally {
+        controller.signal.removeEventListener('abort', onAbort);
+        req.signal?.removeEventListener?.('abort', onClientAbort);
+        if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+        try { streamController.close(); } catch {}
+      }
+    },
+    cancel() {
+      controller.abort();
+      if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
+    },
+  });
+
+  return new Response(proxiedBody, {
+    status: 200,
+    headers: {
+      'Content-Type': upstream.headers.get('Content-Type') || defaultContentType,
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+    },
+  });
+}
+
 export async function POST(req) {
   let requestId = '';
   let upstreamStartTimedOut = false;
@@ -233,7 +419,14 @@ export async function POST(req) {
       const controller = ACTIVE_CHAT_REQUESTS.get(requestId);
       if (controller && !controller.signal.aborted) controller.abort();
       ACTIVE_CHAT_REQUESTS.delete(requestId);
+      rememberCancelled(requestId);
       return jsonResponse({ cancelled: Boolean(controller) });
+    }
+
+    // A request whose id was already cancelled must not start a fresh stream.
+    if (requestId && RECENTLY_CANCELLED.has(requestId)) {
+      RECENTLY_CANCELLED.delete(requestId);
+      return jsonResponse({ error: 'Request was cancelled.', code: 'request_cancelled' }, 499);
     }
 
     if (!Array.isArray(body?.messages) || body.messages.length === 0) {
@@ -254,6 +447,22 @@ export async function POST(req) {
     if (req.signal?.aborted) onClientAbort();
     else req.signal?.addEventListener?.('abort', onClientAbort, { once: true });
 
+    // Fast fail when the upstream host is completely unreachable (connection
+    // never establishes / no response at all). This is the only case we
+    // short-circuit; a host that is merely slow to load or stream a model
+    // still follows the existing path unchanged, so no legitimate slow
+    // response is affected.
+    const unreachable = await probeUpstreamReachability(controller.signal);
+    if (unreachable) {
+      return streamDeepSeekFallback({
+        controller,
+        req,
+        requestId,
+        body,
+        onClientAbort,
+      });
+    }
+
     upstreamStartTimer = setTimeout(() => {
       upstreamStartTimedOut = true;
       controller.abort();
@@ -271,53 +480,16 @@ export async function POST(req) {
     clearTimeout(upstreamStartTimer);
     upstreamStartTimer = null;
     if (!upstream.ok) {
-      const detail = await upstream.text().catch(() => '');
-      req.signal?.removeEventListener?.('abort', onClientAbort);
-      if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
-      return jsonResponse({ error: detail || `Upstream request failed (${upstream.status}).` }, 502);
+      return streamDeepSeekFallback({
+        controller,
+        req,
+        requestId,
+        body,
+        onClientAbort,
+      });
     }
 
-    const proxiedBody = new ReadableStream({
-      async start(streamController) {
-        const reader = upstream.body?.getReader();
-        if (!reader) {
-          streamController.close();
-          return;
-        }
-        const onAbort = () => {
-          reader.cancel().catch?.(() => {});
-          try { streamController.close(); } catch {}
-        };
-        controller.signal.addEventListener('abort', onAbort, { once: true });
-        try {
-          while (!controller.signal.aborted) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            streamController.enqueue(value);
-          }
-        } catch {
-          // The client or upstream may close a streaming connection normally.
-        } finally {
-          controller.signal.removeEventListener('abort', onAbort);
-          req.signal?.removeEventListener?.('abort', onClientAbort);
-          if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
-          try { streamController.close(); } catch {}
-        }
-      },
-      cancel() {
-        controller.abort();
-        if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);
-      },
-    });
-
-    return new Response(proxiedBody, {
-      status: 200,
-      headers: {
-        'Content-Type': upstream.headers.get('Content-Type') || 'application/x-ndjson',
-        'Cache-Control': 'no-cache, no-transform',
-        'X-Accel-Buffering': 'no',
-      },
-    });
+    return proxyUpstreamStream({ upstream, controller, req, requestId, onClientAbort });
   } catch (error) {
     if (upstreamStartTimer) clearTimeout(upstreamStartTimer);
     if (requestId) ACTIVE_CHAT_REQUESTS.delete(requestId);

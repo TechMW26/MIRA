@@ -57,6 +57,12 @@ export default defineConfig({
       },
       '/api/health': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search': { target: 'http://localhost:3002', changeOrigin: true },
+      // Vision analysis. Without this, Vite has no matching prefix rule and the
+      // SPA fallback answers with index.html, so the browser's fetch resolves to
+      // HTML and the image request fails before it ever reaches dev-api.
+      '/api/analyze': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/analyse': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/media': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/search-query': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/browser-mcp': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/image': { target: 'http://localhost:3002', changeOrigin: true },
