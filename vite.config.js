@@ -29,8 +29,6 @@ export default defineConfig({
         importScripts: ['/pwa-cache-reset-v3.js'],
         navigateFallbackDenylist: [/^\/api\//],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-        // Load the local vision runtime only when voice/camera is enabled.
-        globIgnores: ['**/voice-vision/**'],
       },
       devOptions: {
         enabled: false,

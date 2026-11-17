@@ -12,5 +12,4 @@
 .mira-voice-center .mira-voice-caption{color:#eee;max-height:180px;overflow:auto;padding:0 12px;white-space:pre-wrap}
 .mira-voice-center .mira-voice-error{color:#ffb5b5}
 .mira-voice-center .mira-voice-privacy{font-size:12px;color:#888}
-.mira-voice-hidden-camera{position:fixed;left:-10000px;top:0;width:320px;height:240px;pointer-events:none}
 @media(max-height:600px){.mira-voice-mascot{height:190px;transform:scale(.65);margin:-40px 0}.mira-voice-center{padding-top:10px}}
