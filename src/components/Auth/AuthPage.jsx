@@ -12,21 +12,24 @@ export default function AuthPage() {
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [showPw, setShowPw] = useState(false);
 
-  // Redirect when user becomes authenticated
+  const [renewed, setRenewed] = useState(false);
+  const reauthenticate = searchParams.get('reauth') === '1';
+
+  // A remembered profile alone must not skip explicit credential renewal.
   useEffect(() => {
-    if (user) {
+    if (user && (!reauthenticate || renewed)) {
       const next = searchParams.get('next');
-      const safeNext = next && next.startsWith('/') ? next : '/';
+      const safeNext = next && next.startsWith('/') && !next.startsWith('//') ? next : '/';
       navigate(safeNext, { replace: true });
     }
-  }, [user, navigate, searchParams]);
+  }, [user, navigate, searchParams, reauthenticate, renewed]);
 
   async function handleSubmit(e) {
     e.preventDefault();
     if (isLogin) {
-      await login(form.email, form.password);
+      if (await login(form.email, form.password)) setRenewed(true);
     } else {
-      await register(form.email, form.password, form.name);
+      if (await register(form.email, form.password, form.name)) setRenewed(true);
     }
   }
 

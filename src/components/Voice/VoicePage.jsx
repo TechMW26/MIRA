@@ -9,6 +9,7 @@ export default function VoicePage() {
   const current = useRef(null);
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState('');
+  const [needsSignIn, setNeedsSignIn] = useState(false);
   const [caption, setCaption] = useState('');
   const [muted, setMuted] = useState(false);
 
@@ -55,7 +56,7 @@ export default function VoicePage() {
       run.session = session;
       setStatus('listening');
     } catch (failure) {
-      if (current.current === run) { stop(); setError(failure.message || 'Could not start voice. Please try again.'); }
+      if (current.current === run) { stop(); setNeedsSignIn(failure.code === 'voice/sign-in-required'); setError(failure.name === 'NotAllowedError' ? 'Allow microphone access in your browser, then try again.' : failure.message || 'Could not start voice. Please try again.'); }
     } finally { run.connecting = false; }
   }
 
@@ -63,14 +64,13 @@ export default function VoicePage() {
     if (current.current) return;
     const run = { abort: new AbortController(), connecting: false };
     current.current = run;
-    setError(''); setCaption(''); setStatus('preparing');
+    setError(''); setNeedsSignIn(false); setCaption(''); setStatus('preparing');
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw Error('Voice needs HTTPS and a browser with microphone support.');
       // Unlock audio in the enable gesture before starting the voice connection.
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       if (AudioContext) { run.audio = new AudioContext(); await run.audio.resume(); }
-      const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
-      microphone.getTracks().forEach(track => track.stop());
+      // Authenticate first; the voice SDK acquires the microphone once when connecting.
       if (current.current !== run) return;
       await connect(run);
     } catch (failure) {
@@ -91,6 +91,7 @@ export default function VoicePage() {
       <p role="status" aria-live="polite">{labels[status]}</p>
       {caption && <p className="mira-voice-caption">{caption}</p>}
       {error && <p role="alert" className="mira-voice-error">{error}</p>}
+      {needsSignIn && <Link to="/auth?reauth=1&next=%2Fvoice">Sign in to enable voice</Link>}
       <div className="mira-voice-controls">
         {status === 'idle' ? <button onClick={enable}>Start conversation</button> : <>
           {current.current?.session && <button className="secondary" onClick={() => { const value = !muted; current.current?.session?.setMicMuted(value); setMuted(value); }}>{muted ? 'Unmute' : 'Mute'}</button>}
