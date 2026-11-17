@@ -1,9 +1,11 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import AuthPage from './components/Auth/AuthPage';
 import MainLayout from './components/Layout/MainLayout';
 import DesktopCompanion from './components/Desktop/DesktopCompanion';
 import DesktopPermissionOnboarding from './components/Desktop/DesktopPermissionOnboarding';
+const VoicePage = lazy(() => import('./components/Voice/VoicePage'));
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -37,6 +39,7 @@ export default function App() {
       {typeof window !== 'undefined' && window.miraDesktop && <DesktopPermissionOnboarding />}
     <Routes>
       <Route path="/auth" element={<AuthPage />} />
+      <Route path="/voice" element={<ProtectedRoute><Suspense fallback={<div role="status">Loading MIRA voice…</div>}><VoicePage /></Suspense></ProtectedRoute>} />
       <Route
         path="/*"
         element={

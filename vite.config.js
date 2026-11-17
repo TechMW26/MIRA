@@ -29,6 +29,8 @@ export default defineConfig({
         importScripts: ['/pwa-cache-reset-v3.js'],
         navigateFallbackDenylist: [/^\/api\//],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        // Load the local vision runtime only when voice/camera is enabled.
+        globIgnores: ['**/voice-vision/**'],
       },
       devOptions: {
         enabled: false,
@@ -74,6 +76,7 @@ export default defineConfig({
       '/api/crawl': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/code-assist': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/voice-health': { target: 'http://localhost:3002', changeOrigin: true },
+      '/api/voice-agent': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/voice-speech': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/voice-transcribe': { target: 'http://localhost:3002', changeOrigin: true },
       '/api/voice-chat': {

@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Plus,
   Search,
@@ -674,6 +675,7 @@ export default function Sidebar() {
           </div>
 
           {/* Search */}
+          <Link to="/voice" className="mx-3 mb-3 px-3 py-2 rounded-xl text-sm" style={{ display: 'block', color: 'var(--text-primary)', background: 'var(--bg-secondary)' }}>Talk to MIRA</Link>
           <div className="px-3 mb-3">
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-tertiary)' }} />
