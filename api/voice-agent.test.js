@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { issueVoiceToken, voiceAgentConfiguration } from './_voiceAgent.js';
+import { issueVoiceToken, voiceAgentConfiguration, VOICE_LANGUAGES } from './_voiceAgent.js';
+
+test('multilingual speech can switch throughout a conversation and supports Hinglish', () => {
+  const config = voiceAgentConfiguration().conversation_config;
+  assert.equal(config.agent.hinglish_mode, true);
+  assert.equal(config.tts.model_id, 'eleven_v4_turbo');
+  assert.equal(config.agent.prompt.built_in_tools.language_detection.params.only_at_conversation_start, false);
+  for (const code of VOICE_LANGUAGES.filter(code => code !== 'en')) assert.equal(config.language_presets[code].overrides.agent.language, code);
+  for (const code of ['hi', 'ta', 'te', 'bn', 'mr', 'gu', 'kn', 'ml', 'pa', 'ur', 'es', 'ar', 'zh']) assert.ok(config.language_presets[code]);
+});
 import { POST } from './voice-agent.js';
 
 test('voice sessions require authentication before provider access', async () => {

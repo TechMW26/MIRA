@@ -22,4 +22,6 @@ const verify = await fetch(`${root}/${encodeURIComponent(id)}`, { headers, signa
 if (!verify.ok) throw Error('Agent saved locally but readback failed.');
 const saved = await verify.json();
 if (saved.conversation_config?.agent?.prompt?.prompt !== config.conversation_config.agent.prompt.prompt || saved.platform_settings?.auth?.enable_auth !== true) throw Error('Agent readback does not match the requested private configuration.');
+const expectedLanguages = Object.keys(config.conversation_config.language_presets);
+if (expectedLanguages.some(code => !saved.conversation_config.language_presets?.[code]) || saved.conversation_config.agent.hinglish_mode !== true || saved.conversation_config.agent.prompt.built_in_tools?.language_detection?.params?.only_at_conversation_start !== false) throw Error('Multilingual settings were not saved correctly.');
 console.log(JSON.stringify({ agentId: id, name: saved.name, promptVerified: true, privateAgent: true, voice: saved.conversation_config.tts.voice_id }));
